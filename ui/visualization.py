@@ -78,10 +78,13 @@ class DataVisualizationWidget(QWidget):
         self.xy_plot.setAspectLocked(True)
         self.xy_plot.showGrid(x=True, y=True)
         
+        # 添加图例（在创建曲线之前）
+        self.xy_plot.addLegend()
+        
         # 轨迹线
-        self.xy_curve = self.xy_plot.plot(pen=pg.mkPen(color='blue', width=2))
+        self.xy_curve = self.xy_plot.plot(pen=pg.mkPen(color='blue', width=2), name='轨迹')
         # 当前位置点
-        self.xy_point = self.xy_plot.plot(pen=None, symbol='o', symbolBrush='red', symbolSize=8)
+        self.xy_point = self.xy_plot.plot(pen=None, symbol='o', symbolBrush='red', symbolSize=8, name='当前位置')
         
         layout.addWidget(self.xy_plot)
         
@@ -97,7 +100,11 @@ class DataVisualizationWidget(QWidget):
         self.z_plot.setLabel('left', 'Z位置 (m)')
         self.z_plot.setLabel('bottom', '时间 (s)')
         self.z_plot.showGrid(x=True, y=True)
-        self.z_curve = self.z_plot.plot(pen=pg.mkPen(color=UI_CONFIG["plot_colors"]["z"], width=2))
+        
+        # 添加图例（在创建曲线之前）
+        self.z_plot.addLegend()
+        
+        self.z_curve = self.z_plot.plot(pen=pg.mkPen(color=UI_CONFIG["plot_colors"]["z"], width=2), name='深度')
         
         # RPY-t图
         self.rpy_plot = pg.PlotWidget(title="姿态角-时间图")
@@ -105,12 +112,12 @@ class DataVisualizationWidget(QWidget):
         self.rpy_plot.setLabel('bottom', '时间 (s)')
         self.rpy_plot.showGrid(x=True, y=True)
         
+        # 添加图例（在创建曲线之前）
+        self.rpy_plot.addLegend()
+        
         self.roll_curve = self.rpy_plot.plot(pen=pg.mkPen(color=UI_CONFIG["plot_colors"]["roll"], width=2), name='Roll')
         self.pitch_curve = self.rpy_plot.plot(pen=pg.mkPen(color=UI_CONFIG["plot_colors"]["pitch"], width=2), name='Pitch')
         self.yaw_curve = self.rpy_plot.plot(pen=pg.mkPen(color=UI_CONFIG["plot_colors"]["yaw"], width=2), name='Yaw')
-        
-        # 添加图例
-        self.rpy_plot.addLegend()
         
         layout.addWidget(self.z_plot)
         layout.addWidget(self.rpy_plot)

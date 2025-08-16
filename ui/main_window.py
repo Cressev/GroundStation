@@ -19,6 +19,7 @@ from PyQt5.QtGui import QFont, QKeySequence, QIcon
 from ui.visualization import DataVisualizationWidget
 from ui.keyboard_status import KeyboardStatusWidget
 from ui.video_display import VideoDisplayWidget
+from ui.data_recording import DataRecordingWidget
 from controllers.base import KeyboardController
 from communication.ssh_ros import SSHROSCommunication
 from communication.base import FishState, ControlCommand
@@ -34,6 +35,7 @@ class MainWindow(QMainWindow):
         self.communication = None
         self.current_controller = None
         self.controllers = {}
+        self._last_control_command = None  # 最后的控制命令，用于数据记录
         
         # 初始化界面
         self._init_ui()
@@ -91,9 +93,24 @@ class MainWindow(QMainWindow):
         center_layout.addWidget(center_tabs)
         main_splitter.addWidget(center_widget)
         
-        # 右侧按键状态面板
+        # 右侧面板 - 包含按键状态和数据记录控制
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(5, 5, 5, 5)
+        
+        # 创建右侧标签页
+        right_tabs = QTabWidget()
+        
+        # 按键状态标签页
         self.keyboard_status_widget = KeyboardStatusWidget()
-        main_splitter.addWidget(self.keyboard_status_widget)
+        right_tabs.addTab(self.keyboard_status_widget, "按键状态")
+        
+        # 数据记录控制标签页
+        self.data_recording_widget = DataRecordingWidget()
+        right_tabs.addTab(self.data_recording_widget, "数据记录")
+        
+        right_layout.addWidget(right_tabs)
+        main_splitter.addWidget(right_panel)
         
         # 设置分割器比例 (控制面板:中央区域:按键状态 = 2:6:2)
         main_splitter.setSizes([250, 700, 250])
@@ -130,6 +147,17 @@ class MainWindow(QMainWindow):
         
         video_menu.addSeparator()
         
+        # 视频记录
+        start_video_record_action = QAction('开始录制(&R)', self)
+        start_video_record_action.triggered.connect(lambda: self.video_widget._start_recording())
+        video_menu.addAction(start_video_record_action)
+        
+        stop_video_record_action = QAction('停止录制(&E)', self)
+        stop_video_record_action.triggered.connect(lambda: self.video_widget._stop_recording())
+        video_menu.addAction(stop_video_record_action)
+        
+        video_menu.addSeparator()
+        
         snapshot_action = QAction('保存快照(&P)', self)
         snapshot_action.triggered.connect(self._save_video_snapshot)
         video_menu.addAction(snapshot_action)
@@ -140,6 +168,48 @@ class MainWindow(QMainWindow):
         keyboard_action = QAction('键盘控制(&K)', self)
         keyboard_action.triggered.connect(lambda: self._switch_controller('keyboard'))
         control_menu.addAction(keyboard_action)
+        
+        # 数据菜单
+        data_menu = menubar.addMenu('数据(&D)')
+        
+        # 记录控制子菜单
+        record_submenu = data_menu.addMenu('记录控制(&R)')
+        
+        start_record_action = QAction('开始记录(&S)', self)
+        start_record_action.triggered.connect(lambda: self.data_recording_widget._start_recording())
+        record_submenu.addAction(start_record_action)
+        
+        pause_record_action = QAction('暂停记录(&P)', self)
+        pause_record_action.triggered.connect(lambda: self.data_recording_widget._pause_recording())
+        record_submenu.addAction(pause_record_action)
+        
+        stop_record_action = QAction('停止记录(&T)', self)
+        stop_record_action.triggered.connect(lambda: self.data_recording_widget._stop_recording())
+        record_submenu.addAction(stop_record_action)
+        
+        data_menu.addSeparator()
+        
+        # 数据导出子菜单
+        export_submenu = data_menu.addMenu('数据导出(&E)')
+        
+        save_csv_action = QAction('导出CSV(&C)', self)
+        save_csv_action.triggered.connect(lambda: self.data_recording_widget._save_csv())
+        export_submenu.addAction(save_csv_action)
+        
+        save_excel_action = QAction('导出Excel(&X)', self)
+        save_excel_action.triggered.connect(lambda: self.data_recording_widget._save_excel())
+        export_submenu.addAction(save_excel_action)
+        
+        data_menu.addSeparator()
+        
+        # 图形导出
+        export_graphics_action = QAction('导出图形(&G)', self)
+        export_graphics_action.triggered.connect(self._on_export_graphics_requested)
+        data_menu.addAction(export_graphics_action)
+        
+        clear_data_action = QAction('清空数据(&L)', self)
+        clear_data_action.triggered.connect(lambda: self.data_recording_widget._clear_data())
+        data_menu.addAction(clear_data_action)
         
         # 帮助菜单
         help_menu = menubar.addMenu('帮助(&H)')
@@ -220,6 +290,9 @@ class MainWindow(QMainWindow):
         # 按键状态组件信号连接
         self.keyboard_status_widget.plot_toggled.connect(self._on_plot_toggled)
         self.keyboard_status_widget.plot_cleared.connect(self._on_plot_cleared)
+        
+        # 数据记录组件信号连接
+        self.data_recording_widget.export_graphics_requested.connect(self._on_export_graphics_requested)
     
     def _switch_controller(self, controller_name: str):
         """切换控制器"""
@@ -324,6 +397,11 @@ class MainWindow(QMainWindow):
                 fish_state = self.communication.get_fish_state()
                 if fish_state:
                     self.visualization_widget.update_data(fish_state)
+                    
+                    # 添加到数据记录器（如果有控制命令的话，使用最后的控制命令）
+                    last_command = getattr(self, '_last_control_command', None)
+                    self.data_recording_widget.add_data_point(fish_state, last_command)
+                    
             except Exception as e:
                 self._log_message(f"数据更新异常: {e}")
     
@@ -332,7 +410,10 @@ class MainWindow(QMainWindow):
         if self.communication and self.communication.connected:
             try:
                 success = self.communication.send_control_command(command)
-                if not success:
+                if success:
+                    # 记录最后的控制命令，用于数据记录
+                    self._last_control_command = command
+                else:
                     self._log_message("控制命令发送失败")
             except Exception as e:
                 self._log_message(f"控制命令发送异常: {e}")
@@ -351,6 +432,15 @@ class MainWindow(QMainWindow):
         """清空绘图数据事件"""
         self.visualization_widget.clear_data()
         self._log_message("绘图数据已清空")
+    
+    def _on_export_graphics_requested(self):
+        """处理图形导出请求"""
+        try:
+            self.data_recording_widget.export_graphics(self.visualization_widget)
+            self._log_message("图形导出完成")
+        except Exception as e:
+            self._log_message(f"图形导出失败: {e}")
+            QMessageBox.critical(self, "导出错误", f"图形导出失败: {e}")
     
     def _save_video_snapshot(self):
         """保存视频快照"""

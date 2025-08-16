@@ -63,5 +63,18 @@ VIDEO_CONFIG = {
     "default_resolution": (640, 480),
     "video_update_rate": 30,  # FPS
     "max_cameras": 10,  # 最大检测摄像头数量
-    "video_format": "RGB888"
+    "video_format": "RGB888",
+    "record_codec": "XVID",  # 视频编码格式
+    "record_fps": 30,  # 录制帧率
+    "save_directory": "records"  # 默认视频保存目录
+}
+
+# 数据记录配置
+RECORD_CONFIG = {
+    "data_save_interval": 0.1,  # 数据保存间隔(秒)
+    "auto_save_interval": 300,  # 自动保存间隔(秒)
+    "max_record_points": 10000,  # 最大记录点数
+    "data_format": "csv",  # 数据保存格式
+    "timestamp_format": "%Y%m%d_%H%M%S",
+    "save_directory": "records"  # 保存目录
 }

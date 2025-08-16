@@ -7,8 +7,10 @@ Video Display Component
 
 import cv2
 import numpy as np
+import datetime
+import os
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, 
-                             QLabel, QPushButton, QComboBox, QFrame, QMessageBox)
+                             QLabel, QPushButton, QComboBox, QFrame, QMessageBox, QFileDialog)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, pyqtSlot
 from PyQt5.QtGui import QImage, QPixmap, QFont
 
@@ -16,7 +18,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import VIDEO_CONFIG
+from config import VIDEO_CONFIG, RECORD_CONFIG
 
 class CameraThread(QThread):
     """摄像头线程类"""
@@ -32,9 +34,22 @@ class CameraThread(QThread):
         self.frame_width = VIDEO_CONFIG["default_resolution"][0]
         self.frame_height = VIDEO_CONFIG["default_resolution"][1]
         
+        # 视频录制相关
+        self.video_writer = None
+        self.recording = False
+        self.recording_start_time = None
+        self.recording_frame_count = 0
+        self.save_directory = VIDEO_CONFIG["save_directory"]  # 默认保存目录
+        self.temp_filepath = None  # 临时文件路径
+        self.target_filename = None  # 目标文件名
+        
     def set_camera_index(self, index: int):
         """设置摄像头索引"""
         self.camera_index = index
+    
+    def set_save_directory(self, directory: str):
+        """设置保存目录"""
+        self.save_directory = directory
         
     def start_capture(self):
         """开始捕获"""
@@ -45,9 +60,100 @@ class CameraThread(QThread):
     def stop_capture(self):
         """停止捕获"""
         self.running = False
+        
+        # 停止录制
+        if self.recording:
+            self.stop_recording()
+        
         if self.camera and self.camera.isOpened():
             self.camera.release()
         self.wait()
+    
+    def start_recording(self, filename: str = None) -> bool:
+        """开始录制视频"""
+        if self.recording:
+            return False
+        
+        if filename is None:
+            timestamp = datetime.datetime.now().strftime(RECORD_CONFIG["timestamp_format"])
+            filename = f"video_{timestamp}.avi"
+        
+        # 使用临时目录录制
+        temp_dir = "temp_records"
+        if not os.path.exists(temp_dir):
+            os.makedirs(temp_dir)
+        
+        self.temp_filepath = os.path.join(temp_dir, filename)
+        self.target_filename = filename  # 保存目标文件名
+        
+        try:
+            # 定义编码器
+            fourcc = cv2.VideoWriter_fourcc(*VIDEO_CONFIG["record_codec"])
+            
+            # 创建VideoWriter对象，先写到临时位置
+            self.video_writer = cv2.VideoWriter(
+                self.temp_filepath, 
+                fourcc, 
+                VIDEO_CONFIG["record_fps"], 
+                (self.frame_width, self.frame_height)
+            )
+            
+            if self.video_writer.isOpened():
+                self.recording = True
+                self.recording_start_time = datetime.datetime.now()
+                self.recording_frame_count = 0
+                print(f"开始录制视频: {self.temp_filepath}")
+                return True
+            else:
+                self.error_occurred.emit("无法创建视频文件")
+                return False
+                
+        except Exception as e:
+            self.error_occurred.emit(f"开始录制失败: {str(e)}")
+            return False
+    
+    def stop_recording(self) -> str:
+        """停止录制视频"""
+        if not self.recording:
+            return None
+        
+        self.recording = False
+        
+        if self.video_writer:
+            self.video_writer.release()
+            self.video_writer = None
+        
+        # 移动临时文件到目标目录
+        try:
+            if hasattr(self, 'temp_filepath') and os.path.exists(self.temp_filepath):
+                # 确保目标目录存在
+                if not os.path.exists(self.save_directory):
+                    os.makedirs(self.save_directory)
+                
+                # 目标文件路径
+                target_path = os.path.join(self.save_directory, self.target_filename)
+                
+                # 移动文件
+                import shutil
+                shutil.move(self.temp_filepath, target_path)
+                
+                if self.recording_start_time:
+                    duration = datetime.datetime.now() - self.recording_start_time
+                    print(f"录制完成: 时长 {duration.total_seconds():.1f}秒, 帧数 {self.recording_frame_count}")
+                
+                return target_path
+            else:
+                print("临时录制文件不存在")
+                return None
+                
+        except Exception as e:
+            print(f"移动录制文件失败: {e}")
+            # 如果移动失败，返回临时文件路径
+            return getattr(self, 'temp_filepath', None)
+    
+    def is_recording(self) -> bool:
+        """检查是否正在录制"""
+        return self.recording
         
     def run(self):
         """线程运行函数"""
@@ -66,6 +172,11 @@ class CameraThread(QThread):
             while self.running:
                 ret, frame = self.camera.read()
                 if ret:
+                    # 如果正在录制，保存帧
+                    if self.recording and self.video_writer:
+                        self.video_writer.write(frame)
+                        self.recording_frame_count += 1
+                    
                     # 发射帧信号
                     self.frame_ready.emit(frame)
                 else:
@@ -77,11 +188,19 @@ class CameraThread(QThread):
         except Exception as e:
             self.error_occurred.emit(f"摄像头线程异常: {str(e)}")
         finally:
+            # 停止录制
+            if self.recording:
+                self.stop_recording()
+            
             if self.camera and self.camera.isOpened():
                 self.camera.release()
 
 class VideoDisplayWidget(QWidget):
     """视频显示组件"""
+    
+    # 信号定义
+    recording_started = pyqtSignal(str)  # 录制开始，参数为文件名
+    recording_stopped = pyqtSignal(str)  # 录制停止，参数为文件路径
     
     def __init__(self):
         super().__init__()
@@ -123,10 +242,16 @@ class VideoDisplayWidget(QWidget):
         control_layout.addWidget(self.start_btn)
         control_layout.addWidget(self.stop_btn)
         
+        # 录制控制按钮
+        self.record_btn = QPushButton("开始录制")
+        self.record_btn.clicked.connect(self._toggle_recording)
+        self.record_btn.setEnabled(False)
+        control_layout.addWidget(self.record_btn)
+        
         # 刷新按钮
-        refresh_btn = QPushButton("刷新设备")
-        refresh_btn.clicked.connect(self._detect_cameras)
-        control_layout.addWidget(refresh_btn)
+        self.refresh_btn = QPushButton("刷新设备")
+        self.refresh_btn.clicked.connect(self._detect_cameras)
+        control_layout.addWidget(self.refresh_btn)
         
         control_layout.addStretch()
         layout.addWidget(control_group)
@@ -164,9 +289,13 @@ class VideoDisplayWidget(QWidget):
         self.fps_label = QLabel("帧率: --")
         self.fps_label.setFont(QFont("Arial", 10))
         
+        self.recording_label = QLabel("录制状态: 未录制")
+        self.recording_label.setFont(QFont("Arial", 10))
+        
         status_layout.addWidget(self.status_label)
         status_layout.addWidget(self.resolution_label)
         status_layout.addWidget(self.fps_label)
+        status_layout.addWidget(self.recording_label)
         
         layout.addWidget(status_group)
         
@@ -249,6 +378,7 @@ class VideoDisplayWidget(QWidget):
             # 更新UI状态
             self.start_btn.setEnabled(False)
             self.stop_btn.setEnabled(True)
+            self.record_btn.setEnabled(True)
             self.camera_combo.setEnabled(False)
             self.status_label.setText("摄像头状态: 运行中")
             
@@ -263,14 +393,65 @@ class VideoDisplayWidget(QWidget):
         # 更新UI状态
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        self.record_btn.setEnabled(False)
+        self.record_btn.setText("开始录制")
         self.camera_combo.setEnabled(True)
         self.status_label.setText("摄像头状态: 已停止")
+        self.recording_label.setText("录制状态: 未录制")
         
         # 清空视频显示
         self.video_label.clear()
         self.video_label.setText("摄像头已停止\n点击'开启'按钮重新开始")
         
         print("摄像头已停止")
+    
+    def _toggle_recording(self):
+        """切换录制状态"""
+        if self.camera_thread.is_recording():
+            # 停止录制时选择保存目录
+            save_dir = self._get_video_save_directory("选择视频保存目录")
+            if save_dir:
+                # 设置保存目录
+                self.camera_thread.set_save_directory(save_dir)
+                
+                filepath = self.camera_thread.stop_recording()
+                self.record_btn.setText("开始录制")
+                self.recording_label.setText("录制状态: 已停止")
+                
+                # 恢复其他按钮状态
+                self.start_btn.setEnabled(True)
+                self.stop_btn.setEnabled(True)
+                self.camera_combo.setEnabled(True)
+                self._enable_refresh_button(True)
+                
+                if filepath:
+                    self.recording_stopped.emit(filepath)
+                    print(f"录制已停止，文件: {filepath}")
+            else:
+                # 如果用户取消选择目录，继续录制
+                print("用户取消选择保存目录，继续录制")
+        else:
+            # 开始录制 - 直接开始，不选择目录
+            if self.camera_thread.start_recording():
+                self.record_btn.setText("停止录制")
+                self.recording_label.setText("录制状态: 录制中")
+                
+                # 禁用其他按钮
+                self.start_btn.setEnabled(False)
+                self.stop_btn.setEnabled(False)
+                self.camera_combo.setEnabled(False)
+                self._enable_refresh_button(False)
+                
+                timestamp = datetime.datetime.now().strftime(RECORD_CONFIG["timestamp_format"])
+                filename = f"video_{timestamp}.avi"
+                self.recording_started.emit(filename)
+                print("录制已开始")
+            else:
+                QMessageBox.warning(self, "录制失败", "无法开始录制视频")
+    
+    def _enable_refresh_button(self, enabled: bool):
+        """控制刷新按钮状态"""
+        self.refresh_btn.setEnabled(enabled)
     
     @pyqtSlot(np.ndarray)
     def _update_frame(self, frame):
@@ -329,6 +510,48 @@ class VideoDisplayWidget(QWidget):
             
             cv2.imwrite(filename, self.current_frame)
             return filename
+        return None
+    
+    def get_recording_status(self) -> dict:
+        """获取录制状态"""
+        return {
+            "is_recording": self.camera_thread.is_recording(),
+            "frame_count": getattr(self.camera_thread, 'recording_frame_count', 0),
+            "start_time": getattr(self.camera_thread, 'recording_start_time', None)
+        }
+    
+    def _get_video_save_directory(self, title: str) -> str:
+        """获取视频保存目录"""
+        import datetime
+        
+        # 创建默认目录路径，并确保父目录存在
+        default_dir = f"records/{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        # 确保默认目录的父目录存在
+        parent_dir = os.path.dirname(default_dir)
+        if parent_dir and not os.path.exists(parent_dir):
+            try:
+                os.makedirs(parent_dir, exist_ok=True)
+            except Exception as e:
+                print(f"创建父目录失败: {e}")
+                default_dir = "."  # 使用当前目录作为备用
+        
+        selected_dir = QFileDialog.getExistingDirectory(
+            self,
+            title, 
+            default_dir,
+            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
+        )
+        
+        if selected_dir:
+            # 确保目录存在
+            try:
+                os.makedirs(selected_dir, exist_ok=True)
+                print(f"选择的视频保存目录: {selected_dir}")
+                return selected_dir
+            except Exception as e:
+                print(f"创建选择的目录失败: {e}")
+                return None
         return None
     
     def closeEvent(self, event):

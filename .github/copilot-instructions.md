@@ -1,0 +1,3 @@
+总是用中文回答。
+当前使用的系统是win11，命令终端使用powershell。
+使用终端运行python程序或者安装包时一定一定记得conda activate qt5激活python环境。

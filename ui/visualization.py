@@ -8,8 +8,8 @@ Data Visualization Components
 import numpy as np
 import pyqtgraph as pg
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
-                             QLabel, QGroupBox, QGridLayout)
-from PyQt5.QtCore import QTimer, pyqtSignal
+                             QLabel, QGroupBox, QGridLayout, QSizePolicy)
+from PyQt5.QtCore import QTimer, pyqtSignal, Qt
 from PyQt5.QtGui import QFont
 import time
 from collections import deque
@@ -153,39 +153,274 @@ class DataVisualizationWidget(QWidget):
         
         layout.addWidget(values_group)
         
-        # 3D姿态可视化（简化版，使用方块表示）
-        attitude_group = QGroupBox("姿态可视化")
+        
+        # 3D姿态可视化（使用OpenGL）
+        attitude_group = QGroupBox("3D姿态可视化 (鼠标拖拽旋转视角)")
         attitude_layout = QVBoxLayout(attitude_group)
         
-        self.attitude_plot = pg.PlotWidget()
-        self.attitude_plot.setAspectLocked(True)
-        self.attitude_plot.setXRange(-2, 2)
-        self.attitude_plot.setYRange(-2, 2)
-        self.attitude_plot.hideAxis('left')
-        self.attitude_plot.hideAxis('bottom')
-        self.attitude_plot.setTitle("机器鱼姿态 (俯视图)")
+        self._3d_enabled = False
+        try:
+            import pyqtgraph.opengl as gl
+            print("PyQtGraph OpenGL导入成功")
+            
+            # 创建3D视图
+            self.gl_widget = gl.GLViewWidget()
+            self.gl_widget.setCameraPosition(distance=5, elevation=30, azimuth=45)
+            self.gl_widget.setBackgroundColor('w')  # 白色背景
+            # 设置最小尺寸，确保视图可见
+            self.gl_widget.setMinimumSize(400, 300)
+            self.gl_widget.setSizePolicy(
+                QSizePolicy.Expanding,
+                QSizePolicy.Expanding
+            )
+            print("GLViewWidget创建成功")
+            
+            # 添加坐标网格
+            grid = gl.GLGridItem()
+            grid.scale(1, 1, 1)
+            grid.setDepthValue(10)
+            self.gl_widget.addItem(grid)
+            print("坐标网格添加成功")
+            
+            # 添加坐标轴
+            axis = gl.GLAxisItem()
+            axis.setSize(2, 2, 2)
+            self.gl_widget.addItem(axis)
+            print("坐标轴添加成功")
+            
+            # 创建鱼形3D模型
+            self._create_fish_3d_model()
+            print("3D鱼形模型创建成功")
+            
+            # 确保视图可见
+            self.gl_widget.show()
+            attitude_layout.addWidget(self.gl_widget)
+            self._3d_enabled = True
+            print("3D视图启用成功")
+            
+        except ImportError as e:
+            print(f"OpenGL导入失败: {e}")
+            fallback_label = QLabel(f"3D显示不可用 (需要PyOpenGL)\n请安装: pip install PyOpenGL PyOpenGL_accelerate\n错误: {e}")
+            fallback_label.setAlignment(Qt.AlignCenter)
+            attitude_layout.addWidget(fallback_label)
+        except Exception as e:
+            print(f"3D视图创建失败: {e}")
+            import traceback
+            traceback.print_exc()
+            fallback_label = QLabel(f"3D显示初始化失败\n错误: {str(e)[:100]}")
+            fallback_label.setAlignment(Qt.AlignCenter)
+            attitude_layout.addWidget(fallback_label)
         
-        # 鱼的形状表示（简化为椭圆）
-        from PyQt5.QtWidgets import QGraphicsEllipseItem
-        self.fish_shape = QGraphicsEllipseItem(-0.5, -0.2, 1.0, 0.4)
-        self.fish_shape.setBrush(pg.mkBrush(color='lightblue'))
-        self.fish_shape.setPen(pg.mkPen(color='blue', width=2))
-        self.attitude_plot.addItem(self.fish_shape)
-        
-        # 方向指示器
-        self.direction_arrow = pg.ArrowItem(angle=0, tipAngle=30, baseAngle=20, 
-                                          headLen=20, tailLen=20, tailWidth=5,
-                                          pen=pg.mkPen(color='red', width=3),
-                                          brush=pg.mkBrush(color='red'))
-        self.attitude_plot.addItem(self.direction_arrow)
-        
-        attitude_layout.addWidget(self.attitude_plot)
         layout.addWidget(attitude_group)
-        
         layout.addStretch()
         
         return widget
     
+    def _create_fish_3d_model(self):
+        """创建3D鱼形模型（兼容版）"""
+        import pyqtgraph.opengl as gl
+        
+        # 鱼身体参数
+        body_length = 1.2
+        body_width = 0.3
+        body_height = 0.25
+        
+        # 创建更流线型的鱼身体（增加顶点让形状更圆滑）
+        verts = np.array([
+            # 鱼头尖端
+            [body_length/2, 0, 0],
+            
+            # 头部截面（较小）
+            [body_length/3, body_width*0.4, body_height*0.3],
+            [body_length/3, body_width*0.2, body_height*0.5],
+            [body_length/3, -body_width*0.2, body_height*0.5],
+            [body_length/3, -body_width*0.4, body_height*0.3],
+            [body_length/3, -body_width*0.4, -body_height*0.3],
+            [body_length/3, -body_width*0.2, -body_height*0.5],
+            [body_length/3, body_width*0.2, -body_height*0.5],
+            [body_length/3, body_width*0.4, -body_height*0.3],
+            
+            # 身体中部（最粗）
+            [0, body_width*0.7, body_height*0.5],
+            [0, body_width*0.5, body_height*0.8],
+            [0, -body_width*0.5, body_height*0.8],
+            [0, -body_width*0.7, body_height*0.5],
+            [0, -body_width*0.7, -body_height*0.5],
+            [0, -body_width*0.5, -body_height*0.8],
+            [0, body_width*0.5, -body_height*0.8],
+            [0, body_width*0.7, -body_height*0.5],
+            
+            # 尾部收窄
+            [-body_length*0.35, body_width*0.3, body_height*0.2],
+            [-body_length*0.35, -body_width*0.3, body_height*0.2],
+            [-body_length*0.35, -body_width*0.3, -body_height*0.2],
+            [-body_length*0.35, body_width*0.3, -body_height*0.2],
+            
+            # 尾巴根部
+            [-body_length/2, 0, 0],
+            
+            # 月牙形尾巴上叶
+            [-body_length/2 - 0.15, 0, 0.15],
+            [-body_length/2 - 0.3, 0, 0.25],
+            [-body_length/2 - 0.4, 0, 0.2],
+            
+            # 尾巴尖端
+            [-body_length/2 - 0.45, 0, 0],
+            
+            # 月牙形尾巴下叶
+            [-body_length/2 - 0.4, 0, -0.2],
+            [-body_length/2 - 0.3, 0, -0.25],
+            [-body_length/2 - 0.15, 0, -0.15],
+        ], dtype=float)
+        
+        # 定义三角面
+        faces = []
+        
+        # 头部锥形（0是尖端，1-8是第一圈）
+        for i in range(1, 9):
+            next_i = i + 1 if i < 8 else 1
+            faces.append([0, i, next_i])
+        
+        # 第一圈到第二圈（1-8 到 9-16）
+        for i in range(8):
+            curr = i + 1
+            next = (i + 1) % 8 + 1
+            curr2 = i + 9
+            next2 = (i + 1) % 8 + 9
+            faces.append([curr, curr2, next2])
+            faces.append([curr, next2, next])
+        
+        # 第二圈到第三圈（9-16 到 17-20）
+        faces.extend([
+            [9, 17, 10], [10, 17, 18], [10, 18, 11],
+            [11, 18, 19], [11, 19, 12], [12, 19, 13],
+            [13, 19, 20], [13, 20, 14], [14, 20, 15],
+            [15, 20, 17], [15, 17, 16], [16, 17, 9],
+        ])
+        
+        # 第三圈到尾根（17-20 到 21）
+        faces.extend([
+            [17, 21, 18], [18, 21, 19],
+            [19, 21, 20], [20, 21, 17],
+        ])
+        
+        # 尾巴上叶（21-22-23-24-25）
+        faces.extend([
+            [21, 22, 23], [21, 23, 24],
+            [21, 24, 25],
+        ])
+        
+        # 尾巴下叶（21-28-27-26-25）
+        faces.extend([
+            [21, 28, 27], [21, 27, 26],
+            [21, 26, 25],
+        ])
+        
+        faces = np.array(faces, dtype=np.uint32)
+        
+        # 橙红色锦鲤配色
+        colors = np.ones((len(faces), 4))
+        colors[:, 0] = 0.9   # R
+        colors[:, 1] = 0.45  # G
+        colors[:, 2] = 0.15  # B
+        colors[:, 3] = 0.95  # Alpha
+        
+        # 尾巴颜色稍深
+        tail_start_face = len(faces) - 6
+        colors[tail_start_face:, 0] = 0.8
+        colors[tail_start_face:, 1] = 0.35
+        colors[tail_start_face:, 2] = 0.1
+        
+        # 创建鱼身网格（启用轮廓线）
+        self.fish_mesh = gl.GLMeshItem(
+            vertexes=verts,
+            faces=faces,
+            faceColors=colors,
+            smooth=True,
+            drawEdges=True,  # 启用边缘绘制
+            edgeColor=(0.3, 0.15, 0.05, 1)  # 深褐色轮廓
+        )
+        self.gl_widget.addItem(self.fish_mesh)
+        
+        # === 添加胸鳍（两侧） ===
+        fin_base_x = body_length/4  # 胸鳍位置（靠前）
+        fin_length = 0.3
+        fin_width = 0.15
+        
+        # 右侧胸鳍
+        right_fin_verts = np.array([
+            [fin_base_x, body_width*0.5, 0],  # 基部上
+            [fin_base_x - 0.1, body_width*0.5, -0.05],  # 基部下
+            [fin_base_x, body_width*0.5 + fin_length, fin_width],  # 鳍尖上
+            [fin_base_x - 0.15, body_width*0.5 + fin_length*0.8, -fin_width*0.5],  # 鳍尖下
+        ], dtype=float)
+        
+        right_fin_faces = np.array([
+            [0, 2, 1], [1, 2, 3],
+            [0, 1, 3], [0, 3, 2],  # 双面
+        ], dtype=np.uint32)
+        
+        right_fin_colors = np.ones((len(right_fin_faces), 4))
+        right_fin_colors[:, :3] = [0.85, 0.4, 0.12]  # 稍深的橙色
+        right_fin_colors[:, 3] = 0.9
+        
+        right_fin = gl.GLMeshItem(
+            vertexes=right_fin_verts,
+            faces=right_fin_faces,
+            faceColors=right_fin_colors,
+            smooth=True,
+            drawEdges=True,
+            edgeColor=(0.3, 0.15, 0.05, 1)
+        )
+        self.gl_widget.addItem(right_fin)
+        self.right_fin = right_fin  # 保存引用用于旋转
+        
+        # 左侧胸鳍（镜像）
+        left_fin_verts = right_fin_verts.copy()
+        left_fin_verts[:, 1] *= -1  # Y坐标取反
+        
+        left_fin = gl.GLMeshItem(
+            vertexes=left_fin_verts,
+            faces=right_fin_faces,
+            faceColors=right_fin_colors,
+            smooth=True,
+            drawEdges=True,
+            edgeColor=(0.3, 0.15, 0.05, 1)
+        )
+        self.gl_widget.addItem(left_fin)
+        self.left_fin = left_fin  # 保存引用用于旋转
+
+        
+        # 方向箭头
+        arrow_verts = np.array([
+            [body_length/2 + 0.1, 0, 0],
+            [body_length/2 + 0.5, 0, 0],
+        ])
+        self.direction_line = gl.GLLinePlotItem(
+            pos=arrow_verts,
+            color=(1, 0, 0, 1),
+            width=4,
+            antialias=True
+        )
+        self.gl_widget.addItem(self.direction_line)
+        
+        # 箭头尖
+        arrow_head = np.array([
+            [body_length/2 + 0.5, 0, 0],
+            [body_length/2 + 0.35, 0.08, 0],
+            [body_length/2 + 0.35, -0.08, 0],
+            [body_length/2 + 0.5, 0, 0],
+        ])
+        self.arrow_head = gl.GLLinePlotItem(
+            pos=arrow_head,
+            color=(1, 0, 0, 1),
+            width=4,
+            antialias=True,
+            mode='line_strip'
+        )
+        self.gl_widget.addItem(self.arrow_head)
+
+
     def update_data(self, fish_state: FishState):
         """更新数据"""
         # 检查绘图是否开启
@@ -236,8 +471,10 @@ class DataVisualizationWidget(QWidget):
         self.yaw_curve.setData(times, yaw_data)
         
         # 更新姿态可视化
-        if yaw_data:
-            self._update_attitude_visualization(yaw_data[-1])
+        if roll_data and pitch_data and yaw_data:
+            self._update_attitude_visualization(
+                roll_data[-1], pitch_data[-1], yaw_data[-1]
+            )
     
     def _update_value_labels(self, fish_state: FishState):
         """更新数值标签"""
@@ -251,16 +488,65 @@ class DataVisualizationWidget(QWidget):
         self.pitch_label.setText(f"Pitch: {fish_state.orientation['pitch']:.3f}")
         self.yaw_label.setText(f"Yaw: {fish_state.orientation['yaw']:.3f}")
     
-    def _update_attitude_visualization(self, yaw_angle: float):
-        """更新姿态可视化"""
-        # 旋转鱼的形状
-        from PyQt5.QtGui import QTransform
-        transform = QTransform()
-        transform.rotate(np.degrees(yaw_angle))
-        self.fish_shape.setTransform(transform)
+    def _update_attitude_visualization(self, roll: float, pitch: float, yaw: float):
+        """更新3D姿态可视化"""
+        if not hasattr(self, '_3d_enabled') or not self._3d_enabled:
+            return
         
-        # 更新方向箭头
-        self.direction_arrow.setStyle(angle=np.degrees(yaw_angle))
+        try:
+            from pyqtgraph.opengl import GLMeshItem
+            from PyQt5.QtGui import QMatrix4x4
+            
+            # 创建QMatrix4x4旋转矩阵
+            transform = QMatrix4x4()
+            transform.setToIdentity()
+            
+            # 应用旋转 - ZYX顺序 (yaw -> pitch -> roll)
+            # 注意: pyqtgraph使用度数
+            transform.rotate(np.degrees(-yaw), 0, 0, 1)    # 绕Z轴旋转 (yaw，反转)
+            transform.rotate(np.degrees(-pitch), 0, 1, 0)  # 绕Y轴旋转 (pitch，反转)
+            transform.rotate(np.degrees(roll), 1, 0, 0)   # 绕X轴旋转 (roll)
+            
+            # 应用到鱼模型和胸鳍
+            self.fish_mesh.setTransform(transform)
+            if hasattr(self, 'right_fin'):
+                self.right_fin.setTransform(transform)
+            if hasattr(self, 'left_fin'):
+                self.left_fin.setTransform(transform)
+            
+            # 更新方向箭头
+            # 计算旋转后的箭头位置
+            body_length = 1.5
+            arrow_start = np.array([body_length/2 + 0.1, 0, 0])
+            arrow_end = np.array([body_length/2 + 0.6, 0, 0])
+            
+            # 使用numpy计算旋转
+            cos_r, sin_r = np.cos(roll), np.sin(roll)
+            cos_p, sin_p = np.cos(-pitch), np.sin(-pitch)  # 反转pitch
+            cos_y, sin_y = np.cos(-yaw), np.sin(-yaw)      # 反转yaw
+            
+            # ZYX旋转矩阵
+            R = np.array([
+                [cos_y*cos_p, cos_y*sin_p*sin_r - sin_y*cos_r, cos_y*sin_p*cos_r + sin_y*sin_r],
+                [sin_y*cos_p, sin_y*sin_p*sin_r + cos_y*cos_r, sin_y*sin_p*cos_r - cos_y*sin_r],
+                [-sin_p, cos_p*sin_r, cos_p*cos_r]
+            ])
+            
+            rotated_start = R @ arrow_start
+            rotated_end = R @ arrow_end
+            
+            self.direction_line.setData(pos=np.array([rotated_start, rotated_end]))
+            
+            # 箭头头部
+            head1 = np.array([body_length/2 + 0.4, 0.1, 0])
+            head2 = np.array([body_length/2 + 0.4, -0.1, 0])
+            rotated_head1 = R @ head1
+            rotated_head2 = R @ head2
+            
+            self.arrow_head.setData(pos=np.array([rotated_end, rotated_head1, rotated_head2]))
+            
+        except Exception as e:
+            print(f"姿态更新异常: {e}")
     
     def clear_data(self):
         """清空数据"""

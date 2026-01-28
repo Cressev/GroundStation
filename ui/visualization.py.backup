@@ -1,0 +1,476 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+数据可视化组件
+Data Visualization Components
+"""
+
+import numpy as np
+import pyqtgraph as pg
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
+                             QLabel, QGroupBox, QGridLayout, QSizePolicy)
+from PyQt5.QtCore import QTimer, pyqtSignal, Qt
+from PyQt5.QtGui import QFont
+import time
+from collections import deque
+
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from communication.base import FishState
+from config import PLOT_UPDATE_RATE, PLOT_HISTORY_LENGTH, UI_CONFIG
+
+class DataVisualizationWidget(QWidget):
+    """数据可视化主组件"""
+    
+    def __init__(self):
+        super().__init__()
+        self.data_history = {
+            'time': deque(maxlen=PLOT_HISTORY_LENGTH),
+            'x': deque(maxlen=PLOT_HISTORY_LENGTH),
+            'y': deque(maxlen=PLOT_HISTORY_LENGTH), 
+            'z': deque(maxlen=PLOT_HISTORY_LENGTH),
+            'roll': deque(maxlen=PLOT_HISTORY_LENGTH),
+            'pitch': deque(maxlen=PLOT_HISTORY_LENGTH),
+            'yaw': deque(maxlen=PLOT_HISTORY_LENGTH)
+        }
+        
+        self.start_time = time.time()
+        self.plot_enabled = True  # 绘图开关状态
+        self._init_ui()
+        
+        # 更新定时器
+        self.update_timer = QTimer()
+        self.update_timer.timeout.connect(self._update_plots)
+        self.update_timer.start(1000 // PLOT_UPDATE_RATE)  # 转换为毫秒
+        
+    def _init_ui(self):
+        """初始化用户界面"""
+        layout = QVBoxLayout(self)
+        
+        # 创建标签页
+        tab_widget = QTabWidget()
+        
+        # XY平面图标签
+        xy_tab = self._create_xy_plot_tab()
+        tab_widget.addTab(xy_tab, "XY轨迹图")
+        
+        # 时间序列图标签
+        time_series_tab = self._create_time_series_tab()
+        tab_widget.addTab(time_series_tab, "时间序列")
+        
+        # 姿态显示标签
+        attitude_tab = self._create_attitude_tab()
+        tab_widget.addTab(attitude_tab, "姿态显示")
+        
+        layout.addWidget(tab_widget)
+        
+    def _create_xy_plot_tab(self):
+        """创建XY轨迹图标签"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        # XY轨迹图
+        self.xy_plot = pg.PlotWidget(title="XY平面轨迹")
+        self.xy_plot.setLabel('left', 'Y位置 (m)')
+        self.xy_plot.setLabel('bottom', 'X位置 (m)')
+        self.xy_plot.setAspectLocked(True)
+        self.xy_plot.showGrid(x=True, y=True)
+        
+        # 添加图例（在创建曲线之前）
+        self.xy_plot.addLegend()
+        
+        # 轨迹线
+        self.xy_curve = self.xy_plot.plot(pen=pg.mkPen(color='blue', width=2), name='轨迹')
+        # 当前位置点
+        self.xy_point = self.xy_plot.plot(pen=None, symbol='o', symbolBrush='red', symbolSize=8, name='当前位置')
+        
+        layout.addWidget(self.xy_plot)
+        
+        return widget
+    
+    def _create_time_series_tab(self):
+        """创建时间序列图标签"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        # Z-t图
+        self.z_plot = pg.PlotWidget(title="深度-时间图")
+        self.z_plot.setLabel('left', 'Z位置 (m)')
+        self.z_plot.setLabel('bottom', '时间 (s)')
+        self.z_plot.showGrid(x=True, y=True)
+        
+        # 添加图例（在创建曲线之前）
+        self.z_plot.addLegend()
+        
+        self.z_curve = self.z_plot.plot(pen=pg.mkPen(color=UI_CONFIG["plot_colors"]["z"], width=2), name='深度')
+        
+        # RPY-t图
+        self.rpy_plot = pg.PlotWidget(title="姿态角-时间图")
+        self.rpy_plot.setLabel('left', '角度 (rad)')
+        self.rpy_plot.setLabel('bottom', '时间 (s)')
+        self.rpy_plot.showGrid(x=True, y=True)
+        
+        # 添加图例（在创建曲线之前）
+        self.rpy_plot.addLegend()
+        
+        self.roll_curve = self.rpy_plot.plot(pen=pg.mkPen(color=UI_CONFIG["plot_colors"]["roll"], width=2), name='Roll')
+        self.pitch_curve = self.rpy_plot.plot(pen=pg.mkPen(color=UI_CONFIG["plot_colors"]["pitch"], width=2), name='Pitch')
+        self.yaw_curve = self.rpy_plot.plot(pen=pg.mkPen(color=UI_CONFIG["plot_colors"]["yaw"], width=2), name='Yaw')
+        
+        layout.addWidget(self.z_plot)
+        layout.addWidget(self.rpy_plot)
+        
+        return widget
+    
+    def _create_attitude_tab(self):
+        """创建姿态显示标签"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        # 数值显示区域
+        values_group = QGroupBox("当前数值")
+        values_layout = QGridLayout(values_group)
+        
+        # 位置显示
+        values_layout.addWidget(QLabel("位置 (m):"), 0, 0)
+        self.pos_x_label = QLabel("X: 0.000")
+        self.pos_y_label = QLabel("Y: 0.000") 
+        self.pos_z_label = QLabel("Z: 0.000")
+        values_layout.addWidget(self.pos_x_label, 0, 1)
+        values_layout.addWidget(self.pos_y_label, 0, 2)
+        values_layout.addWidget(self.pos_z_label, 0, 3)
+        
+        # 姿态显示
+        values_layout.addWidget(QLabel("姿态 (rad):"), 1, 0)
+        self.roll_label = QLabel("Roll: 0.000")
+        self.pitch_label = QLabel("Pitch: 0.000")
+        self.yaw_label = QLabel("Yaw: 0.000")
+        values_layout.addWidget(self.roll_label, 1, 1)
+        values_layout.addWidget(self.pitch_label, 1, 2)
+        values_layout.addWidget(self.yaw_label, 1, 3)
+        
+        layout.addWidget(values_group)
+        
+        
+        # 3D姿态可视化（使用OpenGL）
+        attitude_group = QGroupBox("3D姿态可视化 (鼠标拖拽旋转视角)")
+        attitude_layout = QVBoxLayout(attitude_group)
+        
+        self._3d_enabled = False
+        try:
+            import pyqtgraph.opengl as gl
+            print("PyQtGraph OpenGL导入成功")
+            
+            # 创建3D视图
+            self.gl_widget = gl.GLViewWidget()
+            self.gl_widget.setCameraPosition(distance=5, elevation=30, azimuth=45)
+            self.gl_widget.setBackgroundColor('w')  # 白色背景
+            # 设置最小尺寸，确保视图可见
+            self.gl_widget.setMinimumSize(400, 300)
+            self.gl_widget.setSizePolicy(
+                QSizePolicy.Expanding,
+                QSizePolicy.Expanding
+            )
+            print("GLViewWidget创建成功")
+            
+            # 添加坐标网格
+            grid = gl.GLGridItem()
+            grid.scale(1, 1, 1)
+            grid.setDepthValue(10)
+            self.gl_widget.addItem(grid)
+            print("坐标网格添加成功")
+            
+            # 添加坐标轴
+            axis = gl.GLAxisItem()
+            axis.setSize(2, 2, 2)
+            self.gl_widget.addItem(axis)
+            print("坐标轴添加成功")
+            
+            # 创建鱼形3D模型
+            self._create_fish_3d_model()
+            print("3D鱼形模型创建成功")
+            
+            # 确保视图可见
+            self.gl_widget.show()
+            attitude_layout.addWidget(self.gl_widget)
+            self._3d_enabled = True
+            print("3D视图启用成功")
+            
+        except ImportError as e:
+            print(f"OpenGL导入失败: {e}")
+            fallback_label = QLabel(f"3D显示不可用 (需要PyOpenGL)\n请安装: pip install PyOpenGL PyOpenGL_accelerate\n错误: {e}")
+            fallback_label.setAlignment(Qt.AlignCenter)
+            attitude_layout.addWidget(fallback_label)
+        except Exception as e:
+            print(f"3D视图创建失败: {e}")
+            import traceback
+            traceback.print_exc()
+            fallback_label = QLabel(f"3D显示初始化失败\n错误: {str(e)[:100]}")
+            fallback_label.setAlignment(Qt.AlignCenter)
+            attitude_layout.addWidget(fallback_label)
+        
+        layout.addWidget(attitude_group)
+        layout.addStretch()
+        
+        return widget
+    
+    def _create_fish_3d_model(self):
+        """创建3D鱼形模型"""
+        import pyqtgraph.opengl as gl
+        
+        # 鱼身体顶点 (流线型形状)
+        # 使用简化的mesh表示鱼
+        body_length = 1.5
+        body_width = 0.4
+        body_height = 0.3
+        
+        # 鱼身体的顶点 (简化的六面体+尾巴)
+        verts = np.array([
+            # 鱼头 (尖端)
+            [body_length/2, 0, 0],
+            # 鱼身体上部
+            [body_length/4, body_width/2, body_height/2],
+            [body_length/4, -body_width/2, body_height/2],
+            [-body_length/4, body_width/2, body_height/2],
+            [-body_length/4, -body_width/2, body_height/2],
+            # 鱼身体下部
+            [body_length/4, body_width/2, -body_height/2],
+            [body_length/4, -body_width/2, -body_height/2],
+            [-body_length/4, body_width/2, -body_height/2],
+            [-body_length/4, -body_width/2, -body_height/2],
+            # 尾巴根部
+            [-body_length/2, 0, 0],
+            # 尾巴尖端
+            [-body_length/2 - 0.4, 0.3, 0],
+            [-body_length/2 - 0.4, -0.3, 0],
+        ])
+        
+        # 三角面定义
+        faces = np.array([
+            # 头部
+            [0, 1, 2], [0, 2, 6], [0, 6, 5], [0, 5, 1],
+            # 上表面
+            [1, 3, 4], [1, 4, 2],
+            # 下表面
+            [5, 6, 8], [5, 8, 7],
+            # 右侧
+            [1, 5, 7], [1, 7, 3],
+            # 左侧
+            [2, 4, 8], [2, 8, 6],
+            # 后部
+            [3, 7, 8], [3, 8, 4],
+            # 尾巴
+            [9, 10, 11],
+            [3, 9, 10], [4, 9, 11],
+            [7, 9, 10], [8, 9, 11],
+        ])
+        
+        # 颜色 (淡蓝色)
+        colors = np.ones((len(faces), 4))
+        colors[:, 0] = 0.4  # R
+        colors[:, 1] = 0.6  # G
+        colors[:, 2] = 0.9  # B
+        colors[:, 3] = 0.8  # Alpha
+        
+        # 创建网格
+        self.fish_mesh = gl.GLMeshItem(
+            vertexes=verts,
+            faces=faces,
+            faceColors=colors,
+            smooth=True,
+            drawEdges=True,
+            edgeColor=(0, 0, 0.5, 1)
+        )
+        self.gl_widget.addItem(self.fish_mesh)
+        
+        # 添加方向箭头 (沿X轴正方向)
+        arrow_verts = np.array([
+            [body_length/2 + 0.1, 0, 0],
+            [body_length/2 + 0.6, 0, 0],
+        ])
+        self.direction_line = gl.GLLinePlotItem(
+            pos=arrow_verts,
+            color=(1, 0, 0, 1),
+            width=4,
+            antialias=True
+        )
+        self.gl_widget.addItem(self.direction_line)
+        
+        # 箭头头部
+        arrow_head = np.array([
+            [body_length/2 + 0.6, 0, 0],
+            [body_length/2 + 0.4, 0.1, 0],
+            [body_length/2 + 0.4, -0.1, 0],
+        ])
+        self.arrow_head = gl.GLLinePlotItem(
+            pos=arrow_head,
+            color=(1, 0, 0, 1),
+            width=4,
+            antialias=True,
+            mode='line_strip'
+        )
+        self.gl_widget.addItem(self.arrow_head)
+    
+    def update_data(self, fish_state: FishState):
+        """更新数据"""
+        # 检查绘图是否开启
+        if not self.plot_enabled:
+            return
+            
+        current_time = time.time() - self.start_time
+        
+        # 添加新数据
+        self.data_history['time'].append(current_time)
+        self.data_history['x'].append(fish_state.position['x'])
+        self.data_history['y'].append(fish_state.position['y'])
+        self.data_history['z'].append(fish_state.position['z'])
+        self.data_history['roll'].append(fish_state.orientation['roll'])
+        self.data_history['pitch'].append(fish_state.orientation['pitch'])
+        self.data_history['yaw'].append(fish_state.orientation['yaw'])
+        
+        # 更新数值标签
+        self._update_value_labels(fish_state)
+        
+    def _update_plots(self):
+        """更新图表"""
+        if len(self.data_history['time']) < 2:
+            return
+            
+        times = list(self.data_history['time'])
+        
+        # 更新XY轨迹图
+        x_data = list(self.data_history['x'])
+        y_data = list(self.data_history['y'])
+        self.xy_curve.setData(x_data, y_data)
+        
+        # 更新当前位置点
+        if x_data and y_data:
+            self.xy_point.setData([x_data[-1]], [y_data[-1]])
+        
+        # 更新Z-t图
+        z_data = list(self.data_history['z'])
+        self.z_curve.setData(times, z_data)
+        
+        # 更新RPY-t图
+        roll_data = list(self.data_history['roll'])
+        pitch_data = list(self.data_history['pitch'])
+        yaw_data = list(self.data_history['yaw'])
+        
+        self.roll_curve.setData(times, roll_data)
+        self.pitch_curve.setData(times, pitch_data)
+        self.yaw_curve.setData(times, yaw_data)
+        
+        # 更新姿态可视化
+        if roll_data and pitch_data and yaw_data:
+            self._update_attitude_visualization(
+                roll_data[-1], pitch_data[-1], yaw_data[-1]
+            )
+    
+    def _update_value_labels(self, fish_state: FishState):
+        """更新数值标签"""
+        # 位置标签
+        self.pos_x_label.setText(f"X: {fish_state.position['x']:.3f}")
+        self.pos_y_label.setText(f"Y: {fish_state.position['y']:.3f}")
+        self.pos_z_label.setText(f"Z: {fish_state.position['z']:.3f}")
+        
+        # 姿态标签
+        self.roll_label.setText(f"Roll: {fish_state.orientation['roll']:.3f}")
+        self.pitch_label.setText(f"Pitch: {fish_state.orientation['pitch']:.3f}")
+        self.yaw_label.setText(f"Yaw: {fish_state.orientation['yaw']:.3f}")
+    
+    def _update_attitude_visualization(self, roll: float, pitch: float, yaw: float):
+        """更新3D姿态可视化"""
+        if not hasattr(self, '_3d_enabled') or not self._3d_enabled:
+            return
+        
+        try:
+            from pyqtgraph.opengl import GLMeshItem
+            from PyQt5.QtGui import QMatrix4x4
+            
+            # 创建QMatrix4x4旋转矩阵
+            transform = QMatrix4x4()
+            transform.setToIdentity()
+            
+            # 应用旋转 - ZYX顺序 (yaw -> pitch -> roll)
+            # 注意: pyqtgraph使用度数
+            transform.rotate(np.degrees(yaw), 0, 0, 1)    # 绕Z轴旋转 (yaw)
+            transform.rotate(np.degrees(pitch), 0, 1, 0)  # 绕Y轴旋转 (pitch)
+            transform.rotate(np.degrees(roll), 1, 0, 0)   # 绕X轴旋转 (roll)
+            
+            # 应用到鱼模型
+            self.fish_mesh.setTransform(transform)
+            
+            # 更新方向箭头
+            # 计算旋转后的箭头位置
+            body_length = 1.5
+            arrow_start = np.array([body_length/2 + 0.1, 0, 0])
+            arrow_end = np.array([body_length/2 + 0.6, 0, 0])
+            
+            # 使用numpy计算旋转
+            cos_r, sin_r = np.cos(roll), np.sin(roll)
+            cos_p, sin_p = np.cos(pitch), np.sin(pitch)
+            cos_y, sin_y = np.cos(yaw), np.sin(yaw)
+            
+            # ZYX旋转矩阵
+            R = np.array([
+                [cos_y*cos_p, cos_y*sin_p*sin_r - sin_y*cos_r, cos_y*sin_p*cos_r + sin_y*sin_r],
+                [sin_y*cos_p, sin_y*sin_p*sin_r + cos_y*cos_r, sin_y*sin_p*cos_r - cos_y*sin_r],
+                [-sin_p, cos_p*sin_r, cos_p*cos_r]
+            ])
+            
+            rotated_start = R @ arrow_start
+            rotated_end = R @ arrow_end
+            
+            self.direction_line.setData(pos=np.array([rotated_start, rotated_end]))
+            
+            # 箭头头部
+            head1 = np.array([body_length/2 + 0.4, 0.1, 0])
+            head2 = np.array([body_length/2 + 0.4, -0.1, 0])
+            rotated_head1 = R @ head1
+            rotated_head2 = R @ head2
+            
+            self.arrow_head.setData(pos=np.array([rotated_end, rotated_head1, rotated_head2]))
+            
+        except Exception as e:
+            print(f"姿态更新异常: {e}")
+    
+    def clear_data(self):
+        """清空数据"""
+        for key in self.data_history:
+            self.data_history[key].clear()
+        self.start_time = time.time()
+        
+        # 清空图表显示
+        self.xy_curve.setData([], [])
+        self.xy_point.setData([], [])
+        self.z_curve.setData([], [])
+        self.roll_curve.setData([], [])
+        self.pitch_curve.setData([], [])
+        self.yaw_curve.setData([], [])
+    
+    def set_plot_enabled(self, enabled: bool):
+        """设置绘图开关状态"""
+        self.plot_enabled = enabled
+        
+        # 如果禁用绘图，可以添加一些视觉提示
+        if not enabled:
+            # 为所有图表添加暂停提示
+            for plot_widget in [self.xy_plot, self.z_plot, self.rpy_plot]:
+                if not hasattr(plot_widget, '_pause_text'):
+                    pause_text = pg.TextItem("绘图已暂停", color='red', anchor=(0.5, 0.5))
+                    pause_text.setPos(0, 0)
+                    plot_widget.addItem(pause_text)
+                    plot_widget._pause_text = pause_text
+                else:
+                    plot_widget._pause_text.show()
+        else:
+            # 移除暂停提示
+            for plot_widget in [self.xy_plot, self.z_plot, self.rpy_plot]:
+                if hasattr(plot_widget, '_pause_text'):
+                    plot_widget._pause_text.hide()
+    
+    def get_plot_enabled(self) -> bool:
+        """获取绘图开关状态"""
+        return self.plot_enabled

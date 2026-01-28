@@ -1,0 +1,183 @@
+    def _create_fish_3d_model(self):
+        """创建3D鲤鱼模型"""
+        import pyqtgraph.opengl as gl
+        
+        # === 创建流线型鱼身体（椭圆体）===
+        body_length = 1.2
+        body_width = 0.25   # 瘦一些
+        body_height = 0.2   # 扁一些
+        
+        # 沿X轴创建多个截面
+        num_sections = 12
+        num_points_per_section = 16
+        
+        verts = []
+        verts.append([body_length/2, 0, 0])  # 鱼头尖端
+        
+        # 身体截面（渐变的椭圆）
+        for i in range(1, num_sections):
+            x = body_length/2 - (i / num_sections) * body_length
+            t = i / num_sections
+            if t < 0.3:
+                scale = t / 0.3
+            elif t < 0.7:
+                scale = 1.0
+            else:
+                scale = 1.0 - (t - 0.7) / 0.3
+            
+            width = body_width * scale
+            height = body_height * scale
+            
+            for j in range(num_points_per_section):
+                angle = 2 * np.pi * j / num_points_per_section
+                y = width * np.cos(angle)
+                z = height * np.sin(angle)
+                verts.append([x, y, z])
+        
+        tail_root_idx = len(verts)
+        verts.append([-body_length/2, 0, 0])
+        verts = np.array(verts, dtype=float)
+        
+        # 构建三角面
+        faces = []
+        for j in range(num_points_per_section):
+            j_next = (j + 1) % num_points_per_section
+            faces.append([0, 1 + j, 1 + j_next])
+        
+        for i in range(1, num_sections - 1):
+            base_idx = 1 + (i - 1) * num_points_per_section
+            next_base_idx = 1 + i * num_points_per_section
+            
+            for j in range(num_points_per_section):
+                j_next = (j + 1) % num_points_per_section
+                faces.append([base_idx + j, next_base_idx + j, next_base_idx + j_next])
+                faces.append([base_idx + j, next_base_idx + j_next, base_idx + j_next])
+        
+        last_section_idx = 1 + (num_sections - 2) * num_points_per_section
+        for j in range(num_points_per_section):
+            j_next = (j + 1) % num_points_per_section
+            faces.append([last_section_idx + j, tail_root_idx, last_section_idx + j_next])
+        
+        faces = np.array(faces, dtype=np.uint32)
+        
+        # 身体颜色（橙红色锦鲤）
+        body_colors = np.ones((len(faces), 4))
+        body_colors[:, 0] = 0.95
+        body_colors[:, 1] = 0.5
+        body_colors[:, 2] = 0.2
+        body_colors[:, 3] = 0.9
+        
+        self.fish_mesh = gl.GLMeshItem(
+            vertexes=verts, faces=faces, faceColors=body_colors,
+            smooth=True, drawEdges=False, shader='shaded'
+        )
+        self.gl_widget.addItem(self.fish_mesh)
+        
+        # === 月牙形尾巴 ===
+        tail_verts = []
+        tail_root = np.array([-body_length/2, 0, 0])
+        tail_length, tail_height, num_tail_points = 0.4, 0.35, 8
+        
+        tail_verts.append(tail_root)
+        for i in range(num_tail_points):
+            t = i / (num_tail_points - 1)
+            x = tail_root[0] - tail_length * t
+            z = tail_height * np.sin(np.pi * t)
+            tail_verts.append([x, 0, z])
+        
+        tail_tip_idx = len(tail_verts)
+        tail_verts.append([tail_root[0] - tail_length, 0, 0])
+        
+        for i in range(num_tail_points):
+            t = i / (num_tail_points - 1)
+            x = tail_root[0] - tail_length * t
+            z = -tail_height * np.sin(np.pi * t)
+            tail_verts.append([x, 0, z])
+        
+        tail_verts = np.array(tail_verts, dtype=float)
+        
+        tail_faces = []
+        for i in range(num_tail_points - 1):
+            tail_faces.append([0, 1 + i, 1 + i + 1])
+        tail_faces.append([0, num_tail_points, tail_tip_idx])
+        
+        base_lower = tail_tip_idx + 1
+        for i in range(num_tail_points - 1):
+            tail_faces.append([0, base_lower + i + 1, base_lower + i])
+        tail_faces.append([0, tail_tip_idx, base_lower])
+        
+        tail_faces = np.array(tail_faces, dtype=np.uint32)
+        
+        tail_colors = np.ones((len(tail_faces), 4))
+        tail_colors[:, :3] = [0.85, 0.4, 0.15]
+        tail_colors[:, 3] = 0.85
+        
+        self.fish_tail = gl.GLMeshItem(
+            vertexes=tail_verts, faces=tail_faces, faceColors=tail_colors,
+            smooth=True, drawEdges=False, shader='shaded'
+        )
+        self.gl_widget.addItem(self.fish_tail)
+        
+        # === 鱼鳃 ===
+        gill_x, gill_length = body_length/2 - 0.15, 0.12
+        gill_right = np.array([
+            [gill_x, body_width * 0.6, body_height * 0.3],
+            [gill_x - gill_length, body_width * 0.65, body_height * 0.1],
+            [gill_x - gill_length, body_width * 0.65, -body_height * 0.1],
+            [gill_x, body_width * 0.6, -body_height * 0.3],
+        ])
+        
+        gill_right_line = gl.GLLinePlotItem(
+            pos=gill_right, color=(0.6, 0.3, 0.1, 1),
+            width=3, antialias=True, mode='line_strip'
+        )
+        self.gl_widget.addItem(gill_right_line)
+        
+        gill_left = gill_right.copy()
+        gill_left[:, 1] *= -1
+        gill_left_line = gl.GLLinePlotItem(
+            pos=gill_left, color=(0.6, 0.3, 0.1, 1),
+            width=3, antialias=True, mode='line_strip'
+        )
+        self.gl_widget.addItem(gill_left_line)
+        
+        # === 眼睛 ===
+        eye_x, eye_size = body_length/2 - 0.1, 0.04
+        eye_right = gl.GLScatterPlotItem(
+            pos=np.array([[eye_x, body_width * 0.7, body_height * 0.5]]),
+            size=eye_size * 100, color=(0.1, 0.1, 0.1, 1)
+        )
+        self.gl_widget.addItem(eye_right)
+        
+        eye_left = gl.GLScatterPlotItem(
+            pos=np.array([[eye_x, -body_width * 0.7, body_height * 0.5]]),
+            size=eye_size * 100, color=(0.1, 0.1, 0.1, 1)
+        )
+        self.gl_widget.addItem(eye_left)
+        
+        # === 方向箭头 ===
+        arrow_start = np.array([body_length/2 + 0.1, 0, 0])
+        arrow_end = np.array([body_length/2 + 0.5, 0, 0])
+        
+        self.direction_line = gl.GLLinePlotItem(
+            pos=np.array([arrow_start, arrow_end]),
+            color=(1, 0, 0, 1), width=4, antialias=True
+        )
+        self.gl_widget.addItem(self.direction_line)
+        
+        arrow_head = np.array([
+            arrow_end, arrow_end - [0.15, 0.08, 0],
+            arrow_end - [0.15, -0.08, 0], arrow_end,
+        ])
+        self.arrow_head = gl.GLLinePlotItem(
+            pos=arrow_head, color=(1, 0, 0, 1),
+            width=4, antialias=True, mode='line_strip'
+        )
+        self.gl_widget.addItem(self.arrow_head)
+        
+        # 保存部件用于旋转
+        self.fish_parts = [
+            self.fish_mesh, self.fish_tail,
+            gill_right_line, gill_left_line,
+            eye_right, eye_left
+        ]

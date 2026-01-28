@@ -2,6 +2,7 @@
 
 # 网络配置
 FISH_IP = "192.168.137.241"  # 机器鱼IP地址
+SOCKET_PORT = 9999  # Socket通信端口
 SSH_PORT = 22
 SSH_USERNAME = "orangepi"
 SSH_PASSWORD = "orangepi"

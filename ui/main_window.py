@@ -21,9 +21,9 @@ from ui.keyboard_status import KeyboardStatusWidget
 from ui.video_display import VideoDisplayWidget
 from ui.data_recording import DataRecordingWidget
 from controllers.base import KeyboardController
-from communication.ssh_ros import SSHROSCommunication
+from communication.socket_client import SocketCommunication
 from communication.base import FishState, ControlCommand
-from config import UI_CONFIG, KEYBOARD_MAPPING, FISH_IP
+from config import UI_CONFIG, KEYBOARD_MAPPING, FISH_IP, SOCKET_PORT
 
 class MainWindow(QMainWindow):
     """主窗口类"""
@@ -232,12 +232,24 @@ class MainWindow(QMainWindow):
         self.ip_input.setText(FISH_IP)  # 使用config中的默认IP
         self.ip_input.setPlaceholderText("输入机器鱼IP地址")
         
+        # 端口输入
+        self.port_input = QLineEdit()
+        self.port_input.setText(str(SOCKET_PORT))  # 默认端口
+        self.port_input.setPlaceholderText("端口")
+        self.port_input.setMaximumWidth(60)
+        
         self.connection_status_label = QLabel("未连接")
         self.connection_button = QPushButton("连接")
         self.connection_button.clicked.connect(self._toggle_connection)
         
-        connection_layout.addWidget(QLabel("IP地址:"), 0, 0)
-        connection_layout.addWidget(self.ip_input, 0, 1)
+        # 布局：IP和端口在同一行
+        ip_layout = QHBoxLayout()
+        ip_layout.addWidget(self.ip_input)
+        ip_layout.addWidget(QLabel(":"))
+        ip_layout.addWidget(self.port_input)
+        
+        connection_layout.addWidget(QLabel("地址:"), 0, 0)
+        connection_layout.addLayout(ip_layout, 0, 1)
         connection_layout.addWidget(QLabel("状态:"), 1, 0)
         connection_layout.addWidget(self.connection_status_label, 1, 1)
         connection_layout.addWidget(self.connection_button, 2, 0, 1, 2)
@@ -348,42 +360,56 @@ class MainWindow(QMainWindow):
     def _connect_to_fish(self):
         """连接到机器鱼"""
         try:
-            # 获取用户输入的IP地址
+            # 获取用户输入的IP地址和端口
             ip_address = self.ip_input.text().strip()
             if not ip_address:
                 QMessageBox.warning(self, "输入错误", "请输入有效的IP地址")
                 return
             
-            self.communication = SSHROSCommunication(ip_address=ip_address)
+            try:
+                port = int(self.port_input.text().strip())
+            except ValueError:
+                QMessageBox.warning(self, "输入错误", "请输入有效的端口号")
+                return
+            
+            self.communication = SocketCommunication(ip_address=ip_address, port=port)
+            
+            # 设置数据回调，实时更新UI
+            self.communication.set_data_callback(self._on_sensor_data_received)
+            self.communication.set_connection_callback(self._on_connection_changed)
+            
             self.connection_button.setEnabled(False)
-            self.ip_input.setEnabled(False)  # 连接时禁用IP输入
+            self.ip_input.setEnabled(False)
+            self.port_input.setEnabled(False)
             self.connection_button.setText("连接中...")
             self.status_bar.showMessage("正在连接机器鱼...")
             
-            # 异步连接（简化处理，实际应该使用线程）
             if self.communication.connect():
                 self.connection_status_label.setText("已连接")
                 self.connection_button.setText("断开")
                 self.connection_button.setEnabled(True)
                 self.connect_action.setText("断开连接(&D)")
-                self.status_bar.showMessage(f"机器鱼连接成功 ({ip_address})")
+                self.status_bar.showMessage(f"机器鱼连接成功 ({ip_address}:{port})")
                 
-                # 启动数据更新
+                # Socket通信不需要定时器轮询，数据通过回调实时更新
+                # 但保留定时器用于UI刷新和数据记录
                 self.data_timer.start(50)  # 20Hz
                 
-                self._log_message("机器鱼连接成功")
+                self._log_message(f"机器鱼连接成功 (Socket: {ip_address}:{port})")
             else:
                 self.connection_status_label.setText("连接失败")
                 self.connection_button.setText("连接")
                 self.connection_button.setEnabled(True)
-                self.ip_input.setEnabled(True)  # 连接失败时重新启用IP输入
+                self.ip_input.setEnabled(True)
+                self.port_input.setEnabled(True)
                 self.status_bar.showMessage("机器鱼连接失败")
-                self._log_message(f"机器鱼连接失败 ({ip_address})")
+                self._log_message(f"机器鱼连接失败 ({ip_address}:{port})")
                 
         except Exception as e:
             self.connection_button.setEnabled(True)
             self.connection_button.setText("连接")
-            self.ip_input.setEnabled(True)  # 连接异常时重新启用IP输入
+            self.ip_input.setEnabled(True)
+            self.port_input.setEnabled(True)
             self._log_message(f"连接异常: {e}")
             QMessageBox.critical(self, "连接错误", f"连接失败: {e}")
     
@@ -398,7 +424,8 @@ class MainWindow(QMainWindow):
                 
             self.connection_status_label.setText("未连接")
             self.connection_button.setText("连接")
-            self.ip_input.setEnabled(True)  # 断开连接时重新启用IP输入
+            self.ip_input.setEnabled(True)
+            self.port_input.setEnabled(True)
             self.connect_action.setText("连接机器鱼(&C)")
             self.status_bar.showMessage("已断开连接")
             
@@ -421,6 +448,25 @@ class MainWindow(QMainWindow):
                     
             except Exception as e:
                 self._log_message(f"数据更新异常: {e}")
+    
+    def _on_sensor_data_received(self, fish_state: FishState):
+        """传感器数据接收回调（由Socket线程调用）"""
+        # 注意：此方法在工作线程中调用，直接更新会有线程安全问题
+        # 数据通过get_fish_state()获取，定时器_update_data会读取并更新UI
+        pass
+    
+    def _on_connection_changed(self, connected: bool):
+        """连接状态变化回调"""
+        if not connected:
+            # 连接断开，重置UI状态
+            self.data_timer.stop()
+            self.connection_status_label.setText("连接断开")
+            self.connection_button.setText("连接")
+            self.connection_button.setEnabled(True)
+            self.ip_input.setEnabled(True)
+            self.port_input.setEnabled(True)
+            self.status_bar.showMessage("连接已断开")
+            self._log_message("机器鱼连接已断开")
     
     def _on_control_command(self, command: ControlCommand):
         """处理控制命令"""

@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<!--
+  传感器数据Socket服务器启动文件
+  Sensor Data Socket Server Launch File
+  
+  创建时间: 2026-01-28
+  说明: 启动所有传感器节点和Socket服务器，用于与地面站通信
+  
+  使用方法:
+    roslaunch fish_control sensor_socket.launch
+  
+  参数:
+    server_port: Socket服务器端口，默认9999
+    data_rate: 数据推送频率(Hz)，默认50
+-->
+<launch>
+    <!-- 参数 -->
+    <arg name="server_port" default="9999"/>
+    <arg name="data_rate" default="50"/>
+    
+    <!-- IMU发布节点 -->
+    <node pkg="TransducerM_pkg" type="TMSerial" name="imu_pub" output="screen"/>
+    
+    <!-- UWB发布节点 -->
+    <include file="$(find nlink_parser)/launch/linktrack.launch"/>
+    
+    <!-- 深度传感器发布节点 (需要sudo权限) -->
+    <!-- 如果不需要深度数据，可以注释掉这行 -->
+    <!-- <node pkg="fish_control" type="WF5803_pub_node.py" name="depth_pub" output="screen"/> -->
+    
+    <!-- Socket服务器节点 -->
+    <node pkg="fish_control" type="socket_server.py" name="fish_socket_server" output="screen">
+        <param name="server_port" value="$(arg server_port)"/>
+        <param name="data_rate" value="$(arg data_rate)"/>
+    </node>
+</launch>

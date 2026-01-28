@@ -12,7 +12,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QMenuBar, QStatusBar, QAction, QTabWidget,
                              QGroupBox, QGridLayout, QLabel, QPushButton,
-                             QComboBox, QMessageBox, QSplitter, QTextEdit)
+                             QComboBox, QMessageBox, QSplitter, QTextEdit, QLineEdit)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont, QKeySequence, QIcon
 
@@ -23,7 +23,7 @@ from ui.data_recording import DataRecordingWidget
 from controllers.base import KeyboardController
 from communication.ssh_ros import SSHROSCommunication
 from communication.base import FishState, ControlCommand
-from config import UI_CONFIG, KEYBOARD_MAPPING
+from config import UI_CONFIG, KEYBOARD_MAPPING, FISH_IP
 
 class MainWindow(QMainWindow):
     """主窗口类"""
@@ -227,13 +227,20 @@ class MainWindow(QMainWindow):
         connection_group = QGroupBox("连接状态")
         connection_layout = QGridLayout(connection_group)
         
+        # IP地址输入
+        self.ip_input = QLineEdit()
+        self.ip_input.setText(FISH_IP)  # 使用config中的默认IP
+        self.ip_input.setPlaceholderText("输入机器鱼IP地址")
+        
         self.connection_status_label = QLabel("未连接")
         self.connection_button = QPushButton("连接")
         self.connection_button.clicked.connect(self._toggle_connection)
         
-        connection_layout.addWidget(QLabel("状态:"), 0, 0)
-        connection_layout.addWidget(self.connection_status_label, 0, 1)
-        connection_layout.addWidget(self.connection_button, 1, 0, 1, 2)
+        connection_layout.addWidget(QLabel("IP地址:"), 0, 0)
+        connection_layout.addWidget(self.ip_input, 0, 1)
+        connection_layout.addWidget(QLabel("状态:"), 1, 0)
+        connection_layout.addWidget(self.connection_status_label, 1, 1)
+        connection_layout.addWidget(self.connection_button, 2, 0, 1, 2)
         
         layout.addWidget(connection_group)
         
@@ -341,8 +348,15 @@ class MainWindow(QMainWindow):
     def _connect_to_fish(self):
         """连接到机器鱼"""
         try:
-            self.communication = SSHROSCommunication()
+            # 获取用户输入的IP地址
+            ip_address = self.ip_input.text().strip()
+            if not ip_address:
+                QMessageBox.warning(self, "输入错误", "请输入有效的IP地址")
+                return
+            
+            self.communication = SSHROSCommunication(ip_address=ip_address)
             self.connection_button.setEnabled(False)
+            self.ip_input.setEnabled(False)  # 连接时禁用IP输入
             self.connection_button.setText("连接中...")
             self.status_bar.showMessage("正在连接机器鱼...")
             
@@ -352,7 +366,7 @@ class MainWindow(QMainWindow):
                 self.connection_button.setText("断开")
                 self.connection_button.setEnabled(True)
                 self.connect_action.setText("断开连接(&D)")
-                self.status_bar.showMessage("机器鱼连接成功")
+                self.status_bar.showMessage(f"机器鱼连接成功 ({ip_address})")
                 
                 # 启动数据更新
                 self.data_timer.start(50)  # 20Hz
@@ -362,12 +376,14 @@ class MainWindow(QMainWindow):
                 self.connection_status_label.setText("连接失败")
                 self.connection_button.setText("连接")
                 self.connection_button.setEnabled(True)
+                self.ip_input.setEnabled(True)  # 连接失败时重新启用IP输入
                 self.status_bar.showMessage("机器鱼连接失败")
-                self._log_message("机器鱼连接失败")
+                self._log_message(f"机器鱼连接失败 ({ip_address})")
                 
         except Exception as e:
             self.connection_button.setEnabled(True)
             self.connection_button.setText("连接")
+            self.ip_input.setEnabled(True)  # 连接异常时重新启用IP输入
             self._log_message(f"连接异常: {e}")
             QMessageBox.critical(self, "连接错误", f"连接失败: {e}")
     
@@ -382,6 +398,7 @@ class MainWindow(QMainWindow):
                 
             self.connection_status_label.setText("未连接")
             self.connection_button.setText("连接")
+            self.ip_input.setEnabled(True)  # 断开连接时重新启用IP输入
             self.connect_action.setText("连接机器鱼(&C)")
             self.status_bar.showMessage("已断开连接")
             

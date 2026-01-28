@@ -85,6 +85,8 @@ GroundStation/
 - numpy
 - paramiko
 
+使用环境：
+conda activate qt5 
 ### 安装依赖
 ```bash
 # 激活conda环境

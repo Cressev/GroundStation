@@ -16,13 +16,16 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from communication.base import FishCommunicationInterface, FishState, ControlCommand
-from config import FISH_IP, SSH_PORT, SSH_USERNAME, SSH_PASSWORD, ROS_MASTER_URI
+from config import FISH_IP, SSH_PORT, SSH_USERNAME, SSH_PASSWORD
 
 class SSHROSCommunication(FishCommunicationInterface):
     """基于SSH的ROS通信实现"""
     
-    def __init__(self):
+    def __init__(self, ip_address: str = None):
         super().__init__()
+        # 使用传入的IP地址，如果没有则使用配置文件中的默认值
+        self.fish_ip = ip_address if ip_address else FISH_IP
+        self.ros_master_uri = f"http://{self.fish_ip}:11311"
         self.ssh_client = None
         self.sftp_client = None
         self._monitoring_thread = None
@@ -36,7 +39,7 @@ class SSHROSCommunication(FishCommunicationInterface):
             self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             
             self.ssh_client.connect(
-                hostname=FISH_IP,
+                hostname=self.fish_ip,
                 port=SSH_PORT,
                 username=SSH_USERNAME,
                 password=SSH_PASSWORD,
@@ -86,7 +89,7 @@ class SSHROSCommunication(FishCommunicationInterface):
         try:
             # 检查ROS master是否运行
             stdin, stdout, stderr = self.ssh_client.exec_command(
-                f"export ROS_MASTER_URI={ROS_MASTER_URI} && rostopic list"
+                f"export ROS_MASTER_URI={self.ros_master_uri} && rostopic list"
             )
             
             result = stdout.read().decode('utf-8')
@@ -111,7 +114,7 @@ class SSHROSCommunication(FishCommunicationInterface):
         try:
             # 构造ROS命令
             ros_command = f"""
-export ROS_MASTER_URI={ROS_MASTER_URI} && 
+export ROS_MASTER_URI={self.ros_master_uri} && 
 rostopic pub -1 /fish/control_cmd fish_msgs/ControlCommand "{{
     tail_frequency: {command.tail_frequency},
     tail_amplitude: {command.tail_amplitude}, 
@@ -151,7 +154,7 @@ rostopic pub -1 /fish/control_cmd fish_msgs/ControlCommand "{{
             try:
                 # 获取位置信息
                 position_cmd = f"""
-export ROS_MASTER_URI={ROS_MASTER_URI} && 
+export ROS_MASTER_URI={self.ros_master_uri} && 
 rostopic echo -n 1 /fish/position
 """
                 stdin, stdout, stderr = self.ssh_client.exec_command(position_cmd)
@@ -159,7 +162,7 @@ rostopic echo -n 1 /fish/position
                 
                 # 获取姿态信息
                 orientation_cmd = f"""
-export ROS_MASTER_URI={ROS_MASTER_URI} && 
+export ROS_MASTER_URI={self.ros_master_uri} && 
 rostopic echo -n 1 /fish/orientation
 """
                 stdin, stdout, stderr = self.ssh_client.exec_command(orientation_cmd)

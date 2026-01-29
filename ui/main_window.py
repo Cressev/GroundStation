@@ -18,7 +18,7 @@ from PyQt5.QtGui import QFont, QKeySequence, QIcon
 
 from ui.visualization import DataVisualizationWidget
 from ui.keyboard_status import KeyboardStatusWidget
-from ui.video_display import VideoDisplayWidget
+from ui.video_display import VideoMonitorWidget
 from ui.data_recording import DataRecordingWidget
 from controllers.base import KeyboardController
 from communication.socket_client import SocketCommunication
@@ -86,8 +86,8 @@ class MainWindow(QMainWindow):
         self.visualization_widget = DataVisualizationWidget()
         center_tabs.addTab(self.visualization_widget, "数据可视化")
         
-        # 视频监控标签页
-        self.video_widget = VideoDisplayWidget()
+        # 视频监控标签页（包含外部监控和机载相机）
+        self.video_widget = VideoMonitorWidget()
         center_tabs.addTab(self.video_widget, "视频监控")
         
         center_layout.addWidget(center_tabs)

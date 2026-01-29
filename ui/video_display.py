@@ -10,7 +10,7 @@ import numpy as np
 import datetime
 import os
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, 
-                             QLabel, QPushButton, QComboBox, QFrame, QMessageBox, QFileDialog)
+                             QLabel, QPushButton, QComboBox, QFrame, QMessageBox, QFileDialog, QTabWidget)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, pyqtSlot
 from PyQt5.QtGui import QImage, QPixmap, QFont
 
@@ -558,3 +558,40 @@ class VideoDisplayWidget(QWidget):
         """窗口关闭事件"""
         self._stop_camera()
         event.accept()
+
+
+class VideoMonitorWidget(QWidget):
+    """视频监控主组件（包含两个标签页）"""
+    
+    def __init__(self):
+        super().__init__()
+        self._init_ui()
+        
+    def _init_ui(self):
+        """初始化用户界面"""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        # 创建标签页
+        self.tabs = QTabWidget()
+        
+        # 外部监控标签页（原有功能）
+        self.external_camera_widget = VideoDisplayWidget()
+        self.tabs.addTab(self.external_camera_widget, "外部监控")
+        
+        # 机载相机标签页（新增功能）
+        from ui.fish_camera_widget import FishCameraWidget
+        self.fish_camera_widget = FishCameraWidget()
+        self.tabs.addTab(self.fish_camera_widget, "机载相机")
+        
+        layout.addWidget(self.tabs)
+        
+    def closeEvent(self, event):
+        """窗口关闭事件"""
+        # 关闭两个子组件
+        if hasattr(self, 'external_camera_widget'):
+            self.external_camera_widget.closeEvent(event)
+        if hasattr(self, 'fish_camera_widget'):
+            self.fish_camera_widget.closeEvent(event)
+        event.accept()
+

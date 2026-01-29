@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- 机器鱼鱼眼摄像头视频流服务 -->
+    <node pkg="fish_control" type="camera_stream_server.py" 
+          name="camera_stream_server" output="screen">
+        
+        <!-- 服务器端口 -->
+        <param name="port" value="9998"/>
+        
+        <!-- 摄像头索引 (0为第一个摄像头) -->
+        <param name="camera" value="0"/>
+        
+        <!-- 视频分辨率 -->
+        <param name="width" value="640"/>
+        <param name="height" value="480"/>
+        
+        <!-- 目标帧率 -->
+        <param name="fps" value="20"/>
+        
+        <!-- JPEG质量 (1-100) -->
+        <param name="quality" value="80"/>
+    </node>
+</launch>

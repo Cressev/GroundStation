@@ -23,8 +23,8 @@ from TransducerM_pkg.msg import Imu
 from nlink_parser.msg import LinktrackNodeframe2
 from fish_control.msg import WF5803_MSG
 
-# 控制命令消息类型 (如果有自定义消息，需要修改)
-from std_msgs.msg import Float32MultiArray
+# 控制命令消息类型
+from std_msgs.msg import Float32
 
 
 class FishSocketServer:
@@ -53,8 +53,11 @@ class FishSocketServer:
         # 订阅传感器话题
         self._init_subscribers()
         
-        # 控制命令发布器
-        self.control_pub = rospy.Publisher('/fish/control_cmd', Float32MultiArray, queue_size=1)
+        # 控制命令发布器 - 发布到舵机控制话题
+        self.pub_amplitude = rospy.Publisher('/servo_info_A', Float32, queue_size=10)
+        self.pub_frequency = rospy.Publisher('/servo_info_fre', Float32, queue_size=10)
+        self.pub_bias = rospy.Publisher('/servo_info_bias', Float32, queue_size=10)
+        self.pub_pec_angle = rospy.Publisher('/servo_info_angle', Float32, queue_size=10)  # 胸鳍
         
         # 启动Socket服务器
         self.server_socket = None
@@ -199,15 +202,19 @@ class FishSocketServer:
             cmd = json.loads(json_str)
             
             if cmd.get('type') == 'control':
-                # 发布控制命令到ROS
-                msg = Float32MultiArray()
-                msg.data = [
-                    cmd.get('tail_frequency', 0.0),
-                    cmd.get('tail_amplitude', 0.0),
-                    cmd.get('tail_offset', 0.0)
-                ]
-                self.control_pub.publish(msg)
-                rospy.logdebug(f"发送控制命令: freq={msg.data[0]}, amp={msg.data[1]}, offset={msg.data[2]}")
+                # 提取控制参数
+                tail_frequency = cmd.get('tail_frequency', 0.0)
+                tail_amplitude = cmd.get('tail_amplitude', 0.0)
+                tail_offset = cmd.get('tail_offset', 0.0)
+                pec_angle = cmd.get('pec_angle', 1500)  # 胸鳍角度
+                
+                # 发布到舵机控制话题
+                self.pub_frequency.publish(Float32(tail_frequency))
+                self.pub_amplitude.publish(Float32(tail_amplitude))
+                self.pub_bias.publish(Float32(tail_offset))
+                self.pub_pec_angle.publish(Float32(pec_angle))  # 发布胸鳍角度
+                
+                rospy.loginfo(f"控制命令: freq={tail_frequency:.2f}Hz, amp={tail_amplitude:.2f}rad, bias={tail_offset:.2f}rad, pec={pec_angle}μs")
                 
         except json.JSONDecodeError as e:
             rospy.logwarn(f"JSON解析失败: {e}")

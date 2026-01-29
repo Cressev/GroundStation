@@ -25,12 +25,45 @@
     <include file="$(find nlink_parser)/launch/linktrack.launch"/>
     
     <!-- 深度传感器发布节点 (需要sudo权限) -->
-    <!-- 如果不需要深度数据，可以注释掉这行 -->
-    <!-- <node pkg="fish_control" type="WF5803_pub_node.py" name="depth_pub" output="screen"/> -->
+    <node pkg="fish_control" type="WF5803_pub_node.py" name="WF5803_pub_node" output="screen">
+        <param name = "calib" value="true"/>
+    </node>    
     
     <!-- Socket服务器节点 -->
     <node pkg="fish_control" type="socket_server.py" name="fish_socket_server" output="screen">
         <param name="server_port" value="$(arg server_port)"/>
         <param name="data_rate" value="$(arg data_rate)"/>
     </node>
+
+    <!-- 舵机控制节点 - 订阅控制命令 -->
+    <param name="tail_frequency" value="0.0"/>
+    <param name="tail_bias" value="0.0"/>
+    <param name="tail_A" value="0.0"/>
+    <param name="pec_angle" value="1500"/>
+    <node pkg="fish_control" name="controller" type="servo_control" output="screen">
+        <param name="servo_time" value="200000"/>  <!-- 运行时间s，足够长 -->
+        <param name="wait_imu_calib" value="false"/>
+    </node>
+
+    <!-- 机器鱼鱼眼摄像头视频流服务 -->
+    <node pkg="fish_control" type="camera_stream_server.py" 
+          name="camera_stream_server" output="screen">
+        <!-- 服务器端口 -->
+        <param name="port" value="9998"/>
+        <!-- 摄像头索引 (0为第一个摄像头) -->
+        <param name="camera" value="0"/>
+        <!-- 视频分辨率 -->
+        <param name="width" value="640"/>
+        <param name="height" value="480"/>
+        <!-- 目标帧率 -->
+        <param name="fps" value="20"/>
+        <!-- JPEG质量 (1-100) -->
+        <param name="quality" value="80"/>
+    </node>
+
+    <!-- 全局运行时间控制 -->
+    <node pkg="fish_control" type="timer_controller.py" name="timer_controller" output="screen">
+        <param name="duration" value="25000"/>  <!--运行时间秒-->
+    </node>
+
 </launch>

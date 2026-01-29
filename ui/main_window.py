@@ -7,6 +7,7 @@ Main Window Interface
 
 import sys
 import os
+import time
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
@@ -41,6 +42,12 @@ class MainWindow(QMainWindow):
         self._init_ui()
         self._init_controllers()
         self._init_connections()
+        
+        # 设置焦点策略以接收键盘事件
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setFocus()
+        
+        self._log_message("系统初始化完成")
         
         # 数据更新定时器
         self.data_timer = QTimer()
@@ -396,6 +403,9 @@ class MainWindow(QMainWindow):
                 self.data_timer.start(50)  # 20Hz
                 
                 self._log_message(f"机器鱼连接成功 (Socket: {ip_address}:{port})")
+                
+                # 设置焦点以确保键盘事件能够被接收
+                self.setFocus()
             else:
                 self.connection_status_label.setText("连接失败")
                 self.connection_button.setText("连接")
@@ -416,7 +426,20 @@ class MainWindow(QMainWindow):
     def _disconnect_from_fish(self):
         """断开机器鱼连接"""
         try:
+            # 停止数据定时器
             self.data_timer.stop()
+            
+            # 断开前发送停止命令，确保机器鱼停止运动
+            if self.communication and self.communication.connected:
+                stop_cmd = ControlCommand()
+                stop_cmd.tail_frequency = 0.0
+                stop_cmd.tail_amplitude = 0.0
+                stop_cmd.tail_offset = 0.0
+                stop_cmd.pec_angle = 1500
+                stop_cmd.timestamp = time.time()
+                self.communication.send_control_command(stop_cmd)
+                time.sleep(0.2)  # 等待命令发送
+                self._log_message("已发送停止命令")
             
             if self.communication:
                 self.communication.disconnect()
@@ -472,6 +495,12 @@ class MainWindow(QMainWindow):
         """处理控制命令"""
         if self.communication and self.communication.connected:
             try:
+                # 添加胸鳍角度到命令
+                if hasattr(self.current_controller, '_pec_angle'):
+                    command.pec_angle = self.current_controller._pec_angle
+                else:
+                    command.pec_angle = 1500  # 默认值
+                
                 success = self.communication.send_control_command(command)
                 if success:
                     # 记录最后的控制命令，用于数据记录
@@ -593,8 +622,6 @@ class MainWindow(QMainWindow):
         if self.communication and self.communication.connected:
             self.communication.disconnect()
         
-        # 停止视频
-        if hasattr(self, 'video_widget'):
-            self.video_widget._stop_camera()
+        # VideoMonitorWidget没有_stop_camera方法，不需要调用
             
         event.accept()

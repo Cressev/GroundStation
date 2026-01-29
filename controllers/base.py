@@ -62,12 +62,25 @@ class KeyboardController(ControllerBase):
         self._control_widget = None
         self._update_timer = QTimer()
         self._update_timer.timeout.connect(self._update_control)
-        self._update_timer.setInterval(50)  # 20Hz
+        self._update_timer.setInterval(100)  # 10Hz
         
         # 初始化控制参数
         self._freq_step = 0.1
         self._amp_step = 0.05
-        self._offset_step = 0.05
+        
+        # 运动状态（保持状态而非瞬时按键）
+        self._motion_state = "stop"  # stop, forward, left, right, up, down
+        
+        # 胸鳍角度控制 (1300-2000μs)
+        self._pec_angle = CONTROL_LIMITS["pec_angle"]["default"]
+        self._pec_angle_step = 10  # 每次增减10μs
+        
+        # 保存的参数（停止时不清零这些）
+        self._saved_frequency = 0.5  # 默认0.5Hz
+        self._saved_amplitude = 0.2  # 默认0.2rad
+        
+        # 上次发送的命令，用于检测变化
+        self._last_sent_command = None
         
     def activate(self) -> bool:
         """激活键盘控制"""
@@ -86,6 +99,7 @@ class KeyboardController(ControllerBase):
             self._active = False
             self._update_timer.stop()
             self._key_states.clear()
+            self._motion_state = "stop"
             self.status_changed.emit("键盘控制已停用")
             return True
         except Exception as e:
@@ -119,19 +133,18 @@ class KeyboardController(ControllerBase):
         control_layout = QGridLayout(control_group)
         
         mappings = [
-            ("前进", KEYBOARD_MAPPING["forward"]),
-            ("后退", KEYBOARD_MAPPING["backward"]),
-            ("左转", KEYBOARD_MAPPING["left"]),
-            ("右转", KEYBOARD_MAPPING["right"]),
-            ("上浮", KEYBOARD_MAPPING["up"]),
-            ("下潜", KEYBOARD_MAPPING["down"]),
-            ("停止", KEYBOARD_MAPPING["stop"]),
-            ("增加频率", KEYBOARD_MAPPING["increase_freq"]),
-            ("减少频率", KEYBOARD_MAPPING["decrease_freq"]),
-            ("增加幅度", KEYBOARD_MAPPING["increase_amp"]),
-            ("减少幅度", KEYBOARD_MAPPING["decrease_amp"]),
-            ("切换绘图", KEYBOARD_MAPPING["toggle_plot"]),
-            ("清空数据", KEYBOARD_MAPPING["clear_plot"])
+            ("前进", "W"),
+            ("停止", "S"),
+            ("左转", "A"),
+            ("右转", "D"),
+            ("胸鳍+", "Q"),
+            ("胸鳍-", "E"),
+            ("频率+", "Up"),
+            ("频率-", "Down"),
+            ("幅度+", "R"),
+            ("幅度-", "F"),
+            ("切换绘图", "P"),
+            ("清空数据", "C")
         ]
         
         for i, (action, key) in enumerate(mappings):
@@ -145,13 +158,17 @@ class KeyboardController(ControllerBase):
         params_group = QGroupBox("当前控制参数")
         params_layout = QVBoxLayout(params_group)
         
+        self._motion_label = QLabel(f"运动状态: 停止")
         self._freq_label = QLabel(f"摆尾频率: {self._current_command.tail_frequency:.2f} Hz")
         self._amp_label = QLabel(f"摆尾幅度: {self._current_command.tail_amplitude:.2f} rad")
         self._offset_label = QLabel(f"偏移角度: {self._current_command.tail_offset:.2f} rad")
+        self._pec_label = QLabel(f"胸鳍角度: {self._pec_angle} μs")
         
+        params_layout.addWidget(self._motion_label)
         params_layout.addWidget(self._freq_label)
         params_layout.addWidget(self._amp_label)
         params_layout.addWidget(self._offset_label)
+        params_layout.addWidget(self._pec_label)
         
         layout.addWidget(params_group)
         
@@ -160,8 +177,35 @@ class KeyboardController(ControllerBase):
         return widget
     
     def handle_key_press(self, key: str):
-        """处理按键按下"""
+        """处理按键按下 - 切换运动状态"""
         self._key_states[key] = True
+        
+        # 方向控制 - 按一次切换状态并保持
+        if key == KEYBOARD_MAPPING["forward"]:
+            self._motion_state = "forward"
+            # 恢复保存的参数
+            if self._current_command.tail_frequency == 0:
+                self._current_command.tail_frequency = self._saved_frequency
+                self._current_command.tail_amplitude = self._saved_amplitude
+        elif key == KEYBOARD_MAPPING["backward"]:  # S键 = 停止
+            self._motion_state = "stop"
+            # 保存当前非零参数
+            if self._current_command.tail_frequency > 0:
+                self._saved_frequency = self._current_command.tail_frequency
+                self._saved_amplitude = self._current_command.tail_amplitude
+        elif key == KEYBOARD_MAPPING["left"]:
+            self._motion_state = "left"
+            # A键只改偏置，保持freq/amp不变
+            if self._current_command.tail_frequency == 0:
+                self._current_command.tail_frequency = self._saved_frequency
+                self._current_command.tail_amplitude = self._saved_amplitude
+        elif key == KEYBOARD_MAPPING["right"]:
+            self._motion_state = "right"
+            # D键只改偏置，保持freq/amp不变
+            if self._current_command.tail_frequency == 0:
+                self._current_command.tail_frequency = self._saved_frequency
+                self._current_command.tail_amplitude = self._saved_amplitude
+        # 注意：上下箭头不在这里处理，在_update_control中作为持续按键处理
         
     def handle_key_release(self, key: str):
         """处理按键释放"""
@@ -171,69 +215,101 @@ class KeyboardController(ControllerBase):
         """更新控制命令"""
         if not self._active:
             return
-            
-        # 处理频率控制
-        if self._key_states.get(KEYBOARD_MAPPING["increase_freq"], False):
-            self._current_command.tail_frequency = min(
+        
+        # Q/E控制胸鳍角度（增量式，长按生效）
+        if self._key_states.get(KEYBOARD_MAPPING["increase_pec"], False):  # Q键
+            self._pec_angle = min(
+                self._pec_angle + self._pec_angle_step,
+                CONTROL_LIMITS["pec_angle"]["max"]
+            )
+        elif self._key_states.get(KEYBOARD_MAPPING["decrease_pec"], False):  # E键
+            self._pec_angle = max(
+                self._pec_angle - self._pec_angle_step,
+                CONTROL_LIMITS["pec_angle"]["min"]
+            )
+        
+        # 上下箭头控制频率（按住生效）
+        if self._key_states.get(KEYBOARD_MAPPING["increase_freq"], False):  # Up键
+            new_freq = min(
                 self._current_command.tail_frequency + self._freq_step,
                 CONTROL_LIMITS["tail_frequency"]["max"]
             )
-        elif self._key_states.get(KEYBOARD_MAPPING["decrease_freq"], False):
-            self._current_command.tail_frequency = max(
+            self._current_command.tail_frequency = new_freq
+            self._saved_frequency = new_freq
+        elif self._key_states.get(KEYBOARD_MAPPING["decrease_freq"], False):  # Down键
+            new_freq = max(
                 self._current_command.tail_frequency - self._freq_step,
                 CONTROL_LIMITS["tail_frequency"]["min"]
             )
+            self._current_command.tail_frequency = new_freq
+            self._saved_frequency = new_freq
         
-        # 处理幅度控制
-        if self._key_states.get(KEYBOARD_MAPPING["increase_amp"], False):
-            self._current_command.tail_amplitude = min(
+        # R/F调节幅度（按住生效）
+        if self._key_states.get(KEYBOARD_MAPPING["increase_amp"], False):  # R键
+            new_amp = min(
                 self._current_command.tail_amplitude + self._amp_step,
                 CONTROL_LIMITS["tail_amplitude"]["max"]
             )
-        elif self._key_states.get(KEYBOARD_MAPPING["decrease_amp"], False):
-            self._current_command.tail_amplitude = max(
+            self._current_command.tail_amplitude = new_amp
+            self._saved_amplitude = new_amp
+        elif self._key_states.get(KEYBOARD_MAPPING["decrease_amp"], False):  # F键
+            new_amp = max(
                 self._current_command.tail_amplitude - self._amp_step,
                 CONTROL_LIMITS["tail_amplitude"]["min"]
             )
+            self._current_command.tail_amplitude = new_amp
+            self._saved_amplitude = new_amp
         
-        # 处理方向控制（通过偏移角度）
-        base_offset = 0.0
-        if self._key_states.get(KEYBOARD_MAPPING["forward"], False):
-            base_offset = 0.0
-        elif self._key_states.get(KEYBOARD_MAPPING["backward"], False):
-            base_offset = 3.14159  # 180度
-        elif self._key_states.get(KEYBOARD_MAPPING["left"], False):
-            base_offset = -1.5708  # -90度
-        elif self._key_states.get(KEYBOARD_MAPPING["right"], False):
-            base_offset = 1.5708   # 90度
-        elif self._key_states.get(KEYBOARD_MAPPING["up"], False):
-            # 上浮：减小频率，增大幅度
-            self._current_command.tail_frequency *= 0.8
-            self._current_command.tail_amplitude = min(
-                self._current_command.tail_amplitude * 1.1,
-                CONTROL_LIMITS["tail_amplitude"]["max"]
-            )
-        elif self._key_states.get(KEYBOARD_MAPPING["down"], False):
-            # 下潜：增大频率，减小幅度  
-            self._current_command.tail_frequency = min(
-                self._current_command.tail_frequency * 1.2,
-                CONTROL_LIMITS["tail_frequency"]["max"]
-            )
-            self._current_command.tail_amplitude *= 0.9
-        elif self._key_states.get(KEYBOARD_MAPPING["stop"], False):
-            # 停止：频率和幅度都设为0
+        # 基于运动状态设置参数
+        motion_label_text = "停止"
+        
+        if self._motion_state == "stop":
+            # 停止状态：发送0但不清除保存的参数
             self._current_command.tail_frequency = 0.0
             self._current_command.tail_amplitude = 0.0
-            base_offset = 0.0
+            self._current_command.tail_offset = 0.0
+            motion_label_text = "停止"
+        elif self._motion_state == "forward":
+            # 前进：偏移0
+            self._current_command.tail_offset = 0.0
+            motion_label_text = "前进"
+        elif self._motion_state == "left":
+            # 左转：负偏移，频率幅度由上次设定决定
+            self._current_command.tail_offset = -0.15
+            motion_label_text = "左转"
+        elif self._motion_state == "right":
+            # 右转：正偏移，频率幅度由上次设定决定
+            self._current_command.tail_offset = 0.15
+            motion_label_text = "右转"
+        elif self._motion_state == "up":
+            motion_label_text = "上浮"
+        elif self._motion_state == "down":
+            motion_label_text = "下潜"
         
-        self._current_command.tail_offset = base_offset
+        # 确保偏移在安全范围内
+        self._current_command.tail_offset = max(
+            CONTROL_LIMITS["tail_offset"]["min"],
+            min(self._current_command.tail_offset, CONTROL_LIMITS["tail_offset"]["max"])
+        )
         self._current_command.timestamp = time.time()
         
         # 更新界面显示
+        if hasattr(self, '_motion_label'):
+            self._motion_label.setText(f"运动状态: {motion_label_text}")
         if hasattr(self, '_freq_label'):
             self._freq_label.setText(f"摆尾频率: {self._current_command.tail_frequency:.2f} Hz")
             self._amp_label.setText(f"摆尾幅度: {self._current_command.tail_amplitude:.2f} rad")
             self._offset_label.setText(f"偏移角度: {self._current_command.tail_offset:.2f} rad")
+            self._pec_label.setText(f"胸鳍角度: {self._pec_angle} μs")
         
-        # 发送控制命令
-        self.control_command_generated.emit(self._current_command)
+        # 只在命令变化时发送（避免静止时持续发送）
+        current_cmd_tuple = (
+            round(self._current_command.tail_frequency, 2),
+            round(self._current_command.tail_amplitude, 2), 
+            round(self._current_command.tail_offset, 2),
+            self._pec_angle
+        )
+        
+        if self._last_sent_command != current_cmd_tuple:
+            self._last_sent_command = current_cmd_tuple
+            self.control_command_generated.emit(self._current_command)

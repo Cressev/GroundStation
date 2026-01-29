@@ -114,6 +114,7 @@ class SocketCommunication(FishCommunicationInterface):
                 'tail_frequency': command.tail_frequency,
                 'tail_amplitude': command.tail_amplitude,
                 'tail_offset': command.tail_offset,
+                'pec_angle': getattr(command, 'pec_angle', 1500),
                 'timestamp': command.timestamp
             }
             

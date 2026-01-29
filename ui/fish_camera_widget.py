@@ -376,7 +376,7 @@ class FishCameraWidget(QWidget):
             self.record_btn.setEnabled(False)
             self.resolution_label.setText("分辨率: --")
             self.video_label.clear()
-            self.video_label.setText(f"连接已断开\\n\\n{message}")
+            self.video_label.setText(f"连接已断开\n{message}")
             print(f"机载相机断开: {message}")
             
     def _get_video_save_directory(self, title: str) -> str:

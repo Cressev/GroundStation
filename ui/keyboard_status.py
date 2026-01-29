@@ -51,21 +51,27 @@ class KeyboardStatusWidget(QWidget):
         keys_layout = QGridLayout(keys_group)
         
         # 创建按键显示标签
-        key_display_mapping = [
+        key_buttons = [
+            # 运动控制
             ("前进", KEYBOARD_MAPPING["forward"], 0, 0),
-            ("后退", KEYBOARD_MAPPING["backward"], 0, 1),
+            ("停止", KEYBOARD_MAPPING["backward"], 0, 1),
             ("左转", KEYBOARD_MAPPING["left"], 1, 0),
             ("右转", KEYBOARD_MAPPING["right"], 1, 1),
-            ("上浮", KEYBOARD_MAPPING["up"], 2, 0),
-            ("下潜", KEYBOARD_MAPPING["down"], 2, 1),
-            ("停止", KEYBOARD_MAPPING["stop"], 3, 0),
-            ("增加频率", KEYBOARD_MAPPING["increase_freq"], 4, 0),
-            ("减少频率", KEYBOARD_MAPPING["decrease_freq"], 4, 1),
-            ("增加幅度", KEYBOARD_MAPPING["increase_amp"], 5, 0),
-            ("减少幅度", KEYBOARD_MAPPING["decrease_amp"], 5, 1)
+            
+            # 参数调节
+            ("胸鳍+", KEYBOARD_MAPPING["increase_pec"], 2, 0),
+            ("胸鳍-", KEYBOARD_MAPPING["decrease_pec"], 2, 1),
+            ("频率+", KEYBOARD_MAPPING["increase_freq"], 3, 0),
+            ("频率-", KEYBOARD_MAPPING["decrease_freq"], 3, 1),
+            ("幅度+", KEYBOARD_MAPPING["increase_amp"], 4, 0),
+            ("幅度-", KEYBOARD_MAPPING["decrease_amp"], 4, 1),
+            
+            # UI控制
+            ("切换绘图", KEYBOARD_MAPPING["toggle_plot"], 5, 0),
+            ("清空数据", KEYBOARD_MAPPING["clear_plot"], 5, 1),
         ]
         
-        for description, key, row, col in key_display_mapping:
+        for description, key, row, col in key_buttons:
             # 创建按键显示框
             key_frame = QFrame()
             key_frame.setFrameStyle(QFrame.Box | QFrame.Raised)
@@ -140,7 +146,7 @@ class KeyboardStatusWidget(QWidget):
         self.key_history_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.key_history_label.setFont(QFont("Consolas", 9))
         self.key_history_label.setWordWrap(True)
-        self.key_history_label.setFixedHeight(80)
+        self.key_history_label.setFixedHeight(120)  # 增加高度到120
         self.key_history_label.setStyleSheet("background-color: #f0f0f0; padding: 5px; border: 1px solid #ccc;")
         
         record_layout.addWidget(self.key_history_label)
@@ -184,16 +190,15 @@ class KeyboardStatusWidget(QWidget):
         """获取按键对应的动作描述"""
         action_map = {
             KEYBOARD_MAPPING["forward"]: "前进",
-            KEYBOARD_MAPPING["backward"]: "后退",
+            KEYBOARD_MAPPING["backward"]: "停止",
             KEYBOARD_MAPPING["left"]: "左转", 
             KEYBOARD_MAPPING["right"]: "右转",
-            KEYBOARD_MAPPING["up"]: "上浮",
-            KEYBOARD_MAPPING["down"]: "下潜",
-            KEYBOARD_MAPPING["stop"]: "停止",
-            KEYBOARD_MAPPING["increase_freq"]: "增加频率",
-            KEYBOARD_MAPPING["decrease_freq"]: "减少频率",
-            KEYBOARD_MAPPING["increase_amp"]: "增加幅度",
-            KEYBOARD_MAPPING["decrease_amp"]: "减少幅度"
+            KEYBOARD_MAPPING["increase_pec"]: "胸鳍+",
+            KEYBOARD_MAPPING["decrease_pec"]: "胸鳍-",
+            KEYBOARD_MAPPING["increase_freq"]: "频率+",
+            KEYBOARD_MAPPING["decrease_freq"]: "频率-",
+            KEYBOARD_MAPPING["increase_amp"]: "幅度+",
+            KEYBOARD_MAPPING["decrease_amp"]: "幅度-"
         }
         return action_map.get(key, "未知动作")
     

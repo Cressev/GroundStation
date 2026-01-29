@@ -10,11 +10,28 @@ SSH_PASSWORD = "orangepi"
 # ROS配置
 ROS_MASTER_URI = f"http://{FISH_IP}:11311"
 
-# 控制参数范围
+# 控制参数（根据机器鱼舵机安全范围设定）
 CONTROL_LIMITS = {
-    "tail_frequency": {"min": 0.0, "max": 10.0, "default": 1.0, "unit": "Hz"},
-    "tail_amplitude": {"min": 0.0, "max": 1.57, "default": 0.5, "unit": "rad"},
-    "tail_offset": {"min": -1.57, "max": 1.57, "default": 0.0, "unit": "rad"}
+    "tail_frequency": {
+        "min": 0.0,
+        "max": 2.0,  # Hz
+        "default": 0.0  # 静止启动
+    },
+    "tail_amplitude": {
+        "min": 0.0,
+        "max": 0.4,  # rad (安全范围)
+        "default": 0.0  # 静止启动
+    },
+    "tail_offset": {
+        "min": -0.2,  # rad (安全范围)
+        "max": 0.2,   # rad
+        "default": 0.0
+    },
+    "pec_angle": {
+        "min": 1300,  # μs (PWM脉宽)
+        "max": 2000,  # μs
+        "default": 1500
+    }
 }
 
 # 传感器数据配置
@@ -29,13 +46,16 @@ KEYBOARD_MAPPING = {
     "backward": "S", 
     "left": "A",
     "right": "D",
-    "up": "Q",
-    "down": "E",
-    "stop": "Space",
-    "increase_freq": "Up",
-    "decrease_freq": "Down",
-    "increase_amp": "Right",
-    "decrease_amp": "Left",
+    # 胸鳍角度控制
+    "increase_pec": "Q",  # 增加胸鳍角度
+    "decrease_pec": "E",  # 减少胸鳍角度
+    # 频率控制
+    "increase_freq": "Up",     # 增加频率
+    "decrease_freq": "Down",   # 减少频率
+    # 幅度控制
+    "increase_amp": "R",    # 增加幅度
+    "decrease_amp": "F",    # 减少幅度
+    # UI控制
     "toggle_plot": "P",  # 切换绘图开关
     "clear_plot": "C"    # 清空绘图数据
 }

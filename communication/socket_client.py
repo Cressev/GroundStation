@@ -201,7 +201,8 @@ class SocketCommunication(FishCommunicationInterface):
             # 解析深度数据 -> 更新position的z值（如果深度数据更准确）
             depth = data.get('depth', {})
             depth_fusion = depth.get('fusion', 0.0)
-            if abs(depth_fusion) > 0.001:  # 如果有深度数据，使用深度数据
+            # 降低阈值，因为机器鱼实际深度较浅（0.2-2米）
+            if abs(depth_fusion) > 0.0001:  # 原来是0.001，太严格了
                 state.position['z'] = -depth_fusion  # 深度为负值
             
             state.timestamp = data.get('timestamp', time.time())

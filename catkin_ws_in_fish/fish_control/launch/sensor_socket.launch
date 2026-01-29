@@ -25,8 +25,11 @@
     <include file="$(find nlink_parser)/launch/linktrack.launch"/>
     
     <!-- 深度传感器发布节点 (需要sudo权限) -->
+    <!-- calib参数说明：
+         - true: 校准模式，校准完成后自动关闭程序
+         - false: 正常发布深度信息到/WF5803_topic话题 -->
     <node pkg="fish_control" type="WF5803_pub_node.py" name="WF5803_pub_node" output="screen">
-        <param name = "calib" value="true"/>
+        <param name = "calib" value="false"/>
     </node>    
     
     <!-- Socket服务器节点 -->

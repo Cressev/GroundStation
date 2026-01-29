@@ -84,9 +84,20 @@ class DataVisualizationWidget(QWidget):
         # 轨迹线
         self.xy_curve = self.xy_plot.plot(pen=pg.mkPen(color='blue', width=2), name='轨迹')
         # 当前位置点
-        self.xy_point = self.xy_plot.plot(pen=None, symbol='o', symbolBrush='red', symbolSize=8, name='当前位置')
+        self.xy_point = self.xy_plot.plot(
+            pen=None,
+            symbol='o',
+            symbolSize=10,
+            symbolBrush=pg.mkBrush(color='red'),
+            name='当前位置'
+        )
         
         layout.addWidget(self.xy_plot)
+        
+        # 底部状态栏显示当前位置
+        self.xy_status_label = QLabel("当前位置: X: 0.000 m, Y: 0.000 m")
+        self.xy_status_label.setStyleSheet("font-size: 11pt; padding: 5px; background-color: #f0f0f0;")
+        layout.addWidget(self.xy_status_label)
         
         return widget
     
@@ -106,6 +117,13 @@ class DataVisualizationWidget(QWidget):
         
         self.z_curve = self.z_plot.plot(pen=pg.mkPen(color=UI_CONFIG["plot_colors"]["z"], width=2), name='深度')
         
+        layout.addWidget(self.z_plot)
+        
+        # 底部状态栏显示当前深度
+        self.z_status_label = QLabel("当前深度: Z: 0.000 m")
+        self.z_status_label.setStyleSheet("font-size: 11pt; padding: 5px; background-color: #f0f0f0;")
+        layout.addWidget(self.z_status_label)
+        
         # RPY-t图
         self.rpy_plot = pg.PlotWidget(title="姿态角-时间图")
         self.rpy_plot.setLabel('left', '角度 (rad)')
@@ -121,6 +139,11 @@ class DataVisualizationWidget(QWidget):
         
         layout.addWidget(self.z_plot)
         layout.addWidget(self.rpy_plot)
+        
+        # 底部状态栏显示当前姿态角
+        self.rpy_status_label = QLabel("当前姿态: Roll: 0.000, Pitch: 0.000, Yaw: 0.000")
+        self.rpy_status_label.setStyleSheet("font-size: 11pt; padding: 5px; background-color: #f0f0f0;")
+        layout.addWidget(self.rpy_status_label)
         
         return widget
     
@@ -349,22 +372,14 @@ class DataVisualizationWidget(QWidget):
         
         # 右侧胸鳍
         right_fin_verts = np.array([
-            [fin_base_x, body_width*0.5, 0],  # 基部上
-            [fin_base_x - 0.1, body_width*0.5, -0.05],  # 基部下
-            [fin_base_x, body_width*0.5 + fin_length, fin_width],  # 鳍尖上
-            [fin_base_x - 0.15, body_width*0.5 + fin_length*0.8, -fin_width*0.5],  # 鳍尖下
-        ], dtype=float)
+            [fin_base_x, body_width/2, 0],  # 基座
+            [fin_base_x - 0.1, body_width/2 + fin_length, -fin_width],  # 鳍尖
+            [fin_base_x + 0.1, body_width/2 + fin_length, -fin_width],
+        ])
+        right_fin_faces = np.array([[0, 1, 2]], dtype=np.uint32)
+        right_fin_colors = np.array([[0.85, 0.4, 0.1, 0.9]])
         
-        right_fin_faces = np.array([
-            [0, 2, 1], [1, 2, 3],
-            [0, 1, 3], [0, 3, 2],  # 双面
-        ], dtype=np.uint32)
-        
-        right_fin_colors = np.ones((len(right_fin_faces), 4))
-        right_fin_colors[:, :3] = [0.85, 0.4, 0.12]  # 稍深的橙色
-        right_fin_colors[:, 3] = 0.9
-        
-        right_fin = gl.GLMeshItem(
+        self.right_pec_fin = gl.GLMeshItem(
             vertexes=right_fin_verts,
             faces=right_fin_faces,
             faceColors=right_fin_colors,
@@ -372,24 +387,53 @@ class DataVisualizationWidget(QWidget):
             drawEdges=True,
             edgeColor=(0.3, 0.15, 0.05, 1)
         )
-        self.gl_widget.addItem(right_fin)
-        self.right_fin = right_fin  # 保存引用用于旋转
+        self.gl_widget.addItem(self.right_pec_fin)
         
-        # 左侧胸鳍（镜像）
-        left_fin_verts = right_fin_verts.copy()
-        left_fin_verts[:, 1] *= -1  # Y坐标取反
+        # 左侧胸鳍
+        left_fin_verts = np.array([
+            [fin_base_x, -body_width/2, 0],
+            [fin_base_x - 0.1, -body_width/2 - fin_length, -fin_width],
+            [fin_base_x + 0.1, -body_width/2 - fin_length, -fin_width],
+        ])
+        left_fin_faces = np.array([[0, 1, 2]], dtype=np.uint32)
+        left_fin_colors = np.array([[0.85, 0.4, 0.1, 0.9]])
         
-        left_fin = gl.GLMeshItem(
+        self.left_pec_fin = gl.GLMeshItem(
             vertexes=left_fin_verts,
-            faces=right_fin_faces,
-            faceColors=right_fin_colors,
+            faces=left_fin_faces,
+            faceColors=left_fin_colors,
             smooth=True,
             drawEdges=True,
             edgeColor=(0.3, 0.15, 0.05, 1)
         )
-        self.gl_widget.addItem(left_fin)
-        self.left_fin = left_fin  # 保存引用用于旋转
-
+        self.gl_widget.addItem(self.left_pec_fin)
+        
+        # === 添加背鳍（鱼背标识） ===
+        dorsal_fin_x = body_length/8  # 背鳍位置在鱼背中部
+        dorsal_fin_height = 0.35  # 背鳍高度
+        dorsal_fin_width = 0.25  # 背鳍宽度
+        
+        # 三角形背鳍（垂直向上）
+        dorsal_fin_verts = np.array([
+            [dorsal_fin_x + dorsal_fin_width/2, 0, body_height/2],  # 基座前端
+            [dorsal_fin_x - dorsal_fin_width/2, 0, body_height/2],  # 基座后端
+            [dorsal_fin_x, 0, body_height/2 + dorsal_fin_height],  # 鳍尖（向上）
+        ])
+        dorsal_fin_faces = np.array([[0, 1, 2]], dtype=np.uint32)
+        # 背鳍使用深色以便区分
+        dorsal_fin_colors = np.array([[0.7, 0.3, 0.05, 0.95]])
+        
+        self.dorsal_fin = gl.GLMeshItem(
+            vertexes=dorsal_fin_verts,
+            faces=dorsal_fin_faces,
+            faceColors=dorsal_fin_colors,
+            smooth=True,
+            drawEdges=True,
+            edgeColor=(0.3, 0.15, 0.05, 1)
+        )
+        self.gl_widget.addItem(self.dorsal_fin)
+        
+        print("3D鱼形模型创建成功")
         
         # 方向箭头
         arrow_verts = np.array([
@@ -456,10 +500,15 @@ class DataVisualizationWidget(QWidget):
         # 更新当前位置点
         if x_data and y_data:
             self.xy_point.setData([x_data[-1]], [y_data[-1]])
+            # 更新底部状态栏
+            self.xy_status_label.setText(f'当前位置: X: {x_data[-1]:.3f} m, Y: {y_data[-1]:.3f} m')
         
         # 更新Z-t图
         z_data = list(self.data_history['z'])
         self.z_curve.setData(times, z_data)
+        # 更新底部状态栏
+        if z_data:
+            self.z_status_label.setText(f'当前深度: Z: {z_data[-1]:.3f} m')
         
         # 更新RPY-t图
         roll_data = list(self.data_history['roll'])
@@ -469,6 +518,10 @@ class DataVisualizationWidget(QWidget):
         self.roll_curve.setData(times, roll_data)
         self.pitch_curve.setData(times, pitch_data)
         self.yaw_curve.setData(times, yaw_data)
+        
+        # 更新底部状态栏
+        if roll_data and pitch_data and yaw_data:
+            self.rpy_status_label.setText(f'当前姿态: Roll: {roll_data[-1]:.3f}, Pitch: {pitch_data[-1]:.3f}, Yaw: {yaw_data[-1]:.3f}')
         
         # 更新姿态可视化
         if roll_data and pitch_data and yaw_data:
@@ -507,12 +560,14 @@ class DataVisualizationWidget(QWidget):
             transform.rotate(np.degrees(-pitch), 0, 1, 0)  # 绕Y轴旋转 (pitch，反转)
             transform.rotate(np.degrees(roll), 1, 0, 0)   # 绕X轴旋转 (roll)
             
-            # 应用到鱼模型和胸鳍
+            # 应用变换到鱼身网格和背鳍
             self.fish_mesh.setTransform(transform)
-            if hasattr(self, 'right_fin'):
-                self.right_fin.setTransform(transform)
-            if hasattr(self, 'left_fin'):
-                self.left_fin.setTransform(transform)
+            if hasattr(self, 'dorsal_fin'):
+                self.dorsal_fin.setTransform(transform)
+            if hasattr(self, 'right_pec_fin'):
+                self.right_pec_fin.setTransform(transform)
+            if hasattr(self, 'left_pec_fin'):
+                self.left_pec_fin.setTransform(transform)
             
             # 更新方向箭头
             # 计算旋转后的箭头位置

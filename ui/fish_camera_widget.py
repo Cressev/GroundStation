@@ -166,7 +166,7 @@ class FishCameraWidget(QWidget):
                 border-radius: 5px;
             }
         """)
-        self.video_label.setText("未连接到机器鱼\\n点击'连接'按钮开始视频流")
+        self.video_label.setText("未连接到机器鱼<br>点击'连接'按钮开始视频流")
         
         video_layout.addWidget(self.video_label)
         layout.addWidget(video_group)
@@ -376,7 +376,7 @@ class FishCameraWidget(QWidget):
             self.record_btn.setEnabled(False)
             self.resolution_label.setText("分辨率: --")
             self.video_label.clear()
-            self.video_label.setText(f"连接已断开\n{message}")
+            self.video_label.setText(f"连接已断开<br>{message}")
             print(f"机载相机断开: {message}")
             
     def _get_video_save_directory(self, title: str) -> str:

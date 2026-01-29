@@ -142,6 +142,14 @@ class DataRecorder(QObject):
     def add_data_point(self, fish_state: FishState, control_command: ControlCommand):
         """添加数据点"""
         if self.is_recording and not self.is_paused:
+            # 如果control_command为None，创建默认值
+            if control_command is None:
+                control_command = ControlCommand(
+                    freq=0.0,
+                    amp=0.0,
+                    offset=0.0
+                )
+            
             entry = RecordEntry.from_fish_state_and_command(fish_state, control_command)
             self.recorded_data.append(entry)
             

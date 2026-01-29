@@ -1,86 +1,11 @@
 1. 【已解决】机载相机页面，未连接时显示“连接已断开\n\n连接已断开”,这个转义符没有转义，且为什么重复呢？ 
-2. 三维视图中区分不开鱼背和鱼肚子，加个背鳍好不好
+2. 【已解决】三维视图中区分不开鱼背和鱼肚子，加个背鳍好不好
 3. 【已解决】键盘控制无效。
 4. 【已解决】按键记录窗口太小，显示最下面的文字不全 
 ![alt text](image.png)
 5. 【已解决】机器鱼上需要启动很多节点  
 6. ui程序经常卡死，自动退出，内存需要优化
-7. 保存数据出错。
-记录状态: 数据记录已开始
-数据记录已开始
+7. 【已解决】保存数据出错
 [14:12:56] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:56] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:56] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:56] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:56] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:56] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:56] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:56] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:56] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:56] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:56] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:56] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:56] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:56] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:56] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:57] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:57] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:57] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:57] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:57] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:57] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:57] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:57] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:57] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:57] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:57] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:57] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:57] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:57] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:57] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:57] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:58] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:58] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:58] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:58] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:58] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:58] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:58] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:58] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:58] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:58] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:58] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:58] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:58] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:58] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:58] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:58] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:59] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:59] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:59] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:59] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:59] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:59] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:59] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:59] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:59] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:59] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:59] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:59] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:59] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:59] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:12:59] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:13:00] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:13:00] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:13:00] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:13:00] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:13:00] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:13:00] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:13:00] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:13:00] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-[14:13:00] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
-记录状态: 数据记录已暂停
-数据记录已暂停
-记录状态: 数据记录已停止
-数据记录已停止，总时长: 10.0秒，记录点数: 0
 8. 【已解决】位置绘图和时间序列绘图时在图上标注实时数据
+9. 保存数据时显示文件夹不存在。excel数据保存不成功 No module named 'openpyxl'

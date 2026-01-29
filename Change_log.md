@@ -1,5 +1,21 @@
 # Change Log
 
+## 2026-01-29 15:50
+
+### 修复: 数据记录时control_command为None导致崩溃
+**问题**：开始数据记录后出现大量错误`'NoneType' object has no attribute 'tail_frequency'`
+
+**原因**：
+- 在`main_window.py`的`_update_data()`中，`_last_control_command`初始值为None
+- `data/recorder.py`的`add_data_point()`直接访问None对象的属性
+
+**修复**：
+- **修改** `data/recorder.py`的`add_data_point()`方法  
+  - 添加control_command的None检查
+  - 为None时创建默认ControlCommand对象（频率、幅度、偏移量均为0）
+
+**效果**：数据记录功能正常，不再报错
+
 ## 2026-01-29 15:45
 
 ### 修复: 深度数据不更新问题

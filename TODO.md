@@ -5,6 +5,7 @@
 ![alt text](image.png)
 5. 【已解决】机器鱼上需要启动很多节点  
 6. ui程序经常卡死，自动退出，内存需要优化
+QObject::killTimer: Timers cannot be stopped from another thread
 7. 【已解决】保存数据出错
 [14:12:56] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'
 8. 【已解决】位置绘图和时间序列绘图时在图上标注实时数据

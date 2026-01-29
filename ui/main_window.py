@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QMenuBar, QStatusBar, QAction, QTabWidget,
                              QGroupBox, QGridLayout, QLabel, QPushButton,
                              QComboBox, QMessageBox, QSplitter, QTextEdit, QLineEdit)
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QFont, QKeySequence, QIcon
 
 from ui.visualization import DataVisualizationWidget
@@ -29,6 +29,9 @@ from config import UI_CONFIG, KEYBOARD_MAPPING, FISH_IP, SOCKET_PORT
 class MainWindow(QMainWindow):
     """主窗口类"""
     
+    # 定义信号用于线程安全的UI更新
+    connection_changed_signal = pyqtSignal(bool)  # 连接状态变化信号
+    
     def __init__(self):
         super().__init__()
         
@@ -37,6 +40,7 @@ class MainWindow(QMainWindow):
         self.current_controller = None
         self.controllers = {}
         self._last_control_command = None  # 最后的控制命令，用于数据记录
+        self.connection_start_time = None  # 连接开始时间
         
         # 初始化界面
         self._init_ui()
@@ -53,6 +57,11 @@ class MainWindow(QMainWindow):
         self.data_timer = QTimer()
         self.data_timer.timeout.connect(self._update_data)
         
+        # 连接时间更新定时器
+        self.connection_timer = QTimer()
+        self.connection_timer.timeout.connect(self._update_connection_time)
+        self.connection_timer.start(1000)  # 每秒更新一次
+        
     def _init_ui(self):
         """初始化用户界面"""
         self.setWindowTitle(UI_CONFIG["window_title"])
@@ -64,6 +73,12 @@ class MainWindow(QMainWindow):
         # 创建状态栏
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
+        
+        # 添加连接时间标签到状态栏右侧
+        self.connection_time_label = QLabel("未连接")
+        self.connection_time_label.setStyleSheet("color: gray; font-weight: bold;")
+        self.status_bar.addPermanentWidget(self.connection_time_label)
+        
         self.status_bar.showMessage("系统启动完成")
         
         # 创建中央组件
@@ -313,12 +328,14 @@ class MainWindow(QMainWindow):
             controller.control_command_generated.connect(self._on_control_command)
             controller.status_changed.connect(self._on_controller_status_changed)
         
-        # 按键状态组件信号连接
-        self.keyboard_status_widget.plot_toggled.connect(self._on_plot_toggled)
+        # 键盘状态组件信号连接  
         self.keyboard_status_widget.plot_cleared.connect(self._on_plot_cleared)
         
         # 数据记录组件信号连接
         self.data_recording_widget.export_graphics_requested.connect(self._on_export_graphics_requested)
+        
+        # 连接状态变化信号（线程安全）
+        self.connection_changed_signal.connect(self._handle_connection_changed, Qt.QueuedConnection)
     
     def _switch_controller(self, controller_name: str):
         """切换控制器"""
@@ -402,6 +419,9 @@ class MainWindow(QMainWindow):
                 # 但保留定时器用于UI刷新和数据记录
                 self.data_timer.start(50)  # 20Hz
                 
+                # 记录连接开始时间
+                self.connection_start_time = time.time()
+                
                 self._log_message(f"机器鱼连接成功 (Socket: {ip_address}:{port})")
                 
                 # 设置焦点以确保键盘事件能够被接收
@@ -443,7 +463,9 @@ class MainWindow(QMainWindow):
             
             if self.communication:
                 self.communication.disconnect()
-                self.communication = None
+            self.communication = None
+            # 清除连接时间
+            self.connection_start_time = None
                 
             self.connection_status_label.setText("未连接")
             self.connection_button.setText("连接")
@@ -456,6 +478,25 @@ class MainWindow(QMainWindow):
             
         except Exception as e:
             self._log_message(f"断开连接异常: {e}")
+    
+    def _update_connection_time(self):
+        """更新连接时间显示"""
+        if self.connection_start_time is not None:
+            elapsed_time = time.time() - self.connection_start_time
+            hours = int(elapsed_time // 3600)
+            minutes = int((elapsed_time % 3600) // 60)
+            seconds = int(elapsed_time % 60)
+            
+            if hours > 0:
+                time_str = f"已连接: {hours:02d}:{minutes:02d}:{seconds:02d}"
+            else:
+                time_str = f"已连接: {minutes:02d}:{seconds:02d}"
+            
+            self.connection_time_label.setText(time_str)
+            self.connection_time_label.setStyleSheet("color: green; font-weight: bold;")
+        else:
+            self.connection_time_label.setText("未连接")
+            self.connection_time_label.setStyleSheet("color: gray; font-weight: bold;")
     
     def _update_data(self):
         """更新数据"""
@@ -470,7 +511,13 @@ class MainWindow(QMainWindow):
                     self.data_recording_widget.add_data_point(fish_state, last_command)
                     
             except Exception as e:
-                self._log_message(f"数据更新异常: {e}")
+                # 降低错误日志频率避免刷屏
+                import time
+                import traceback
+                if not hasattr(self, '_last_error_time') or time.time() - self._last_error_time > 5:
+                    self._last_error_time = time.time()
+                    self._log_message(f"数据更新异常: {e}")
+                    traceback.print_exc()
     
     def _on_sensor_data_received(self, fish_state: FishState):
         """传感器数据接收回调（由Socket线程调用）"""
@@ -479,17 +526,27 @@ class MainWindow(QMainWindow):
         pass
     
     def _on_connection_changed(self, connected: bool):
-        """连接状态变化回调"""
-        if not connected:
-            # 连接断开，重置UI状态
-            self.data_timer.stop()
-            self.connection_status_label.setText("连接断开")
-            self.connection_button.setText("连接")
-            self.connection_button.setEnabled(True)
-            self.ip_input.setEnabled(True)
-            self.port_input.setEnabled(True)
-            self.status_bar.showMessage("连接已断开")
-            self._log_message("机器鱼连接已断开")
+        """连接状态变化回调（在socket工作线程中调用）"""
+        # 只发射信号，不直接操作UI
+        self.connection_changed_signal.emit(connected)
+    
+    @pyqtSlot(bool)
+    def _handle_connection_changed(self, connected: bool):
+        """处理连接状态变化（在主线程中执行）"""
+        try:
+            if not connected:
+                # 连接断开，重置UI状态
+                self.data_timer.stop()
+                self.connection_start_time = None
+                self.connection_status_label.setText("连接断开")
+                self.connection_button.setText("连接")
+                self.connection_button.setEnabled(True)
+                self.ip_input.setEnabled(True)
+                self.port_input.setEnabled(True)
+                self.status_bar.showMessage("连接已断开")
+                self._log_message("机器鱼连接已断开")
+        except Exception as e:
+            print(f"处理连接状态变化异常: {e}")
     
     def _on_control_command(self, command: ControlCommand):
         """处理控制命令"""

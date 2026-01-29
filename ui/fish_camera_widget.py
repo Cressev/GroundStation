@@ -11,7 +11,7 @@ import datetime
 import os
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QPushButton, QGroupBox, QMessageBox, QFileDialog)
-from PyQt5.QtCore import QThread, pyqtSignal, Qt
+from PyQt5.QtCore import QThread, pyqtSignal, Qt, pyqtSlot
 from PyQt5.QtGui import QImage, QPixmap, QFont
 import socket
 import struct
@@ -197,8 +197,9 @@ class FishCameraWidget(QWidget):
         
     def _init_connections(self):
         """初始化信号连接"""
-        self.stream_client.frame_received.connect(self._update_frame)
-        self.stream_client.connection_status.connect(self._on_connection_status)
+        # 使用QueuedConnection确保线程安全
+        self.stream_client.frame_received.connect(self._update_frame, Qt.QueuedConnection)
+        self.stream_client.connection_status.connect(self._on_connection_status, Qt.QueuedConnection)
         
     def _toggle_connection(self):
         """连接"""
@@ -293,8 +294,12 @@ class FishCameraWidget(QWidget):
         self.recording = False
         
         if self.video_writer:
-            self.video_writer.release()
-            self.video_writer = None
+            try:
+                self.video_writer.release()
+            except Exception as e:
+                print(f"释放VideoWriter异常: {e}")
+            finally:
+                self.video_writer = None
         
         # 移动文件到目标目录
         if save_dir:
@@ -335,49 +340,57 @@ class FishCameraWidget(QWidget):
             pass
         return "192.168.137.241"
         
+    @pyqtSlot(np.ndarray)
     def _update_frame(self, frame):
         """更新视频帧"""
-        self.current_frame = frame
+        try:
+            self.current_frame = frame
+            
+            # 如果正在录制，保存帧
+            if self.recording and self.video_writer:
+                self.video_writer.write(frame)
+                self.recording_frame_count += 1
+            
+            # 转换为Qt格式显示
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            h, w, ch = rgb_frame.shape
+            bytes_per_line = ch * w
+            qt_image = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
+            
+            # 更新分辨率标签
+            self.resolution_label.setText(f"分辨率: {w}x{h}")
+            
+            # 缩放显示
+            label_size = self.video_label.size()
+            scaled_image = qt_image.scaled(
+                label_size.width() - 10,
+                label_size.height() - 10,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+            
+            pixmap = QPixmap.fromImage(scaled_image)
+            self.video_label.setPixmap(pixmap)
+        except Exception as e:
+            print(f"更新视频帧异常: {e}")
         
-        # 如果正在录制，保存帧
-        if self.recording and self.video_writer:
-            self.video_writer.write(frame)
-            self.recording_frame_count += 1
-        
-        # 转换为Qt格式显示
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = rgb_frame.shape
-        bytes_per_line = ch * w
-        qt_image = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
-        
-        # 更新分辨率标签
-        self.resolution_label.setText(f"分辨率: {w}x{h}")
-        
-        # 缩放显示
-        label_size = self.video_label.size()
-        scaled_image = qt_image.scaled(
-            label_size.width() - 10,
-            label_size.height() - 10,
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation
-        )
-        
-        pixmap = QPixmap.fromImage(scaled_image)
-        self.video_label.setPixmap(pixmap)
-        
+    @pyqtSlot(bool, str)
     def _on_connection_status(self, connected, message):
         """连接状态改变"""
-        if connected:
-            self.status_label.setText("连接状态: 已连接")
-            self.record_btn.setEnabled(True)
-            print(f"机载相机已连接: {message}")
-        else:
-            self.status_label.setText("连接状态: 未连接")
-            self.record_btn.setEnabled(False)
-            self.resolution_label.setText("分辨率: --")
-            self.video_label.clear()
-            self.video_label.setText(f"连接已断开<br>{message}")
-            print(f"机载相机断开: {message}")
+        try:
+            if connected:
+                self.status_label.setText("连接状态: 已连接")
+                self.record_btn.setEnabled(True)
+                print(f"机载相机已连接: {message}")
+            else:
+                self.status_label.setText("连接状态: 未连接")
+                self.record_btn.setEnabled(False)
+                self.resolution_label.setText("分辨率: --")
+                self.video_label.clear()
+                self.video_label.setText(f"连接已断开<br>{message}")
+                print(f"机载相机断开: {message}")
+        except Exception as e:
+            print(f"连接状态更新异常: {e}")
             
     def _get_video_save_directory(self, title: str) -> str:
         """获取视频保存目录"""

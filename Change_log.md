@@ -1,5 +1,99 @@
 # Change Log
 
+## 2026-01-29 16:40
+
+### 修复: socket回调线程安全问题（critical fix🔥）
+**问题**：UI稳定性优化后仍出现`QObject::killTimer: Timers cannot be stopped from another thread`
+
+**新发现的根本原因**：
+- `socket_client.py`的`_connection_callback`在工作线程中调用
+- `main_window.py`的`_on_connection_changed`直接操作UI（`self.data_timer.stop()`等）
+- 违反Qt线程安全规则导致killTimer错误
+
+**修复**：
+- **修改** `ui/main_window.py`
+  - 添加`connection_changed_signal`信号
+  - `_on_connection_changed`只发射信号，不操作UI
+  - 新增`@pyqtSlot`装饰的`_handle_connection_changed()`在主线程处理UI更新
+  - 使用`Qt.QueuedConnection`连接信号
+
+**效果**：
+- ✅ 彻底解决线程安全问题
+- ✅ 消除所有跨线程UI操作
+
+### 新增: 状态栏连接时间显示
+**需求**：在状态栏显示连接时长，便于诊断稳定性问题
+
+**实现**：
+- **修改** `ui/main_window.py`
+  - 添加`connection_start_time`记录连接开始时间
+  - 添加`connection_time_label`到状态栏右侧
+  - 添加`connection_timer`每秒更新显示
+  - 添加`_update_connection_time()`方法格式化显示时间
+
+**显示格式**：
+- 未连接：灰色 "未连接"
+- 已连接：绿色 "已连接: MM:SS" 或 "已连接: HH:MM:SS"
+
+**效果**：
+- ✅ 实时显示连接时长
+- ✅ 便于观察何时断连
+- ✅ 帮助诊断稳定性问题
+
+### 修复: 机器鱼Socket服务器自动断连问题
+**问题**：GroundStation连接后，每隔一段时间（如60s）自动断开，机器鱼端提示`timed out`。但摄像头数据依然正常。
+
+**原因**：
+- 机器鱼端`socket_server.py`设置了Server Socket超时`settimeout(1.0)`
+- 客户端Socket继承了这个超时设置
+- 当GroundStation不发送控制命令时，服务器因超时主动断开连接
+- **摄像头正常原因**：摄像头使用独立的端口(9998)和程序，不受主控制程序(9999)影响
+
+**修复**：
+- **修改** `socket_server.py` (需部署到机器鱼)
+  - 在`accept()`后立即调用`client_socket.settimeout(None)`
+  - 清除继承的超时设置，进入阻塞模式
+
+## 2026-01-29 16:30
+
+### 修复: UI程序卡死和崩溃问题（P0优先级）
+**问题**：程序经常卡死、自动退出，错误信息`QObject::killTimer: Timers cannot be stopped from another thread`
+
+**根本原因**：
+1. **线程安全违规**：工作线程(CameraStreamClient)直接触发UI更新
+2. **资源泄漏**：VideoWriter未正确释放
+3. **异常传播**：缺少异常处理导致单点故障崩溃
+
+**修复**（按优先级）:
+
+#### P0 - 线程安全修复
+- **修改** `ui/fish_camera_widget.py`
+  - 导入`pyqtSlot`装饰器
+  - 信号连接添加`Qt.QueuedConnection`参数（第201-202行）
+  - 槽函数添加`@pyqtSlot`装饰器（`_update_frame`, `_on_connection_status`）
+  - 所有槽函数添加try-except异常处理
+
+#### P1 - 资源管理优化  
+- **修改** `ui/fish_camera_widget.py`的`_stop_recording()`
+  - VideoWriter释放包裹在try-except-finally中
+  - 确保无论成功失败都设置为None
+
+#### P2 - 异常处理增强
+- **修改** `ui/main_window.py`的`_update_data()`
+  - 添加错误日志速率限制（5秒一次）
+  - 添加traceback打印便于调试
+
+**效果**：
+- ✅ 消除线程安全错误
+- ✅ 防止资源泄漏
+- ✅ 优雅处理异常不崩溃
+- ✅提升长时间运行稳定性
+
+**待验证**：
+- 长时间运行测试（>30分钟）
+- 连接断开循环测试
+- 内存监控
+
 ## 2026-01-29 15:50
 
 ### 修复: 数据记录时control_command为None导致崩溃

@@ -148,6 +148,10 @@ class FishSocketServer:
                 client_socket, client_addr = self.server_socket.accept()
                 rospy.loginfo(f"客户端连接: {client_addr}")
                 
+                # 重要：清除客户端socket的超时设置，使其进入阻塞模式
+                # 否则会继承ServerSocket的超时设置(1.0s)，导致不发送数据时连接断开
+                client_socket.settimeout(None)
+                
                 with self.clients_lock:
                     self.clients.append(client_socket)
                 

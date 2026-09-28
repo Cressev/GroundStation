@@ -71,17 +71,18 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
 gs_bridge 将 control 翻译为 `fish_interfaces/ActuatorCommand` 发布到
 `/fish/control/actuator_command`（限幅见 gs_bridge/gs_bridge_node.py 的 CONTROL_LIMITS）。
 
-## 双尾鱼板上服务管理（pico，root）
+## 双尾鱼板上服务启动（pico，root，ros2 launch 方式）
 
 ```bash
-systemd-run --unit=fish-depth-src --collect --property=Restart=always \
-  --property=RestartSec=3 /root/catkin_ws/src/pico_stereo/scripts/run_depth_src.sh
-systemd-run --unit=gs-bridge-src --collect --property=Restart=always \
-  --property=RestartSec=3 /root/catkin_ws/src/pico_stereo/scripts/run_gsbridge_src.sh
+/root/catkin_ws/src/pico_stereo/scripts/start_dual_fish.sh
 ```
 
-脚本从**源码目录**直接运行（PYTHONPATH 指向 src），不依赖 colcon install 产物，
-避免与他人并发 `rm -rf install && colcon build` 互相清包。
-注意：pico 源文件 `depth_node.py`/`stereo_lib.py` 已加 `chattr +i` 不可变锁
-（修改前先 `chattr -i`）。板上另有并行 agent，其测试前清场（pkill/systemctl stop）
-会停掉以上服务，属预期行为，重新执行上面两条命令即可。
+一键脚本 = 加载 ROS2 环境 + `ros2 launch`。launch 文件:
+`pico_stereo/launch/depth.launch.py`（双目测深）、`gs_bridge/launch/gs_bridge.launch.py`
+（控制桥）、`pico_stereo/launch/dual_fish_bringup.launch.py`（一键总成，绝对路径引用，
+**从源码目录直跑**，不依赖 colcon install 产物）。Ctrl+C 停止全部节点。
+
+注意：源文件 `depth_node.py`/`stereo_lib.py` 已加 `chattr +i` 不可变锁（修改前先
+`chattr -i`）。板上另有并行 agent/用户共用节点，其测试前清场（pkill 等）
+会停掉服务，重新运行上面的启动脚本即可。
+

@@ -2,3 +2,7 @@
 .agent
 __pycache__
 records
+# 双目/双尾鱼开发新增忽略
+fps_compare/
+*.avi
+*.mp4

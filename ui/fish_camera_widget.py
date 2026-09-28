@@ -8,9 +8,11 @@ Fish Onboard Camera Widget
 import cv2
 import numpy as np
 import datetime
+import json
 import os
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QPushButton, QGroupBox, QMessageBox, QFileDialog)
+import time
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+                             QPushButton, QGroupBox, QMessageBox)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt, pyqtSlot
 from PyQt5.QtGui import QImage, QPixmap, QFont
 import socket
@@ -18,12 +20,13 @@ import struct
 
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import VIDEO_CONFIG
+from config import FISH_IP
 
 class CameraStreamClient(QThread):
     """机器鱼摄像头视频流接收线程"""
     frame_received = pyqtSignal(np.ndarray)
     connection_status = pyqtSignal(bool, str)  # (connected, message)
+    message_received = pyqtSignal(str)         # 机上JSON消息(录制开始/保存完成通知)
     
     def __init__(self):
         super().__init__()
@@ -47,46 +50,63 @@ class CameraStreamClient(QThread):
             data += packet
         return data
     
+    def send_command(self, cmd: str):
+        """向机上发送命令(如REC_START/REC_STOP)
+        TCP全双工, 与接收线程的recv并发安全
+        """
+        if self.socket:
+            try:
+                self.socket.sendall((cmd.strip() + "\n").encode('utf-8'))
+            except Exception as e:
+                print(f"发送命令失败: {e}")
+
     def run(self):
         """线程运行函数"""
         self.running = True
-        
+
         try:
             # 创建Socket连接
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.settimeout(5.0)
             self.socket.connect((self.host, self.port))
             self.connection_status.emit(True, f"已连接到 {self.host}:{self.port}")
-            
+
             while self.running:
                 try:
-                    # 接收帧大小 (4字节，网络字节序)
+                    # 接收消息长度 (4字节，网络字节序)
                     size_data = self._recv_all(4)
                     if not size_data:
                         break
-                        
+
                     size = struct.unpack("!I", size_data)[0]
-                    
-                    # 接收帧数据
-                    img_data = self._recv_all(size)
-                    if not img_data:
+
+                    # 接收消息数据 (首字节为类型: 0xFF=JPEG帧, 0xFE=JSON消息)
+                    payload = self._recv_all(size)
+                    if not payload:
                         break
-                    
-                    # 解码JPEG
-                    frame = cv2.imdecode(
-                        np.frombuffer(img_data, np.uint8), 
-                        cv2.IMREAD_COLOR
-                    )
-                    
-                    if frame is not None:
-                        self.frame_received.emit(frame)
-                        
+
+                    msg_type, body = payload[0], payload[1:]
+
+                    if msg_type == 0xFF:
+                        # 解码JPEG
+                        frame = cv2.imdecode(
+                            np.frombuffer(body, np.uint8),
+                            cv2.IMREAD_COLOR
+                        )
+
+                        if frame is not None:
+                            # 鱼眼相机在鱼体上为倒装安装，画面旋转180°矫正
+                            frame = cv2.rotate(frame, cv2.ROTATE_180)
+                            self.frame_received.emit(frame)
+                    elif msg_type == 0xFE:
+                        self.message_received.emit(body.decode('utf-8', 'ignore'))
+
                 except socket.timeout:
                     continue
                 except Exception as e:
-                    print(f"接收帧错误: {e}")
+                    print(f"接收错误: {e}")
                     break
-                    
+
         except Exception as e:
             self.connection_status.emit(False, f"连接失败: {str(e)}")
         finally:
@@ -112,10 +132,10 @@ class FishCameraWidget(QWidget):
         super().__init__()
         self.stream_client = CameraStreamClient()
         self.current_frame = None
-        self.video_writer = None
         self.recording = False
-        self.recording_start_time = None
-        self.recording_frame_count = 0
+        # 实际帧率统计(每秒刷新一次)
+        self._fps_count = 0
+        self._fps_t0 = time.time()
         self._init_ui()
         self._init_connections()
         
@@ -147,6 +167,8 @@ class FishCameraWidget(QWidget):
         self.record_btn = QPushButton("开始录制")
         self.record_btn.clicked.connect(self._toggle_recording)
         self.record_btn.setEnabled(False)
+        self.record_btn.setToolTip(
+            "高清视频(1280x960@30)直接保存在机器鱼上, 不占用Wi-Fi带宽")
         control_layout.addWidget(self.record_btn)
         
         control_layout.addStretch()
@@ -158,7 +180,7 @@ class FishCameraWidget(QWidget):
         
         self.video_label = QLabel()
         self.video_label.setAlignment(Qt.AlignCenter)
-        self.video_label.setMinimumSize(640, 480)
+        self.video_label.setMinimumSize(320, 240)
         self.video_label.setStyleSheet("""
             QLabel {
                 border: 2px solid #ccc;
@@ -181,7 +203,7 @@ class FishCameraWidget(QWidget):
         self.resolution_label = QLabel("分辨率: --")
         self.resolution_label.setFont(QFont("Arial", 10))
         
-        self.fps_label = QLabel("帧率: ~17 FPS")
+        self.fps_label = QLabel("帧率: --")
         self.fps_label.setFont(QFont("Arial", 10))
         
         self.recording_label = QLabel("录制状态: 未录制")
@@ -200,6 +222,7 @@ class FishCameraWidget(QWidget):
         # 使用QueuedConnection确保线程安全
         self.stream_client.frame_received.connect(self._update_frame, Qt.QueuedConnection)
         self.stream_client.connection_status.connect(self._on_connection_status, Qt.QueuedConnection)
+        self.stream_client.message_received.connect(self._on_fish_message, Qt.QueuedConnection)
         
     def _toggle_connection(self):
         """连接"""
@@ -230,105 +253,53 @@ class FishCameraWidget(QWidget):
         self.record_btn.setEnabled(False)
         
     def _toggle_recording(self):
-        """切换录制状态"""
+        """切换录制状态 (高清录制在机器鱼上进行, 不经Wi-Fi)"""
         if self.recording:
-            # 停止录制时选择保存目录
-            save_dir = self._get_video_save_directory("选择视频保存目录")
-            if save_dir:
-                self._stop_recording(save_dir)
-            else:
-                print("用户取消选择保存目录，继续录制")
+            self._stop_recording()
         else:
-            # 开始录制
             self._start_recording()
-            
+
     def _start_recording(self):
-        """开始录制"""
-        if self.current_frame is None:
-            QMessageBox.warning(self, "录制失败", "没有可录制的视频帧")
+        """开始机上录制: 发送REC_START命令"""
+        if not self.stream_client.running:
+            QMessageBox.warning(self, "录制失败", "请先连接机器鱼")
             return
-            
-        try:
-            # 创建临时目录
-            temp_dir = "temp_records"
-            if not os.path.exists(temp_dir):
-                os.makedirs(temp_dir)
-            
-            # 生成文件名
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.temp_filename = f"fish_camera_{timestamp}.avi"
-            temp_filepath = os.path.join(temp_dir, self.temp_filename)
-            
-            # 获取帧尺寸
-            h, w = self.current_frame.shape[:2]
-            
-            # 创建VideoWriter
-            fourcc = cv2.VideoWriter_fourcc(*VIDEO_CONFIG["record_codec"])
-            self.video_writer = cv2.VideoWriter(
-                temp_filepath,
-                fourcc,
-                VIDEO_CONFIG["record_fps"],
-                (w, h)
-            )
-            
-            if self.video_writer.isOpened():
-                self.recording = True
-                self.recording_start_time = datetime.datetime.now()
-                self.recording_frame_count = 0
-                self.record_btn.setText("停止录制")
-                self.recording_label.setText("录制状态: 录制中...")
-                self.connect_btn.setEnabled(False)
-                self.disconnect_btn.setEnabled(False)
-                print(f"开始录制: {temp_filepath}")
-            else:
-                QMessageBox.warning(self, "录制失败", "无法创建视频文件")
-                
-        except Exception as e:
-            QMessageBox.warning(self, "录制失败", f"错误: {str(e)}")
-            
-    def _stop_recording(self, save_dir=None):
-        """停止录制并保存"""
+        self.stream_client.send_command("REC_START")
+        self.recording = True
+        self.record_btn.setText("停止录制")
+        self.recording_label.setText("录制状态: 机上录制中 (1280x960@30, 存储在机器鱼上)")
+        print("已发送机上录制开始命令")
+
+    def _stop_recording(self):
+        """停止机上录制: 发送REC_STOP命令, 保存完成后会收到机上回传通知"""
         if not self.recording:
             return
-            
         self.recording = False
-        
-        if self.video_writer:
-            try:
-                self.video_writer.release()
-            except Exception as e:
-                print(f"释放VideoWriter异常: {e}")
-            finally:
-                self.video_writer = None
-        
-        # 移动文件到目标目录
-        if save_dir:
-            try:
-                temp_filepath = os.path.join("temp_records", self.temp_filename)
-                if os.path.exists(temp_filepath):
-                    # 确保目标目录存在
-                    os.makedirs(save_dir, exist_ok=True)
-                    
-                    target_path = os.path.join(save_dir, self.temp_filename)
-                    
-                    # 移动文件
-                    import shutil
-                    shutil.move(temp_filepath, target_path)
-                    
-                    if self.recording_start_time:
-                        duration = datetime.datetime.now() - self.recording_start_time
-                        print(f"录制完成: {target_path}")
-                        print(f"时长: {duration.total_seconds():.1f}秒, 帧数: {self.recording_frame_count}")
-                        QMessageBox.information(self, "录制完成", 
-                            f"视频已保存到:\\n{target_path}\\n\\n时长: {duration.total_seconds():.1f}秒\\n帧数: {self.recording_frame_count}")
-            except Exception as e:
-                print(f"保存视频失败: {e}")
-                QMessageBox.warning(self, "保存失败", f"无法保存视频: {str(e)}")
-        
+        self.stream_client.send_command("REC_STOP")
         self.record_btn.setText("开始录制")
-        self.recording_label.setText("录制状态: 未录制")
-        self.connect_btn.setEnabled(True)
-        self.disconnect_btn.setEnabled(True)
+        self.recording_label.setText("录制状态: 正在机器鱼上保存...")
+        print("已发送机上录制停止命令")
+
+    @pyqtSlot(str)
+    def _on_fish_message(self, text: str):
+        """处理机上回传的JSON消息(录制开始/保存完成通知)"""
+        print(f"机上消息: {text}")
+        try:
+            info = json.loads(text)
+        except (ValueError, TypeError):
+            return
+        event = info.get("event")
+        if event == "rec_started":
+            self.recording_label.setText("录制状态: 机上录制中...")
+        elif event == "rec_saved":
+            self.recording_label.setText("录制状态: 未录制")
+            file_path = info.get('file', '')
+            QMessageBox.information(
+                self, "录制完成",
+                f"高清视频已保存在机器鱼上:\n{file_path}\n\n"
+                f"帧数: {info.get('frames', 0)}  时长: {info.get('duration', 0)}秒\n\n"
+                "取回到电脑示例(任意终端执行):\n"
+                f'scp orangepi:"{file_path}" %USERPROFILE%\\Desktop\\')
         
     def _get_fish_ip(self):
         """获取机器鱼IP地址"""
@@ -338,19 +309,23 @@ class FishCameraWidget(QWidget):
                 return main_window.ip_input.text()
         except:
             pass
-        return "192.168.137.241"
+        return FISH_IP
         
     @pyqtSlot(np.ndarray)
     def _update_frame(self, frame):
         """更新视频帧"""
         try:
             self.current_frame = frame
-            
-            # 如果正在录制，保存帧
-            if self.recording and self.video_writer:
-                self.video_writer.write(frame)
-                self.recording_frame_count += 1
-            
+
+            # 统计实际收到并显示的帧率, 每秒刷新一次
+            self._fps_count += 1
+            now = time.time()
+            if now - self._fps_t0 >= 1.0:
+                fps = self._fps_count / (now - self._fps_t0)
+                self.fps_label.setText(f"帧率: {fps:.1f} FPS")
+                self._fps_count = 0
+                self._fps_t0 = now
+
             # 转换为Qt格式显示
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w, ch = rgb_frame.shape
@@ -389,37 +364,13 @@ class FishCameraWidget(QWidget):
                 self.video_label.clear()
                 self.video_label.setText(f"连接已断开<br>{message}")
                 print(f"机载相机断开: {message}")
+                if self.recording:
+                    # 连接断开时机上会自动保存已录内容
+                    self.recording = False
+                    self.record_btn.setText("开始录制")
+                    self.recording_label.setText("录制状态: 连接断开, 机上录制已自动保存")
         except Exception as e:
             print(f"连接状态更新异常: {e}")
-            
-    def _get_video_save_directory(self, title: str) -> str:
-        """获取视频保存目录"""
-        default_dir = f"records/{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        
-        parent_dir = os.path.dirname(default_dir)
-        if parent_dir and not os.path.exists(parent_dir):
-            try:
-                os.makedirs(parent_dir, exist_ok=True)
-            except Exception as e:
-                print(f"创建父目录失败: {e}")
-                default_dir = "."
-        
-        selected_dir = QFileDialog.getExistingDirectory(
-            self,
-            title,
-            default_dir,
-            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
-        )
-        
-        if selected_dir:
-            try:
-                os.makedirs(selected_dir, exist_ok=True)
-                print(f"选择的视频保存目录: {selected_dir}")
-                return selected_dir
-            except Exception as e:
-                print(f"创建选择的目录失败: {e}")
-                return None
-        return None
             
     def closeEvent(self, event):
         """窗口关闭事件"""

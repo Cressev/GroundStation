@@ -191,7 +191,7 @@ class DataVisualizationWidget(QWidget):
             self.gl_widget.setCameraPosition(distance=5, elevation=30, azimuth=45)
             self.gl_widget.setBackgroundColor('w')  # 白色背景
             # 设置最小尺寸，确保视图可见
-            self.gl_widget.setMinimumSize(400, 300)
+            self.gl_widget.setMinimumSize(300, 220)
             self.gl_widget.setSizePolicy(
                 QSizePolicy.Expanding,
                 QSizePolicy.Expanding

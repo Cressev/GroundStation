@@ -263,7 +263,7 @@ class VideoDisplayWidget(QWidget):
         # 视频标签
         self.video_label = QLabel()
         self.video_label.setAlignment(Qt.AlignCenter)
-        self.video_label.setMinimumSize(640, 480)
+        self.video_label.setMinimumSize(320, 240)
         self.video_label.setStyleSheet("""
             QLabel {
                 border: 2px solid #ccc;

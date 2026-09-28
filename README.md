@@ -1,161 +1,87 @@
-# 机器鱼控制系统 Fish Robot Control System
+# 机器鱼地面站 GroundStation（PyQt5）
 
-## 项目简介
+双版本机器鱼地面站：启动时选择鱼体版本，按版本加载对应的视频、通信与控制页面。
 
-这是一个基于PyQt5的机器鱼地面站控制系统，用于通过SSH连接控制和监控运行ROS1的机器鱼。
+- **双尾双目鱼（dual，当前主攻）**：机载 pico RK3588S（ROS2 Humble）。视频/测距连
+  pico 的 `pico_stereo depth_node` TCP 服务（9998，协议见下），控制命令发 pico 的
+  `gs_bridge` TCP 服务（9999），gs_bridge 翻译成 `/fish/control/actuator_command`
+  交给串口桥发 STM32。**点击视频左上（左校正图）区域即可点击测距**。
+- **单尾单目鱼（single，旧平台）**：机载 orangepi（ROS1）。视频连
+  `camera_stream_server`（9998，机上录制），控制连 `socket_server`（9999，
+  发布 /servo_info_*）。原功能不变。
 
-## 系统架构
+## 快速启动
 
-```
-GroundStation/
-├── main.py                 # 主程序入口
-├── config.py              # 系统配置文件
-├── communication/         # 通信模块
-│   ├── __init__.py
-│   ├── base.py           # 通信接口基类
-│   └── ssh_ros.py        # SSH/ROS通信实现
-├── controllers/          # 控制器模块
-│   ├── __init__.py
-│   └── base.py          # 控制器基类和键盘控制器
-├── ui/                  # 用户界面模块
-│   ├── __init__.py
-│   ├── main_window.py   # 主窗口
-│   └── visualization.py # 数据可视化组件
-└── README.md           # 说明文档
-```
-
-## 功能特性
-
-### 1. 通信功能
-- 基于SSH的ROS1通信
-- 实时状态数据获取
-- 控制命令发送
-- 连接状态监控
-
-### 2. 控制功能
-- 键盘控制（已实现）
-- 扩展接口支持Xbox手柄、自主控制等
-- 实时控制参数调节
-
-### 3. 数据可视化
-- XY轨迹图：显示机器鱼在水平面的运动轨迹
-- 深度-时间图：显示机器鱼的深度变化
-- 姿态-时间图：显示Roll、Pitch、Yaw角度变化
-- 实时姿态可视化：俯视图显示机器鱼当前朝向
-
-### 4. 系统特性
-- 模块化设计，易于扩展
-- 良好的错误处理和日志记录
-- 直观的用户界面
-
-## 控制参数
-
-### 机器鱼控制量
-- **摆尾频率 (tail_frequency)**: 0.0-10.0 Hz，控制摆尾速度
-- **摆尾幅度 (tail_amplitude)**: 0.0-1.57 rad，控制摆尾幅度
-- **摆尾偏移角 (tail_offset)**: -1.57-1.57 rad，控制游泳方向
-
-### 传感器反馈
-- **位置坐标**: x, y, z (米)
-- **姿态角**: roll, pitch, yaw (弧度)
-
-## 键盘控制说明
-
-| 按键 | 功能 | 说明 |
-|------|------|------|
-| W | 前进 | 偏移角度设为0 |
-| S | 后退 | 偏移角度设为180° |
-| A | 左转 | 偏移角度设为-90° |
-| D | 右转 | 偏移角度设为90° |
-| Q | 上浮 | 减小频率，增大幅度 |
-| E | 下潜 | 增大频率，减小幅度 |
-| Space | 停止 | 频率和幅度都设为0 |
-| ↑ | 增加频率 | 步长0.1 Hz |
-| ↓ | 减少频率 | 步长0.1 Hz |
-| → | 增加幅度 | 步长0.05 rad |
-| ← | 减少幅度 | 步长0.05 rad |
-
-## 安装和运行
-
-### 环境要求
-- Python 3.7+
-- PyQt5
-- pyqtgraph
-- matplotlib
-- numpy
-- paramiko
-
-使用环境：
-conda activate qt5 
-### 安装依赖
 ```bash
-# 激活conda环境
 conda activate qt5
-
-# 安装依赖包
-pip install PyQt5 pyqtgraph matplotlib numpy paramiko
+python main.py          # 先弹出版本选择对话框，选择后进入主窗口
 ```
 
-### 配置连接
-在 `config.py` 中修改机器鱼的连接参数：
-```python
-FISH_IP = "192.168.1.100"  # 机器鱼IP地址
-SSH_USERNAME = "orangepi"   # SSH用户名
-SSH_PASSWORD = "orangepi"   # SSH密码
+服务端启动方式见 `catkin_ws_in_fish/部署说明.md`（单尾鱼）与
+`pico_stereo/USAGE.md` + `gs_bridge`（双尾鱼，由代理部署在 pico 上）。
+
+## 文件清单（逐文件）
+
+| 文件 | 说明 |
+|---|---|
+| `main.py` | 入口：高 DPI 设置 → 版本选择对话框 → 按变体构造 MainWindow |
+| `config.py` | 全局配置：单尾鱼 IP/端口、`DUAL_FISH_CONFIG`（pico IP + 9999/9998 端口）、控制限幅、键位映射、UI/视频/记录参数 |
+| `ui/fish_variant_dialog.py` | **新增** 启动版本选择对话框（dual/single 卡片式选择） |
+| `ui/main_window.py` | 主窗口：按 `variant` 加载视频页（dual=双目测距组件 / single=原视频监控）、连接默认值、菜单、键盘事件分发、安全启用开关 |
+| `ui/stereo_camera_widget.py` | **新增** 双尾鱼视频+测距组件：`StereoVideoClient`（TCP 9998 客户端，协议兼容老版）+ `StereoFishCameraWidget`（画布显示、鼠标点击→SET_POINT、测量 JSON 刷新 D/Z/X/Y/视差标签） |
+| `ui/fish_camera_widget.py` | 单尾鱼机载相机组件（TCP 9998 客户端 + 机上录制控制），仅 single 变体使用 |
+| `ui/video_display.py` | 笔记本外接 USB 相机监控（VideoDisplayWidget + VideoMonitorWidget 容器），仅 single 变体使用 |
+| `ui/visualization.py` | pyqtgraph 数据可视化（XY 轨迹/深度/姿态/实时朝向） |
+| `ui/keyboard_status.py` | 键盘按键状态面板与特殊功能键处理 |
+| `ui/data_recording.py` | 数据记录/CSV/Excel 导出控制面板 |
+| `controllers/base.py` | KeyboardController 等控制器：把键盘事件合成为 ControlCommand（频率/幅值/偏置/胸鳍角） |
+| `communication/base.py` | 通信抽象基类（FishState/ControlCommand/FishCommunicationInterface） |
+| `communication/socket_client.py` | 单尾鱼 TCP 控制客户端（9999，JSON 行协议，50Hz 传感器推送接收） |
+| `communication/ssh_ros.py` | SSH 执行 ROS 命令的辅助（旧链路备用） |
+| `data/recorder.py` | 传感器/控制数据记录器（CSV + metadata） |
+| `utils/graphics_exporter.py` | 可视化图形导出 |
+| `catkin_ws_in_fish/` | 单尾鱼（orangepi ROS1）机载脚本母本：`camera_stream_server.py`（9998 视频流+机上录制）、`socket_server.py`（9999 控制+传感器推送）、launch 与部署说明 |
+| `tests/` | 组件/键盘/视频等单元测试（pytest） |
+| `docs/` | 功能说明文档（键盘、视频、舵机、传感器） |
+| `Change_log.md` / `TODO.md` | 变更记录与待办 |
+| `fps_compare/`、`records/`、`temp_scripts/`、`image.png` | 历史测试素材与一次性脚本（非运行依赖） |
+
+## 双尾鱼 TCP 协议（pico 侧由 pico_stereo + gs_bridge 实现）
+
+视频/测距（9998，depth_node）：
+
+```
+服务端->地面站: [4字节大端长度][1字节类型][数据]
+  0xFF = JPEG 画布（1280x960：上行左|右校正图，下行视差伪彩，左图叠加测点与 D 读数）
+  0xFE = UTF-8 JSON（{"type":"measurement","D":..,"Z":..,"X":..,"Y":..,"disp":..,"valid":..,"fps":..}
+                     / {"type":"point_set","u":..,"v":..} / {"type":"pong"} / {"type":"error"}）
+地面站->服务端: 文本行
+  SET_POINT u v   点击测距（u,v 为左校正图像素坐标）
+  PING            探活
 ```
 
-### 运行程序
+控制（9999，gs_bridge）：
+
+```
+地面站->板上: {"type":"control","tail_frequency":Hz,"tail_amplitude":rad,
+              "tail_offset":rad,"pec_angle":us}   （JSON 行）
+板上->地面站: {"type":"state","ack_count":N,"last_command":{...}}（2Hz 回推）
+```
+
+gs_bridge 将 control 翻译为 `fish_interfaces/ActuatorCommand` 发布到
+`/fish/control/actuator_command`（限幅见 gs_bridge/gs_bridge_node.py 的 CONTROL_LIMITS）。
+
+## 双尾鱼板上服务管理（pico，root）
+
 ```bash
-cd GroundStation
-python main.py
+systemd-run --unit=fish-depth-src --collect --property=Restart=always \
+  --property=RestartSec=3 /root/catkin_ws/src/pico_stereo/scripts/run_depth_src.sh
+systemd-run --unit=gs-bridge-src --collect --property=Restart=always \
+  --property=RestartSec=3 /root/catkin_ws/src/pico_stereo/scripts/run_gsbridge_src.sh
 ```
 
-## 扩展指南
-
-### 添加新的控制器
-1. 在 `controllers/` 目录下创建新的控制器文件
-2. 继承 `ControllerBase` 类
-3. 实现必要的抽象方法
-4. 在主窗口中注册新控制器
-
-### 添加新的通信方式
-1. 在 `communication/` 目录下创建新的通信实现
-2. 继承 `FishCommunicationInterface` 类
-3. 实现所有抽象方法
-
-### 自定义可视化
-1. 修改 `ui/visualization.py` 中的图表配置
-2. 添加新的可视化组件
-3. 在 `config.py` 中调整显示参数
-
-## 注意事项
-
-1. **网络连接**: 确保电脑和机器鱼在同一局域网中
-2. **SSH权限**: 确保SSH用户有足够权限执行ROS命令
-3. **ROS环境**: 机器鱼上的ROS环境需要正确配置
-4. **防火墙**: 检查防火墙设置，确保SSH端口可访问
-
-## 故障排除
-
-### 连接问题
-- 检查IP地址和网络连通性
-- 验证SSH用户名和密码
-- 确认机器鱼上的ROS master正在运行
-
-### 控制问题
-- 检查ROS topic是否存在
-- 验证控制命令格式是否正确
-- 确认机器鱼控制程序是否运行
-
-### 显示问题
-- 检查PyQt5和pyqtgraph安装是否正确
-- 确认图表数据是否正常更新
-
-## 开发计划
-
-- [ ] Xbox手柄控制器
-- [ ] 自主控制算法接口
-- [ ] 数据记录和回放功能
-- [ ] 多机器鱼支持
-- [ ] 3D可视化
-- [ ] 远程视频流显示
+脚本从**源码目录**直接运行（PYTHONPATH 指向 src），不依赖 colcon install 产物，
+避免与他人并发 `rm -rf install && colcon build` 互相清包。
+注意：pico 源文件 `depth_node.py`/`stereo_lib.py` 已加 `chattr +i` 不可变锁
+（修改前先 `chattr -i`）。板上另有并行 agent，其测试前清场（pkill/systemctl stop）
+会停掉以上服务，属预期行为，重新执行上面两条命令即可。

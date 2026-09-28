@@ -1,23 +1,31 @@
 <?xml version="1.0"?>
 <launch>
     <!-- 机器鱼鱼眼摄像头视频流服务 -->
-    <node pkg="fish_control" type="camera_stream_server.py" 
+    <!-- 架构: 摄像头始终高分辨率高帧率采集; 实时流缩到低分辨率低帧率省Wi-Fi带宽;
+         录制由地面站发REC_START/REC_STOP命令, 高清视频直接存在机器鱼上 -->
+    <node pkg="fish_control" type="camera_stream_server.py"
           name="camera_stream_server" output="screen">
-        
+
         <!-- 服务器端口 -->
         <param name="port" value="9998"/>
-        
+
         <!-- 摄像头索引 (0为第一个摄像头) -->
         <param name="camera" value="0"/>
-        
-        <!-- 视频分辨率 -->
-        <param name="width" value="640"/>
-        <param name="height" value="480"/>
-        
-        <!-- 目标帧率 -->
-        <param name="fps" value="20"/>
-        
-        <!-- JPEG质量 (1-100) -->
+
+        <!-- 摄像头采集参数 (高分辨率高帧率, 机上录制用) -->
+        <param name="width" value="1280"/>
+        <param name="height" value="960"/>
+        <param name="fps" value="30"/>
+
+        <!-- 实时流参数 (低分辨率低帧率, 给地面站显示用) -->
+        <param name="stream_width" value="640"/>
+        <param name="stream_height" value="480"/>
+        <param name="stream_fps" value="15"/>
+
+        <!-- 实时流JPEG质量 (1-100) -->
         <param name="quality" value="80"/>
+
+        <!-- 机上录制保存目录 -->
+        <param name="record_dir" value="/home/orangepi/catkin_ws/src/fish_control/data/video/"/>
     </node>
 </launch>

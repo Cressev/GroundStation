@@ -19,12 +19,25 @@ import struct
 from collections import deque
 
 # 传感器消息类型
-from TransducerM_pkg.msg import Imu
+from hipnuc_imu.msg import hipnuc_imu_msg
 from nlink_parser.msg import LinktrackNodeframe2
 from fish_control.msg import WF5803_MSG
 
 # 控制命令消息类型
 from std_msgs.msg import Float32
+
+
+CONTROL_LIMITS = {
+    "tail_frequency": {"min": 0.0, "max": 4.0},
+    "tail_amplitude": {"min": 0.0, "max": 0.5},
+    # 偏置以基础偏置(地面站下发值本身)为中心可越过绝对±0.5, 上限±1.0
+    "tail_offset": {"min": -1.0, "max": 1.0},
+    "pec_angle": {"min": 1300.0, "max": 2000.0},
+}
+
+
+def clamp(value, minimum, maximum):
+    return max(minimum, min(float(value), maximum))
 
 
 class FishSocketServer:
@@ -68,7 +81,7 @@ class FishSocketServer:
     def _init_subscribers(self):
         """初始化传感器订阅"""
         # IMU数据
-        rospy.Subscriber('TransducerM', Imu, self._imu_callback, queue_size=1)
+        rospy.Subscriber('/imu_0x91_package', hipnuc_imu_msg, self._imu_callback, queue_size=1)
         
         # UWB位置数据
         rospy.Subscriber('/nlink_linktrack_nodeframe2', LinktrackNodeframe2, 
@@ -81,12 +94,13 @@ class FishSocketServer:
     
     def _imu_callback(self, msg):
         """IMU数据回调"""
+        eul = msg.hi91_data
         with self.data_lock:
             # 转换为弧度制
             self.sensor_data['imu'] = {
-                'roll': msg.roll * 3.1415926 / 180.0,
-                'pitch': msg.pitch * 3.1415926 / 180.0,
-                'yaw': msg.yaw * 3.1415926 / 180.0
+                'roll': eul.eul_r * 3.1415926 / 180.0,
+                'pitch': eul.eul_p * 3.1415926 / 180.0,
+                'yaw': eul.eul_y * 3.1415926 / 180.0
             }
             self.sensor_data['timestamp'] = time.time()
     
@@ -118,11 +132,21 @@ class FishSocketServer:
     def start(self):
         """启动服务器"""
         self.running = True
-        
+
         # 创建服务器Socket
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.bind(('0.0.0.0', self.server_port))
+        # 绑定重试: 同名节点接管时旧实例释放端口有延迟, 避免绑定失败直接崩溃
+        for attempt in range(6):
+            try:
+                self.server_socket.bind(('0.0.0.0', self.server_port))
+                break
+            except OSError as e:
+                if attempt == 5:
+                    rospy.logerr(f"绑定端口{self.server_port}失败: {e}")
+                    raise
+                rospy.logwarn(f"端口{self.server_port}被占用, 1秒后重试({attempt + 1}/6)...")
+                time.sleep(1.0)
         self.server_socket.listen(5)
         self.server_socket.settimeout(1.0)  # 设置超时以便检查running标志
         
@@ -207,10 +231,26 @@ class FishSocketServer:
             
             if cmd.get('type') == 'control':
                 # 提取控制参数
-                tail_frequency = cmd.get('tail_frequency', 0.0)
-                tail_amplitude = cmd.get('tail_amplitude', 0.0)
-                tail_offset = cmd.get('tail_offset', 0.0)
-                pec_angle = cmd.get('pec_angle', 1500)  # 胸鳍角度
+                tail_frequency = clamp(
+                    cmd.get('tail_frequency', 0.0),
+                    CONTROL_LIMITS["tail_frequency"]["min"],
+                    CONTROL_LIMITS["tail_frequency"]["max"]
+                )
+                tail_amplitude = clamp(
+                    cmd.get('tail_amplitude', 0.0),
+                    CONTROL_LIMITS["tail_amplitude"]["min"],
+                    CONTROL_LIMITS["tail_amplitude"]["max"]
+                )
+                tail_offset = clamp(
+                    cmd.get('tail_offset', 0.0),
+                    CONTROL_LIMITS["tail_offset"]["min"],
+                    CONTROL_LIMITS["tail_offset"]["max"]
+                )
+                pec_angle = clamp(
+                    cmd.get('pec_angle', 1500),
+                    CONTROL_LIMITS["pec_angle"]["min"],
+                    CONTROL_LIMITS["pec_angle"]["max"]
+                )
                 
                 # 发布到舵机控制话题
                 self.pub_frequency.publish(Float32(tail_frequency))

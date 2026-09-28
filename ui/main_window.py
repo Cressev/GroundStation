@@ -10,10 +10,11 @@ import os
 import time
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QMenuBar, QStatusBar, QAction, QTabWidget,
                              QGroupBox, QGridLayout, QLabel, QPushButton,
-                             QComboBox, QMessageBox, QSplitter, QTextEdit, QLineEdit)
+                             QComboBox, QMessageBox, QSplitter, QTextEdit,
+                             QLineEdit, QScrollArea, QApplication, QCheckBox)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QFont, QKeySequence, QIcon
 
@@ -21,10 +22,12 @@ from ui.visualization import DataVisualizationWidget
 from ui.keyboard_status import KeyboardStatusWidget
 from ui.video_display import VideoMonitorWidget
 from ui.data_recording import DataRecordingWidget
+from ui.stereo_camera_widget import StereoFishCameraWidget
 from controllers.base import KeyboardController
 from communication.socket_client import SocketCommunication
 from communication.base import FishState, ControlCommand
-from config import UI_CONFIG, KEYBOARD_MAPPING, FISH_IP, SOCKET_PORT
+from config import (UI_CONFIG, KEYBOARD_MAPPING, FISH_IP, SOCKET_PORT,
+                    DUAL_FISH_CONFIG)
 
 class MainWindow(QMainWindow):
     """主窗口类"""
@@ -32,9 +35,12 @@ class MainWindow(QMainWindow):
     # 定义信号用于线程安全的UI更新
     connection_changed_signal = pyqtSignal(bool)  # 连接状态变化信号
     
-    def __init__(self):
+    def __init__(self, variant="single"):
         super().__init__()
-        
+
+        # 机器鱼变体: "dual"=双尾双目鱼(pico) / "single"=单尾单目鱼(orangepi)
+        self.variant = variant
+
         # 初始化组件
         self.communication = None
         self.current_controller = None
@@ -64,8 +70,13 @@ class MainWindow(QMainWindow):
         
     def _init_ui(self):
         """初始化用户界面"""
-        self.setWindowTitle(UI_CONFIG["window_title"])
-        self.setGeometry(100, 100, *UI_CONFIG["window_size"])
+        variant_title = ("双尾双目鱼" if self.variant == "dual" else "单尾单目鱼")
+        self.setWindowTitle(f'{UI_CONFIG["window_title"]} — {variant_title}')
+        # 初始尺寸自适应屏幕(取配置值与屏幕可用区域80%的较小者)，窗口可自由拖拽缩放
+        screen = QApplication.primaryScreen().availableGeometry()
+        w = min(UI_CONFIG["window_size"][0], int(screen.width() * 0.8))
+        h = min(UI_CONFIG["window_size"][1], int(screen.height() * 0.8))
+        self.resize(w, h)
         
         # 创建菜单栏
         self._create_menu_bar()
@@ -108,9 +119,13 @@ class MainWindow(QMainWindow):
         self.visualization_widget = DataVisualizationWidget()
         center_tabs.addTab(self.visualization_widget, "数据可视化")
         
-        # 视频监控标签页（包含外部监控和机载相机）
-        self.video_widget = VideoMonitorWidget()
-        center_tabs.addTab(self.video_widget, "视频监控")
+        # 视频页按变体: dual=双目测距组件, single=原视频监控（外部+机载相机）
+        if self.variant == "dual":
+            self.video_widget = StereoFishCameraWidget()
+            center_tabs.addTab(self.video_widget, "双目测距")
+        else:
+            self.video_widget = VideoMonitorWidget()
+            center_tabs.addTab(self.video_widget, "视频监控")
         
         center_layout.addWidget(center_tabs)
         main_splitter.addWidget(center_widget)
@@ -136,6 +151,9 @@ class MainWindow(QMainWindow):
         
         # 设置分割器比例 (控制面板:中央区域:按键状态 = 2:6:2)
         main_splitter.setSizes([250, 700, 250])
+        main_splitter.setStretchFactor(0, 0)
+        main_splitter.setStretchFactor(1, 1)
+        main_splitter.setStretchFactor(2, 0)
         
     def _create_menu_bar(self):
         """创建菜单栏"""
@@ -243,7 +261,10 @@ class MainWindow(QMainWindow):
     def _create_control_panel(self):
         """创建控制面板"""
         panel = QWidget()
+        panel.setMinimumWidth(280)
         layout = QVBoxLayout(panel)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(8)
         
         # 连接状态组
         connection_group = QGroupBox("连接状态")
@@ -251,12 +272,15 @@ class MainWindow(QMainWindow):
         
         # IP地址输入
         self.ip_input = QLineEdit()
-        self.ip_input.setText(FISH_IP)  # 使用config中的默认IP
+        # 双尾鱼默认填 pico IP，单尾鱼默认填 orangepi IP
+        self.ip_input.setText(
+            DUAL_FISH_CONFIG["fish_ip"] if self.variant == "dual" else FISH_IP)
         self.ip_input.setPlaceholderText("输入机器鱼IP地址")
         
         # 端口输入
         self.port_input = QLineEdit()
-        self.port_input.setText(str(SOCKET_PORT))  # 默认端口
+        self.port_input.setText(str(
+            DUAL_FISH_CONFIG["socket_port"] if self.variant == "dual" else SOCKET_PORT))
         self.port_input.setPlaceholderText("端口")
         self.port_input.setMaximumWidth(60)
         
@@ -290,11 +314,26 @@ class MainWindow(QMainWindow):
         
         control_layout.addWidget(QLabel("选择控制方式:"))
         control_layout.addWidget(self.controller_combo)
+
+        # 安全开关：勾选后控制命令才会真正发送，取消勾选会立即发送停止命令
+        self.enable_control_checkbox = QCheckBox("启用控制 (默认关闭)")
+        self.enable_control_checkbox.setToolTip(
+            "勾选后才能控制机器鱼；\n取消勾选将立即发送停止命令")
+        self.enable_control_checkbox.toggled.connect(self._on_enable_control_toggled)
+        control_layout.addWidget(self.enable_control_checkbox)
         
         # 控制器专用界面容器
         self.controller_widget_container = QWidget()
         self.controller_widget_layout = QVBoxLayout(self.controller_widget_container)
-        control_layout.addWidget(self.controller_widget_container)
+        self.controller_widget_container.setMinimumWidth(240)
+
+        controller_scroll = QScrollArea()
+        controller_scroll.setWidgetResizable(True)
+        controller_scroll.setWidget(self.controller_widget_container)
+        controller_scroll.setMinimumHeight(320)
+        controller_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        controller_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        control_layout.addWidget(controller_scroll)
         
         layout.addWidget(control_group)
         
@@ -450,16 +489,8 @@ class MainWindow(QMainWindow):
             self.data_timer.stop()
             
             # 断开前发送停止命令，确保机器鱼停止运动
-            if self.communication and self.communication.connected:
-                stop_cmd = ControlCommand()
-                stop_cmd.tail_frequency = 0.0
-                stop_cmd.tail_amplitude = 0.0
-                stop_cmd.tail_offset = 0.0
-                stop_cmd.pec_angle = 1500
-                stop_cmd.timestamp = time.time()
-                self.communication.send_control_command(stop_cmd)
-                time.sleep(0.2)  # 等待命令发送
-                self._log_message("已发送停止命令")
+            self._send_stop_command()
+            time.sleep(0.2)  # 等待命令发送
             
             if self.communication:
                 self.communication.disconnect()
@@ -548,8 +579,37 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"处理连接状态变化异常: {e}")
     
+    def _send_stop_command(self):
+        """发送停止命令，确保机器鱼停止运动"""
+        if self.communication and self.communication.connected:
+            stop_offset = 0.0
+            if isinstance(self.current_controller, KeyboardController):
+                stop_offset = self.current_controller.get_base_bias()
+            stop_cmd = ControlCommand()
+            stop_cmd.tail_frequency = 0.0
+            stop_cmd.tail_amplitude = 0.0
+            stop_cmd.tail_offset = stop_offset
+            stop_cmd.pec_angle = 1500
+            stop_cmd.timestamp = time.time()
+            self.communication.send_control_command(stop_cmd)
+            self._log_message("已发送停止命令")
+
+    def _on_enable_control_toggled(self, checked: bool):
+        """启用控制开关切换"""
+        if checked:
+            self._log_message("控制已启用，键盘控制生效")
+            self.status_bar.showMessage("控制已启用")
+        else:
+            self._log_message("控制已禁用")
+            self.status_bar.showMessage("控制已禁用")
+            # 取消勾选时立即发送停止命令，防止机器鱼继续运动
+            self._send_stop_command()
+
     def _on_control_command(self, command: ControlCommand):
         """处理控制命令"""
+        # 安全开关：未勾选"启用控制"时不发送任何控制命令
+        if not self.enable_control_checkbox.isChecked():
+            return
         if self.communication and self.communication.connected:
             try:
                 # 添加胸鳍角度到命令
@@ -621,52 +681,52 @@ class MainWindow(QMainWindow):
                          "版本: 1.0\n"
                          "作者: 开发团队")
     
+    def _normalize_key(self, event) -> str:
+        """按键事件转控制键名
+        方向键保留大小写: 小写w/a/d=慢速, 大写W/A/D(Shift或大写锁)=快速;
+        其余键统一转大写; 无文本键(Space/方向键)用键值映射
+        """
+        raw = event.text()
+        if not raw:
+            key_map = {
+                Qt.Key_Space: "Space",
+                Qt.Key_Up: "Up",
+                Qt.Key_Down: "Down",
+                Qt.Key_Left: "Left",
+                Qt.Key_Right: "Right"
+            }
+            return key_map.get(event.key(), "")
+        upper = raw.upper()
+        if upper in ("W", "A", "D"):
+            return raw if raw.islower() else upper
+        return upper
+
     def keyPressEvent(self, event):
         """键盘按下事件"""
         if isinstance(self.current_controller, KeyboardController):
-            key_text = event.text().upper()
-            if not key_text:
-                # 处理特殊键
-                key_map = {
-                    Qt.Key_Space: "Space",
-                    Qt.Key_Up: "Up",
-                    Qt.Key_Down: "Down", 
-                    Qt.Key_Left: "Left",
-                    Qt.Key_Right: "Right"
-                }
-                key_text = key_map.get(event.key(), "")
-            
+            key_text = self._normalize_key(event)
+
             if key_text:
                 # 更新控制器
                 self.current_controller.handle_key_press(key_text)
-                # 更新按键状态显示
-                self.keyboard_status_widget.update_key_state(key_text, True)
+                # 更新按键状态显示(状态面板统一用大写键名)
+                self.keyboard_status_widget.update_key_state(key_text.upper(), True)
                 # 处理特殊功能键
-                self.keyboard_status_widget.handle_special_keys(key_text, True)
-        
+                self.keyboard_status_widget.handle_special_keys(key_text.upper(), True)
+
         super().keyPressEvent(event)
-    
+
     def keyReleaseEvent(self, event):
         """键盘释放事件"""
         if isinstance(self.current_controller, KeyboardController):
-            key_text = event.text().upper()
-            if not key_text:
-                # 处理特殊键
-                key_map = {
-                    Qt.Key_Space: "Space",
-                    Qt.Key_Up: "Up",
-                    Qt.Key_Down: "Down",
-                    Qt.Key_Left: "Left", 
-                    Qt.Key_Right: "Right"
-                }
-                key_text = key_map.get(event.key(), "")
-            
+            key_text = self._normalize_key(event)
+
             if key_text:
                 # 更新控制器
                 self.current_controller.handle_key_release(key_text)
                 # 更新按键状态显示
-                self.keyboard_status_widget.update_key_state(key_text, False)
-        
+                self.keyboard_status_widget.update_key_state(key_text.upper(), False)
+
         super().keyReleaseEvent(event)
     
     def closeEvent(self, event):

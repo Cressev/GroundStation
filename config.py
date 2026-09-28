@@ -1,7 +1,7 @@
 # 机器鱼控制系统配置文件
 
 # 网络配置
-FISH_IP = "192.168.137.241"  # 机器鱼IP地址
+FISH_IP = "192.168.137.215"  # 机器鱼IP地址
 SOCKET_PORT = 9999  # Socket通信端口
 SSH_PORT = 22
 SSH_USERNAME = "orangepi"
@@ -10,21 +10,38 @@ SSH_PASSWORD = "orangepi"
 # ROS配置
 ROS_MASTER_URI = f"http://{FISH_IP}:11311"
 
+# 双尾双目鱼（pico RK3588S）配置
+DUAL_FISH_CONFIG = {
+    "fish_ip": "10.224.132.154",   # pico 当前 IP（换网后需更新）
+    "socket_port": 9999,           # 控制桥 gs_bridge 端口（JSON 控制命令）
+    "video_port": 9998,            # 双目视频/测距服务端口（pico_stereo depth_node）
+    "ssh_username": "root",
+    "ssh_password": "123456",
+}
+
+# 机器鱼版本（启动选择对话框使用）
+FISH_VARIANTS = {
+    "dual": {"name": "双尾双目鱼 (pico)", "description": "双尾关节 Hopf + 胸鳍 + 双目测距"},
+    "single": {"name": "单尾单目鱼 (orangepi)", "description": "单关节尾 + 胸鳍 + 鱼眼相机"},
+}
+
 # 控制参数（根据机器鱼舵机安全范围设定）
 CONTROL_LIMITS = {
     "tail_frequency": {
         "min": 0.0,
-        "max": 2.0,  # Hz
+        "max": 4.0,  # Hz
         "default": 0.0  # 静止启动
     },
     "tail_amplitude": {
         "min": 0.0,
-        "max": 0.4,  # rad (安全范围)
+        "max": 0.5,  # rad
         "default": 0.0  # 静止启动
     },
     "tail_offset": {
-        "min": -0.2,  # rad (安全范围)
-        "max": 0.2,   # rad
+        # ±0.5是以基础偏置为中心的左右转向范围, 不是绝对零位限幅;
+        # 合成偏置=基础偏置±转向量, 绝对范围可达±1.0 (Pi端socket_server已同步放宽)
+        "min": -0.5,  # rad
+        "max": 0.5,   # rad
         "default": 0.0
     },
     "pec_angle": {
@@ -32,6 +49,17 @@ CONTROL_LIMITS = {
         "max": 2000,  # μs
         "default": 1500
     }
+}
+
+# 键盘开环控制默认参数
+KEYBOARD_CONTROL_DEFAULTS = {
+    "base_bias": 0.0,
+    "slow_frequency": 1.5,
+    "slow_amplitude": 0.2,
+    "slow_turn_bias": 0.3,
+    "fast_frequency": 4.0,
+    "fast_amplitude": 0.5,
+    "fast_turn_bias": 0.5,
 }
 
 # 传感器数据配置

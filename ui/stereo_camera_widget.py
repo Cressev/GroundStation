@@ -24,9 +24,13 @@ import sys
 import time
 import socket
 import struct
+import datetime
+import shutil
+import tempfile
 
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-                             QPushButton, QGroupBox, QMessageBox, QGridLayout)
+                             QPushButton, QGroupBox, QMessageBox, QGridLayout,
+                             QFileDialog)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt, pyqtSlot
 from PyQt5.QtGui import QImage, QPixmap, QFont
 
@@ -143,6 +147,10 @@ class StereoFishCameraWidget(QWidget):
         super().__init__()
         self.stream_client = StereoVideoClient()
         self.current_frame = None
+        self.recording = False
+        self.writer = None
+        self.recording_path = None
+        self._rec_count = 0
         self._fps_count = 0
         self._fps_t0 = time.time()
         self._init_ui()
@@ -166,6 +174,12 @@ class StereoFishCameraWidget(QWidget):
         self.disconnect_btn.setEnabled(False)
         control_layout.addWidget(self.connect_btn)
         control_layout.addWidget(self.disconnect_btn)
+        self.record_btn = QPushButton("保存视频")
+        self.record_btn.setEnabled(False)
+        self.record_btn.setToolTip(
+            "录制当前双目画面(两路上下排布)；停止后弹出对话框选择 mp4 保存位置")
+        self.record_btn.clicked.connect(self._toggle_recording)
+        control_layout.addWidget(self.record_btn)
         control_layout.addStretch()
 
         self.mode_label = QLabel("介质: 水下模型")
@@ -255,6 +269,52 @@ class StereoFishCameraWidget(QWidget):
         self.stream_client.wait()
         self.connect_btn.setEnabled(True)
         self.disconnect_btn.setEnabled(False)
+
+    def _toggle_recording(self):
+        """开始/停止录制。停止后弹出对话框选择 mp4 保存位置与文件名。"""
+        if not self.stream_client.running:
+            QMessageBox.warning(self, "录制失败", "请先连接视频流")
+            return
+        if not self.recording:
+            fd, self.recording_path = tempfile.mkstemp(suffix=".mp4")
+            os.close(fd)
+            self.writer = None  # 首帧到达时按实际尺寸创建
+            self.recording = True
+            self._rec_count = 0
+            self.record_btn.setText("停止录制")
+            self.range_state_label.setText("录制状态: 录制中…")
+        else:
+            self._stop_recording()
+
+    def _stop_recording(self):
+        """停止录制并弹出保存对话框（仅 mp4）；取消则存到默认位置。"""
+        if self.writer is not None:
+            self.writer.release()
+            self.writer = None
+        self.recording = False
+        self.record_btn.setText("保存视频")
+        temp_path = self.recording_path
+        self.recording_path = None
+        if not temp_path:
+            return
+        default_name = f"stereo_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "保存录制视频", default_name, "MP4 视频 (*.mp4)")
+        if not path:
+            path = os.path.join("records", default_name)
+        if not path.lower().endswith(".mp4"):
+            path += ".mp4"
+        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+        shutil.move(temp_path, path)
+        self.range_state_label.setText(f"录制状态: 已保存 {os.path.basename(path)}")
+        QMessageBox.information(self, "录制完成", f"视频已保存到:\n{path}")
+
+    def _record_frame(self, frame):
+        """录制中则写入一帧（writer 在首帧按实际尺寸创建）。"""
+        if not (self.recording and self.writer is not None):
+            return
+        self.writer.write(frame)
+        self._rec_count += 1
 
     def _toggle_ranging(self):
         """切换板上测距程序：发送 RANGE_ON / RANGE_OFF 命令。"""
@@ -357,6 +417,7 @@ class StereoFishCameraWidget(QWidget):
                 label_size.width() - 10, label_size.height() - 10,
                 Qt.KeepAspectRatio, Qt.SmoothTransformation)
             self.video_label.setPixmap(QPixmap.fromImage(scaled_image))
+            self._record_frame(frame)
         except Exception as exc:
             print(f"更新视频帧异常: {exc}")
 

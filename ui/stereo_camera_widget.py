@@ -319,6 +319,7 @@ class StereoFishCameraWidget(QWidget):
     def _toggle_ranging(self):
         """切换板上测距程序：发送 RANGE_ON / RANGE_OFF 命令。"""
         if not self.stream_client.running:
+            QMessageBox.warning(self, "切换失败", "请先连接视频流")
             return
         self.ranging_on = not getattr(self, "ranging_on", False)
         self.stream_client.send_command("RANGE_ON" if self.ranging_on else "RANGE_OFF")
@@ -426,9 +427,11 @@ class StereoFishCameraWidget(QWidget):
         """更新连接状态标签。"""
         if connected:
             self.range_btn.setEnabled(True)
+            self.record_btn.setEnabled(True)
             self.status_label.setText("连接状态: 已连接")
         else:
             self.range_btn.setEnabled(False)
+            self.record_btn.setEnabled(False)
             self.range_state_label.setText("测距状态: 关")
             self.status_label.setText("连接状态: 未连接")
             self.resolution_label.setText("分辨率: --")

@@ -172,6 +172,20 @@ class StereoFishCameraWidget(QWidget):
         control_layout.addWidget(self.mode_label)
         layout.addWidget(control_group)
 
+        # 测距开关：板上默认纯视频模式；点击后启动/停止测距程序（SGBM+测量）
+        range_group = QGroupBox("测距")
+        range_layout = QHBoxLayout(range_group)
+        self.range_btn = QPushButton("启动测距")
+        self.range_btn.setEnabled(False)
+        self.range_btn.setToolTip(
+            "点击后板上启动测距程序(SGBM+测量)；再次点击停止回到纯视频回传")
+        self.range_btn.clicked.connect(self._toggle_ranging)
+        self.range_state_label = QLabel("测距状态: 关")
+        range_layout.addWidget(self.range_btn)
+        range_layout.addWidget(self.range_state_label)
+        range_layout.addStretch()
+        layout.addWidget(range_group)
+
         video_group = QGroupBox("双目画面（左上:左校正 | 右上:右校正 | 下:视差伪彩）")
         video_layout = QVBoxLayout(video_group)
         self.video_label = QLabel()
@@ -242,6 +256,16 @@ class StereoFishCameraWidget(QWidget):
         self.connect_btn.setEnabled(True)
         self.disconnect_btn.setEnabled(False)
 
+    def _toggle_ranging(self):
+        """切换板上测距程序：发送 RANGE_ON / RANGE_OFF 命令。"""
+        if not self.stream_client.running:
+            return
+        self.ranging_on = not getattr(self, "ranging_on", False)
+        self.stream_client.send_command("RANGE_ON" if self.ranging_on else "RANGE_OFF")
+        self.range_btn.setText("停止测距" if self.ranging_on else "启动测距")
+        self.range_state_label.setText(
+            f"测距状态: {'开' if self.ranging_on else '关'}")
+
     def _get_fish_ip(self):
         """从主窗口读取 IP 输入框（未连接控制时用 DUAL_FISH_CONFIG 默认值）。"""
         try:
@@ -286,7 +310,12 @@ class StereoFishCameraWidget(QWidget):
         except (ValueError, TypeError):
             return
         msg_type = info.get("type")
-        if msg_type == "point_set":
+        if msg_type == "ranging":
+            self.ranging_on = info.get("enabled", False)
+            self.range_btn.setText("停止测距" if self.ranging_on else "启动测距")
+            self.range_state_label.setText(
+                f"测距状态: {'开' if self.ranging_on else '关'}")
+        elif msg_type == "point_set":
             self.measure_point_label.setText(f"测点: ({info.get('u')},{info.get('v')})")
         elif msg_type == "measurement":
             self._update_measurement(info)
@@ -335,8 +364,11 @@ class StereoFishCameraWidget(QWidget):
     def _on_connection_status(self, connected, message):
         """更新连接状态标签。"""
         if connected:
+            self.range_btn.setEnabled(True)
             self.status_label.setText("连接状态: 已连接")
         else:
+            self.range_btn.setEnabled(False)
+            self.range_state_label.setText("测距状态: 关")
             self.status_label.setText("连接状态: 未连接")
             self.resolution_label.setText("分辨率: --")
             self.video_label.clear()

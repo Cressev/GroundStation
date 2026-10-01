@@ -23,6 +23,7 @@ from ui.keyboard_status import KeyboardStatusWidget
 from ui.video_display import VideoMonitorWidget
 from ui.data_recording import DataRecordingWidget
 from ui.stereo_camera_widget import StereoFishCameraWidget
+from ui.connection_store import ConnectionStore
 from controllers.base import KeyboardController
 from communication.socket_client import SocketCommunication
 from communication.base import FishState, ControlCommand
@@ -40,6 +41,8 @@ class MainWindow(QMainWindow):
 
         # 机器鱼变体: "dual"=双尾双目鱼(pico) / "single"=单尾单目鱼(orangepi)
         self.variant = variant
+        # 连接档案（本地 JSON，双尾鱼页面使用）
+        self.connection_store = ConnectionStore()
 
         # 初始化组件
         self.communication = None
@@ -174,16 +177,27 @@ class MainWindow(QMainWindow):
         self.connect_action.triggered.connect(self._toggle_connection)
         connection_menu.addAction(self.connect_action)
         
-        # 视频菜单
+        # 视频菜单（dual 变体无摄像头启停，只有视频流连接开关）
         video_menu = menubar.addMenu('视频(&V)')
-        
-        start_video_action = QAction('启动摄像头(&S)', self)
-        start_video_action.triggered.connect(lambda: self.video_widget._start_camera())
-        video_menu.addAction(start_video_action)
-        
-        stop_video_action = QAction('停止摄像头(&T)', self)
-        stop_video_action.triggered.connect(lambda: self.video_widget._stop_camera())
-        video_menu.addAction(stop_video_action)
+
+        if self.variant == "dual":
+            start_video_action = QAction('连接视频流(&S)', self)
+            start_video_action.triggered.connect(
+                lambda: self.video_widget._toggle_connection())
+            video_menu.addAction(start_video_action)
+
+            stop_video_action = QAction('断开视频流(&T)', self)
+            stop_video_action.triggered.connect(
+                lambda: self.video_widget._disconnect())
+            video_menu.addAction(stop_video_action)
+        else:
+            start_video_action = QAction('启动摄像头(&S)', self)
+            start_video_action.triggered.connect(lambda: self.video_widget._start_camera())
+            video_menu.addAction(start_video_action)
+
+            stop_video_action = QAction('停止摄像头(&T)', self)
+            stop_video_action.triggered.connect(lambda: self.video_widget._stop_camera())
+            video_menu.addAction(stop_video_action)
         
         video_menu.addSeparator()
         
@@ -287,6 +301,34 @@ class MainWindow(QMainWindow):
         self.connection_status_label = QLabel("未连接")
         self.connection_button = QPushButton("连接")
         self.connection_button.clicked.connect(self._toggle_connection)
+
+        # 双尾鱼：连接档案（备注+IP 本地持久化，下拉直选）
+        self.saved_combo = None
+        self.remark_input = None
+        if self.variant == "dual":
+            saved_layout = QHBoxLayout()
+            saved_layout.addWidget(QLabel("档案:"))
+            self.saved_combo = QComboBox()
+            self.saved_combo.currentIndexChanged.connect(self._on_saved_selected)
+            saved_layout.addWidget(self.saved_combo, 1)
+            connection_layout.addWidget(QLabel("已存:"), 0, 0)
+            connection_layout.addLayout(saved_layout, 0, 1)
+
+            remark_row = QHBoxLayout()
+            remark_row.addWidget(QLabel("备注:"))
+            self.remark_input = QLineEdit()
+            self.remark_input.setPlaceholderText("如: 实验室有线")
+            remark_row.addWidget(self.remark_input, 1)
+            self.save_conn_button = QPushButton("保存")
+            self.save_conn_button.setToolTip("以当前备注+IP+端口保存到本地连接档案")
+            self.save_conn_button.clicked.connect(self._save_current_connection)
+            remark_row.addWidget(self.save_conn_button)
+            self.del_conn_button = QPushButton("删除")
+            self.del_conn_button.setToolTip("删除下拉中当前选中的连接档案")
+            self.del_conn_button.clicked.connect(self._delete_saved_connection)
+            remark_row.addWidget(self.del_conn_button)
+            connection_layout.addLayout(remark_row, 2, 0, 1, 2)
+            self._refresh_saved_combo()
         
         # 布局：IP和端口在同一行
         ip_layout = QHBoxLayout()
@@ -298,7 +340,7 @@ class MainWindow(QMainWindow):
         connection_layout.addLayout(ip_layout, 0, 1)
         connection_layout.addWidget(QLabel("状态:"), 1, 0)
         connection_layout.addWidget(self.connection_status_label, 1, 1)
-        connection_layout.addWidget(self.connection_button, 2, 0, 1, 2)
+        connection_layout.addWidget(self.connection_button, 3, 0, 1, 2)
         
         layout.addWidget(connection_group)
         
@@ -413,6 +455,53 @@ class MainWindow(QMainWindow):
         controller_name = self.controller_combo.itemData(index)
         self._switch_controller(controller_name)
     
+    def _refresh_saved_combo(self):
+        """用连接档案刷新下拉框（首项为占位提示）。"""
+        if self.saved_combo is None:
+            return
+        self.saved_combo.blockSignals(True)
+        self.saved_combo.clear()
+        self.saved_combo.addItem("选择已存连接…", None)
+        for e in self.connection_store.entries:
+            self.saved_combo.addItem(
+                f"{e.get('remark') or '未命名'}  [{e['ip']}:{e['port']}]", e)
+        self.saved_combo.blockSignals(False)
+
+    def _on_saved_selected(self, index):
+        """下拉选择已存连接：填充 IP/端口输入框。"""
+        if self.saved_combo is None:
+            return
+        entry = self.saved_combo.itemData(index)
+        if not entry:
+            return
+        self.ip_input.setText(entry["ip"])
+        self.port_input.setText(str(entry["port"]))
+
+    def _save_current_connection(self):
+        """把当前 IP/端口 连同备注写入本地连接档案。"""
+        ip = self.ip_input.text().strip()
+        port = self.port_input.text().strip()
+        if not ip:
+            QMessageBox.warning(self, "保存失败", "IP 为空，无法保存")
+            return
+        remark = self.remark_input.text().strip() if self.remark_input else ""
+        self.connection_store.add(remark, ip, int(port))
+        self._refresh_saved_combo()
+        self._log_message(f"已保存连接档案: {remark or '未命名'} {ip}:{port}")
+
+    def _delete_saved_connection(self):
+        """删除下拉中当前选中的连接档案。"""
+        if self.saved_combo is None:
+            return
+        index = self.saved_combo.currentIndex()
+        entry = self.saved_combo.itemData(index)
+        if not entry:
+            QMessageBox.information(self, "提示", "请先在下拉框选择要删除的连接")
+            return
+        self.connection_store.remove(index - 1)
+        self._refresh_saved_combo()
+        self._log_message("已删除连接档案")
+
     def _toggle_connection(self):
         """切换连接状态"""
         if self.communication is None or not self.communication.connected:

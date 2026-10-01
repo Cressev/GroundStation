@@ -27,8 +27,9 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
 | `main.py` | 入口：高 DPI 设置 → 版本选择对话框 → 按变体构造 MainWindow |
 | `config.py` | 全局配置：单尾鱼 IP/端口、`DUAL_FISH_CONFIG`（pico IP + 9999/9998 端口）、控制限幅、键位映射、UI/视频/记录参数 |
 | `ui/fish_variant_dialog.py` | **新增** 启动版本选择对话框（dual/single 卡片式选择） |
+| `ui/connection_store.py` | **新增** 连接档案持久化（本地 connections.json 记录 备注+IP+端口，双尾鱼页面下拉直选） |
 | `ui/main_window.py` | 主窗口：按 `variant` 加载视频页（dual=双目测距组件 / single=原视频监控）、连接默认值、菜单、键盘事件分发、安全启用开关 |
-| `ui/stereo_camera_widget.py` | **新增** 双尾鱼视频+测距组件：`StereoVideoClient`（TCP 9998 客户端，协议兼容老版）+ `StereoFishCameraWidget`（画布显示、鼠标点击→SET_POINT、测量 JSON 刷新 D/Z/X/Y/视差标签） |
+| `ui/stereo_camera_widget.py` | **新增** 双尾鱼视频+测距组件：`StereoVideoClient`（TCP 9998 客户端，协议兼容老版）+ `StereoFishCameraWidget`（双路画面上下排布显示、RANGE_ON/OFF 测距开关、测量 JSON 刷新标签；点击→SET_POINT 预留） |
 | `ui/fish_camera_widget.py` | 单尾鱼机载相机组件（TCP 9998 客户端 + 机上录制控制），仅 single 变体使用 |
 | `ui/video_display.py` | 笔记本外接 USB 相机监控（VideoDisplayWidget + VideoMonitorWidget 容器），仅 single 变体使用 |
 | `ui/visualization.py` | pyqtgraph 数据可视化（XY 轨迹/深度/姿态/实时朝向） |
@@ -57,8 +58,12 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
                      / {"type":"point_set","u":..,"v":..} / {"type":"pong"} / {"type":"error"}）
 地面站->服务端: 文本行
   SET_POINT u v   点击测距（u,v 为左校正图像素坐标）
+  RANGE_ON / RANGE_OFF   启动/停止板上测距程序（纯视频回传 <-> 测距模式）
   PING            探活
 ```
+
+**当前回传内容**（测距关闭时）：两路相机画面上下排布（各 640x480，canvas 640x960，
+约 15~20 FPS，gamma 提亮），测点/视差/距离读数在点击"启动测距"后加入画布。
 
 控制（9999，gs_bridge）：
 

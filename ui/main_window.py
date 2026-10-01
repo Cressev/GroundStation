@@ -275,7 +275,7 @@ class MainWindow(QMainWindow):
     def _create_control_panel(self):
         """创建控制面板"""
         panel = QWidget()
-        panel.setMinimumWidth(280)
+        panel.setMinimumWidth(320)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(8)
@@ -327,7 +327,7 @@ class MainWindow(QMainWindow):
             self.del_conn_button.setToolTip("删除下拉中当前选中的连接档案")
             self.del_conn_button.clicked.connect(self._delete_saved_connection)
             remark_row.addWidget(self.del_conn_button)
-            connection_layout.addLayout(remark_row, 2, 0, 1, 2)
+            connection_layout.addLayout(remark_row, 1, 0, 1, 2)
             self._refresh_saved_combo()
         
         # 布局：IP和端口在同一行
@@ -336,11 +336,11 @@ class MainWindow(QMainWindow):
         ip_layout.addWidget(QLabel(":"))
         ip_layout.addWidget(self.port_input)
         
-        connection_layout.addWidget(QLabel("地址:"), 0, 0)
-        connection_layout.addLayout(ip_layout, 0, 1)
-        connection_layout.addWidget(QLabel("状态:"), 1, 0)
-        connection_layout.addWidget(self.connection_status_label, 1, 1)
-        connection_layout.addWidget(self.connection_button, 3, 0, 1, 2)
+        connection_layout.addWidget(QLabel("地址:"), 2, 0)
+        connection_layout.addLayout(ip_layout, 2, 1)
+        connection_layout.addWidget(QLabel("状态:"), 3, 0)
+        connection_layout.addWidget(self.connection_status_label, 3, 1)
+        connection_layout.addWidget(self.connection_button, 4, 0, 1, 2)
         
         layout.addWidget(connection_group)
         

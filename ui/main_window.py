@@ -466,6 +466,10 @@ class MainWindow(QMainWindow):
             self.saved_combo.addItem(
                 f"{e.get('remark') or '未命名'}  [{e['ip']}:{e['port']}]", e)
         self.saved_combo.blockSignals(False)
+        # 自动选中最近一条（IP/端口直接预填）
+        if self.connection_store.entries:
+            self.saved_combo.setCurrentIndex(1)
+            self._on_saved_selected(1)
 
     def _on_saved_selected(self, index):
         """下拉选择已存连接：填充 IP/端口输入框。"""

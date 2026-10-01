@@ -310,9 +310,20 @@ class StereoFishCameraWidget(QWidget):
         QMessageBox.information(self, "录制完成", f"视频已保存到:\n{path}")
 
     def _record_frame(self, frame):
-        """录制中则写入一帧（writer 在首帧按实际尺寸创建）。"""
-        if not (self.recording and self.writer is not None):
+        """录制中则写入一帧（writer 在首帧按实际尺寸懒创建）。"""
+        if not self.recording:
             return
+        if self.writer is None:
+            h, w = frame.shape[:2]
+            self.writer = cv2.VideoWriter(
+                self.recording_path, cv2.VideoWriter_fourcc(*"mp4v"),
+                15.0, (w, h))
+            if not self.writer.isOpened():
+                self.writer = None
+                self.recording = False
+                self.record_btn.setText("保存视频")
+                self.range_state_label.setText("录制状态: 编码器不可用")
+                return
         self.writer.write(frame)
         self._rec_count += 1
 

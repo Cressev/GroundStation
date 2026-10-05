@@ -546,6 +546,11 @@ class MainWindow(QMainWindow):
                 self.connection_button.setEnabled(True)
                 self.connect_action.setText("断开连接(&D)")
                 self.status_bar.showMessage(f"机器鱼连接成功 ({ip_address}:{port})")
+
+                # 双尾鱼：主连接成功后自动连接视频流（9998），一键全连
+                if self.variant == "dual" and hasattr(self.video_widget, "_toggle_connection"):
+                    if not self.video_widget.stream_client.running:
+                        self.video_widget._toggle_connection()
                 
                 # Socket通信不需要定时器轮询，数据通过回调实时更新
                 # 但保留定时器用于UI刷新和数据记录
@@ -584,6 +589,11 @@ class MainWindow(QMainWindow):
             # 断开前发送停止命令，确保机器鱼停止运动
             self._send_stop_command()
             time.sleep(0.2)  # 等待命令发送
+            
+            # 双尾鱼：同步断开视频流
+            if self.variant == "dual" and hasattr(self.video_widget, "stream_client"):
+                if self.video_widget.stream_client.running:
+                    self.video_widget._disconnect()
             
             if self.communication:
                 self.communication.disconnect()

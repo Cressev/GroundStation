@@ -23,6 +23,7 @@ from ui.keyboard_status import KeyboardStatusWidget
 from ui.video_display import VideoMonitorWidget
 from ui.data_recording import DataRecordingWidget
 from ui.stereo_camera_widget import StereoFishCameraWidget
+from ui.depth_panel import DepthPanel
 from ui.connection_store import ConnectionStore
 from controllers.base import KeyboardController
 from communication.socket_client import SocketCommunication
@@ -140,7 +141,12 @@ class MainWindow(QMainWindow):
         
         # 创建右侧标签页
         right_tabs = QTabWidget()
-        
+
+        # 深度标签页（双尾鱼变体专属）
+        if self.variant == "dual":
+            self.depth_panel = DepthPanel(DUAL_FISH_CONFIG["fish_ip"])
+            right_tabs.addTab(self.depth_panel, "深度")
+
         # 按键状态标签页
         self.keyboard_status_widget = KeyboardStatusWidget()
         right_tabs.addTab(self.keyboard_status_widget, "按键状态")
@@ -590,10 +596,13 @@ class MainWindow(QMainWindow):
             self._send_stop_command()
             time.sleep(0.2)  # 等待命令发送
             
-            # 双尾鱼：同步断开视频流
-            if self.variant == "dual" and hasattr(self.video_widget, "stream_client"):
-                if self.video_widget.stream_client.running:
-                    self.video_widget._disconnect()
+            # 双尾鱼：同步断开视频流与深度面板
+            if self.variant == "dual":
+                if hasattr(self.video_widget, "stream_client"):
+                    if self.video_widget.stream_client.running:
+                        self.video_widget._disconnect()
+                if hasattr(self, "depth_panel") and self.depth_panel.client.running:
+                    self.depth_panel._disconnect()
             
             if self.communication:
                 self.communication.disconnect()

@@ -180,6 +180,12 @@ class StereoFishCameraWidget(QWidget):
             "录制当前双目画面(两路上下排布)；停止后弹出对话框选择 mp4 保存位置")
         self.record_btn.clicked.connect(self._toggle_recording)
         control_layout.addWidget(self.record_btn)
+        self.cam_btn = QPushButton("开启摄像头")
+        self.cam_btn.setEnabled(False)
+        self.cam_btn.setToolTip(
+            "板上相机默认不随启动脚本开启；点击发 CAM_ON 打开，再点发 CAM_OFF 关闭")
+        self.cam_btn.clicked.connect(self._toggle_camera)
+        control_layout.addWidget(self.cam_btn)
         control_layout.addStretch()
 
         self.mode_label = QLabel("介质: 水下模型")
@@ -338,6 +344,20 @@ class StereoFishCameraWidget(QWidget):
         self.range_state_label.setText(
             f"测距状态: {'开' if self.ranging_on else '关'}")
 
+    def _toggle_camera(self):
+        """开关板上相机：发送 CAM_ON / CAM_OFF（启动脚本默认不开相机）。
+
+        命令在板端是幂等的：重复 CAM_ON/CAM_OFF 无副作用。
+        """
+        if not self.stream_client.running:
+            QMessageBox.warning(self, "切换失败", "请先连接视频服务")
+            return
+        self.camera_on = not getattr(self, "camera_on", False)
+        self.stream_client.send_command("CAM_ON" if self.camera_on else "CAM_OFF")
+        self.cam_btn.setText("关闭摄像头" if self.camera_on else "开启摄像头")
+        self.status_label.setText(
+            f"摄像头: {'开启中…' if self.camera_on else '关闭中…'}")
+
     def _get_fish_ip(self):
         """从主窗口读取 IP 输入框（未连接控制时用 DUAL_FISH_CONFIG 默认值）。"""
         try:
@@ -387,6 +407,13 @@ class StereoFishCameraWidget(QWidget):
             self.range_btn.setText("停止测距" if self.ranging_on else "启动测距")
             self.range_state_label.setText(
                 f"测距状态: {'开' if self.ranging_on else '关'}")
+        elif msg_type == "camera":
+            self.camera_on = info.get("enabled", False)
+            self.cam_btn.setText("关闭摄像头" if self.camera_on else "开启摄像头")
+            self.status_label.setText(
+                f"摄像头: {'已开启' if self.camera_on else '已关闭'}")
+            if not self.camera_on:
+                self.video_label.setText("摄像头已关闭\n点击'开启摄像头'恢复画面")
         elif msg_type == "point_set":
             self.measure_point_label.setText(f"测点: ({info.get('u')},{info.get('v')})")
         elif msg_type == "measurement":
@@ -439,10 +466,14 @@ class StereoFishCameraWidget(QWidget):
         if connected:
             self.range_btn.setEnabled(True)
             self.record_btn.setEnabled(True)
+            self.cam_btn.setEnabled(True)
             self.status_label.setText("连接状态: 已连接")
+            self.video_label.setText(
+                "已连接——等待画面\n若摄像头未开启，请点击'开启摄像头'")
         else:
             self.range_btn.setEnabled(False)
             self.record_btn.setEnabled(False)
+            self.cam_btn.setEnabled(False)
             self.range_state_label.setText("测距状态: 关")
             self.status_label.setText("连接状态: 未连接")
             self.resolution_label.setText("分辨率: --")

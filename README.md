@@ -30,7 +30,7 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
 | `ui/connection_store.py` | **新增** 连接档案持久化（本地 connections.json 记录 备注+IP+端口，双尾鱼页面下拉直选） |
 | `ui/main_window.py` | 主窗口：按 `variant` 加载视频页（dual=双目测距组件 / single=原视频监控）与深度页（仅 dual）、连接默认值、菜单、键盘事件分发、安全启用开关；主连接成功后自动连视频流并同步深度面板数据源 IP |
 | `ui/stereo_camera_widget.py` | **新增** 双尾鱼视频+测距组件：`StereoVideoClient`（TCP 9998 客户端，协议兼容老版）+ `StereoFishCameraWidget`（双路画面上下排布显示、RANGE_ON/OFF 测距开关、测量 JSON 刷新标签；点击→SET_POINT 预留） |
-| `ui/depth_panel.py` | **新增** 双尾鱼深度面板：`DepthTcpClient`（TCP 9999 客户端，接收 gs_bridge 的 10Hz `{"type":"depth",...}` 推送）、大字号实时深度显示、开始/停止 CSV 记录（停止弹对话框仅存 .csv）。**数据源 IP 跟随主连接**：主连接成功后自动切到本次输入的 IP 并连上深度流，也可用面板内按钮手动连/断 |
+| `ui/depth_panel.py` | **新增** 双尾鱼深度面板：`DepthTcpClient`（TCP 9999 客户端，接收 gs_bridge 的 10Hz `{"type":"depth",...}` 推送）、大字号实时深度显示、**深度零点标定**（"标定"按钮采集 10 秒融合值均值设为 0 点，零点持久化 `depth_zero.json`，可"清除标定"；CSV 含标定后深度列）、开始/停止 CSV 记录（停止弹对话框仅存 .csv）。**数据源 IP 跟随主连接**：主连接成功后自动切到本次输入的 IP 并连上深度流，也可用面板内按钮手动连/断 |
 | `ui/fish_camera_widget.py` | 单尾鱼机载相机组件（TCP 9998 客户端 + 机上录制控制），仅 single 变体使用 |
 | `ui/video_display.py` | 笔记本外接 USB 相机监控（VideoDisplayWidget + VideoMonitorWidget 容器），仅 single 变体使用 |
 | `ui/visualization.py` | pyqtgraph 数据可视化（XY 轨迹/深度/姿态/实时朝向） |

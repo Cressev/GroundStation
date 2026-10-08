@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""深度面板：实时显示 WF5803 深度传感器数据，支持 CSV 记录。
+"""深度面板：实时显示 WF5803 深度传感器数据，支持 CSV 记录与零点标定。
 
 数据源：板上 gs_bridge（TCP 9999），10Hz 推送 JSON：
   {"type": "depth", "raw_1": .., "filtered_1": .., "fused": .., "timestamp": ..}
 
 面板内容：
-  - 大字号实时深度值（filtered_1/fused）
-  - 原始值/融合值小字显示
-  - 记录开始/停止按钮：停止后弹出对话框选择 CSV 保存位置
+  - 大字号实时深度值（标定后 = fused − 零点；未标定时零点为 0）
+  - 标定：点"标定"按钮采集 10 秒融合值取均值作为深度 0 点，
+    零点持久化到程序目录 depth_zero.json（重启不丢），可一键清除
+  - 原始值/滤波/融合小字显示（始终为传感器原值，不扣零点）
+  - 记录开始/停止按钮：停止后弹出对话框选择 CSV 保存位置（含标定后深度列）
 """
 
 import csv
@@ -18,12 +20,19 @@ import os
 import socket
 import threading
 import time
+from pathlib import Path
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (QDialog, QFileDialog, QGridLayout, QGroupBox,
                              QHBoxLayout, QLabel, QMessageBox, QPushButton,
                              QVBoxLayout, QWidget)
+
+# 零点持久化文件（与 connections.json 同目录）
+ZERO_PATH = Path(__file__).resolve().parent.parent / "depth_zero.json"
+# 标定采集时长（秒）与最少样本数（低于视为失败）
+CALIB_DURATION_S = 10
+CALIB_MIN_SAMPLES = 10
 
 
 class DepthTcpClient(QThread):
@@ -90,12 +99,15 @@ class DepthPanel(QWidget):
     """深度实时显示与记录面板。"""
 
     def __init__(self, host, parent=None):
-        """初始化面板并连接数据源。"""
+        """初始化面板并连接数据源，加载已保存的深度零点。"""
         super().__init__(parent)
         self.host = host
         self.client = DepthTcpClient(host)
         self.recording = False
         self.records = []
+        self.zero_offset = self._load_zero()
+        self._calibrating = False
+        self._calib_samples = []
         self._init_ui()
         self._init_connections()
 
@@ -145,6 +157,21 @@ class DepthPanel(QWidget):
             value_layout.addWidget(label, 1, col)
         layout.addWidget(value_group)
 
+        calib_group = QGroupBox("深度零点标定")
+        calib_layout = QHBoxLayout(calib_group)
+        self.calib_btn = QPushButton("标定（采集10秒）")
+        self.calib_btn.setToolTip("采集接下来10秒的融合深度取均值作为新的深度0点")
+        self.calib_btn.clicked.connect(self._start_calibration)
+        self.calib_clear_btn = QPushButton("清除标定")
+        self.calib_clear_btn.clicked.connect(self._clear_calibration)
+        calib_layout.addWidget(self.calib_btn)
+        calib_layout.addWidget(self.calib_clear_btn)
+        calib_layout.addStretch()
+        self.calib_status_label = QLabel()
+        self.calib_status_label.setFont(QFont("Arial", 9))
+        calib_layout.addWidget(self.calib_status_label)
+        layout.addWidget(calib_group)
+
         record_group = QGroupBox("数据记录（CSV）")
         record_layout = QHBoxLayout(record_group)
         self.record_btn = QPushButton("开始记录")
@@ -156,6 +183,7 @@ class DepthPanel(QWidget):
         record_layout.addStretch()
         layout.addWidget(record_group)
         layout.addStretch()
+        self._refresh_calib_status()
 
     def _init_connections(self):
         """连接信号。"""
@@ -168,9 +196,12 @@ class DepthPanel(QWidget):
         if self.client.running:
             self.client.stop()
             self.client.wait()
+            self._calibrating = False
+            self.calib_btn.setEnabled(True)
             self.connect_btn.setEnabled(True)
             self.disconnect_btn.setEnabled(False)
             self.record_btn.setEnabled(False)
+            self._refresh_calib_status()
         else:
             self.client.start()
             self.connect_btn.setEnabled(False)
@@ -181,9 +212,12 @@ class DepthPanel(QWidget):
         """断开深度数据流。"""
         self.client.stop()
         self.client.wait()
+        self._calibrating = False
+        self.calib_btn.setEnabled(True)
         self.connect_btn.setEnabled(True)
         self.disconnect_btn.setEnabled(False)
         self.record_btn.setEnabled(False)
+        self._refresh_calib_status()
 
     def _toggle_recording(self):
         """开始/停止 CSV 记录。停止后弹出保存对话框。"""
@@ -212,28 +246,112 @@ class DepthPanel(QWidget):
         os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
         with open(path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["时间", "原始 raw_1", "滤波 filtered_1", "融合 fused"])
+            writer.writerow(["时间", "原始 raw_1", "滤波 filtered_1", "融合 fused",
+                             f"标定后深度(m) 零点={self.zero_offset:.4f}"])
             writer.writerows(rows)
         self.record_status_label.setText(f"记录状态: 已保存 {os.path.basename(path)}")
         QMessageBox.information(self, "深度记录已保存",
                                 f"共 {len(rows)} 条记录\n已保存到:\n{path}")
 
+    # ---------- 深度零点标定 ----------
+
+    def _load_zero(self):
+        """从 depth_zero.json 读取已保存的零点；缺失/损坏返回 0.0。"""
+        try:
+            return float(json.loads(ZERO_PATH.read_text(encoding="utf-8"))["zero_offset_m"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return 0.0
+
+    def _save_zero(self):
+        """把当前零点与元信息写入 depth_zero.json。"""
+        ZERO_PATH.write_text(json.dumps({
+            "zero_offset_m": self.zero_offset,
+            "samples": self._calib_zero_samples,
+            "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _refresh_calib_status(self):
+        """刷新标定状态标签文字。"""
+        if self._calibrating:
+            self.calib_status_label.setText(
+                f"标定中… 已采集 {len(self._calib_samples)} 个样本")
+        elif self.zero_offset:
+            self.calib_status_label.setText(
+                f"当前零点: {self.zero_offset:+.3f} m")
+        else:
+            self.calib_status_label.setText("未标定（显示原始值）")
+
+    def _start_calibration(self):
+        """开始 10 秒零点采集：期间在 _on_line 里累积融合值样本。"""
+        if self._calibrating:
+            return
+        if not self.client.running:
+            QMessageBox.warning(self, "无法标定", "请先连接深度数据源")
+            return
+        self._calibrating = True
+        self._calib_samples = []
+        self.calib_btn.setEnabled(False)
+        self._refresh_calib_status()
+        QTimer.singleShot(int(CALIB_DURATION_S * 1000), self._finish_calibration)
+
+    def _finish_calibration(self):
+        """采集结束：均值作为零点并持久化；样本不足则失败回退。"""
+        if not self._calibrating:
+            return
+        self._calibrating = False
+        self.calib_btn.setEnabled(True)
+        samples = self._calib_samples
+        if len(samples) < CALIB_MIN_SAMPLES:
+            self._calib_samples = []
+            self._refresh_calib_status()
+            QMessageBox.warning(
+                self, "标定失败",
+                f"10 秒内仅采集到 {len(samples)} 个样本（需 ≥{CALIB_MIN_SAMPLES}），"
+                "请确认深度数据源已连接后重试")
+            return
+        self.zero_offset = sum(samples) / len(samples)
+        self._calib_zero_samples = len(samples)
+        self._save_zero()
+        self._refresh_calib_status()
+        QMessageBox.information(
+            self, "标定完成",
+            f"10 秒均值 {self.zero_offset:+.4f} m 已设为深度 0 点\n"
+            f"（样本数 {len(samples)}，已保存到 depth_zero.json）")
+
+    def _clear_calibration(self):
+        """清除零点：显示回到原始值，并删除持久化文件。"""
+        self._calibrating = False
+        self.calib_btn.setEnabled(True)
+        self.zero_offset = 0.0
+        try:
+            ZERO_PATH.unlink()
+        except OSError:
+            pass
+        self._refresh_calib_status()
+
     def _on_line(self, info):
-        """处理一行 JSON（深度/状态）。"""
+        """处理一行 JSON（深度/状态），含标定采样与零点扣减显示。"""
         msg_type = info.get("type")
         if msg_type == "depth":
             fused = info.get("fused")
+            if self._calibrating and fused is not None:
+                self._calib_samples.append(float(fused))
+                self._refresh_calib_status()
             if fused is None:
                 self.depth_big_label.setText("--.-- m")
             else:
-                self.depth_big_label.setText(f"{fused:.2f} m")
+                depth = float(fused) - self.zero_offset
+                self.depth_big_label.setText(f"{depth:+.2f} m")
             self.raw_label.setText(f"原始: {info.get('raw_1', 0):.3f}")
             self.filtered_label.setText(f"滤波: {info.get('filtered_1', 0):.3f}")
             self.fused_label.setText(f"融合: {info.get('fused', 0):.3f}")
             if self.recording:
                 now = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                calibrated = (None if fused is None
+                              else float(fused) - self.zero_offset)
                 self.records.append([now, info.get("raw_1"),
-                                     info.get("filtered_1"), info.get("fused")])
+                                     info.get("filtered_1"), info.get("fused"),
+                                     calibrated])
         elif msg_type == "state":
             pass
 

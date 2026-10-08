@@ -61,6 +61,7 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
   SET_POINT u v   点击测距（u,v 为左校正图像素坐标）
   RANGE_ON / RANGE_OFF   启动/停止板上测距程序（纯视频回传 <-> 测距模式）
   CAM_ON / CAM_OFF 开关板上摄像头（一键启动默认不开相机，板上回 {"type":"camera"} 确认）
+  GET_STATE       查询板上真实状态（回 {"type":"node_state",...}，UI 连接时自动调用）
   PING            探活
 ```
 

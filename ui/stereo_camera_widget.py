@@ -242,9 +242,12 @@ class StereoFishCameraWidget(QWidget):
         status_group = QGroupBox("状态信息")
         status_layout = QVBoxLayout(status_group)
         self.status_label = QLabel("连接状态: 未连接")
+        self.camera_state_label = QLabel("摄像头: 未连接")
+        self.camera_state_label.setFont(QFont("Arial", 11, QFont.Bold))
         self.fps_label = QLabel("帧率: --")
         self.resolution_label = QLabel("分辨率: --")
         status_layout.addWidget(self.status_label)
+        status_layout.addWidget(self.camera_state_label)
         status_layout.addWidget(self.fps_label)
         status_layout.addWidget(self.resolution_label)
         layout.addWidget(status_group)
@@ -355,7 +358,7 @@ class StereoFishCameraWidget(QWidget):
         self.camera_on = not getattr(self, "camera_on", False)
         self.stream_client.send_command("CAM_ON" if self.camera_on else "CAM_OFF")
         self.cam_btn.setText("关闭摄像头" if self.camera_on else "开启摄像头")
-        self.status_label.setText(
+        self.camera_state_label.setText(
             f"摄像头: {'开启中…' if self.camera_on else '关闭中…'}")
 
     def _get_fish_ip(self):
@@ -408,11 +411,14 @@ class StereoFishCameraWidget(QWidget):
             self.range_state_label.setText(
                 f"测距状态: {'开' if self.ranging_on else '关'}")
         elif msg_type == "camera":
-            self.camera_on = info.get("enabled", False)
+            # 板端两种形态：命令回执 {"enabled": bool}、1Hz 推送 {"state": "on"/"off"}
+            enabled = info.get("enabled", info.get("state") == "on")
+            self.camera_on = bool(enabled)
             self.cam_btn.setText("关闭摄像头" if self.camera_on else "开启摄像头")
-            self.status_label.setText(
+            self.camera_state_label.setText(
                 f"摄像头: {'已开启' if self.camera_on else '已关闭'}")
             if not self.camera_on:
+                self._stream_seen = False
                 self.video_label.setText("摄像头已关闭\n点击'开启摄像头'恢复画面")
         elif msg_type == "point_set":
             self.measure_point_label.setText(f"测点: ({info.get('u')},{info.get('v')})")
@@ -439,6 +445,11 @@ class StereoFishCameraWidget(QWidget):
         """刷新视频帧并统计帧率。"""
         try:
             self.current_frame = frame
+            if not getattr(self, "_stream_seen", False):
+                # 首帧到达 = 相机确实在出图（覆盖按钮请求后的"开启中…"状态）
+                self._stream_seen = True
+                self.camera_on = True
+                self.camera_state_label.setText("摄像头: 已开启（画面回传中）")
             self._fps_count += 1
             now = time.time()
             if now - self._fps_t0 >= 1.0:
@@ -468,14 +479,19 @@ class StereoFishCameraWidget(QWidget):
             self.record_btn.setEnabled(True)
             self.cam_btn.setEnabled(True)
             self.status_label.setText("连接状态: 已连接")
+            self._stream_seen = False
+            self.camera_on = False
+            self.camera_state_label.setText("摄像头: 未开启（点击'开启摄像头'出画面）")
             self.video_label.setText(
-                "已连接——等待画面\n若摄像头未开启，请点击'开启摄像头'")
+                "已连接到视频服务——画面未开启\n点击'开启摄像头'按钮开始回传")
         else:
             self.range_btn.setEnabled(False)
             self.record_btn.setEnabled(False)
             self.cam_btn.setEnabled(False)
             self.range_state_label.setText("测距状态: 关")
             self.status_label.setText("连接状态: 未连接")
+            self.camera_state_label.setText("摄像头: 未连接")
+            self._stream_seen = False
             self.resolution_label.setText("分辨率: --")
             self.video_label.clear()
             self.video_label.setText(f"连接已断开\n{message}")

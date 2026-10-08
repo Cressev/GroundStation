@@ -13,6 +13,7 @@
 
 import csv
 import datetime
+import json
 import os
 import socket
 import threading
@@ -21,8 +22,8 @@ import time
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (QDialog, QFileDialog, QGridLayout, QGroupBox,
-                             QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
-                             QWidget)
+                             QHBoxLayout, QLabel, QMessageBox, QPushButton,
+                             QVBoxLayout, QWidget)
 
 
 class DepthTcpClient(QThread):
@@ -97,6 +98,14 @@ class DepthPanel(QWidget):
         self.records = []
         self._init_ui()
         self._init_connections()
+
+    def set_host(self, host):
+        """切换数据源地址（断开当前连接，下次连接生效）。"""
+        if self.client.running:
+            self._disconnect()
+        self.host = host
+        self.client.host = host
+        self.conn_status_label.setText(f"状态: 未连接（数据源 {host}:9999）")
 
     def _init_ui(self):
         """构建界面：连接控制 + 实时数值 + 记录控制。"""

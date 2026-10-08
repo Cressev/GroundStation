@@ -38,6 +38,7 @@ class MainWindow(QMainWindow):
     connection_changed_signal = pyqtSignal(bool)  # 连接状态变化信号
     
     def __init__(self, variant="single"):
+        """按鱼体变体（dual/single）初始化主窗口与各面板。"""
         super().__init__()
 
         # 机器鱼变体: "dual"=双尾双目鱼(pico) / "single"=单尾单目鱼(orangepi)
@@ -557,6 +558,12 @@ class MainWindow(QMainWindow):
                 if self.variant == "dual" and hasattr(self.video_widget, "_toggle_connection"):
                     if not self.video_widget.stream_client.running:
                         self.video_widget._toggle_connection()
+
+                # 双尾鱼：深度面板跟随本次连接的 IP 并自动连上深度数据流
+                if self.variant == "dual" and hasattr(self, "depth_panel"):
+                    self.depth_panel.set_host(ip_address)
+                    if not self.depth_panel.client.running:
+                        self.depth_panel._toggle_connection()
                 
                 # Socket通信不需要定时器轮询，数据通过回调实时更新
                 # 但保留定时器用于UI刷新和数据记录

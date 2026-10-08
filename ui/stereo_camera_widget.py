@@ -411,15 +411,17 @@ class StereoFishCameraWidget(QWidget):
             self.range_state_label.setText(
                 f"测距状态: {'开' if self.ranging_on else '关'}")
         elif msg_type == "camera":
-            # 板端两种形态：命令回执 {"enabled": bool}、1Hz 推送 {"state": "on"/"off"}
-            enabled = info.get("enabled", info.get("state") == "on")
-            self.camera_on = bool(enabled)
-            self.cam_btn.setText("关闭摄像头" if self.camera_on else "开启摄像头")
-            self.camera_state_label.setText(
-                f"摄像头: {'已开启' if self.camera_on else '已关闭'}")
-            if not self.camera_on:
-                self._stream_seen = False
-                self.video_label.setText("摄像头已关闭\n点击'开启摄像头'恢复画面")
+            # 板端两种形态：命令回执 {"enabled": bool}、1Hz 推送 {"state": "on"/"off"}。
+            # 幂等处理：1Hz 重复推送同状态时不重设控件（避免无谓刷新）
+            enabled = bool(info.get("enabled", info.get("state") == "on"))
+            if enabled != getattr(self, "camera_on", False):
+                self.camera_on = enabled
+                self.cam_btn.setText("关闭摄像头" if enabled else "开启摄像头")
+                self.camera_state_label.setText(
+                    f"摄像头: {'已开启' if enabled else '已关闭'}")
+                if not enabled:
+                    self._stream_seen = False
+                    self.video_label.setText("摄像头已关闭\n点击'开启摄像头'恢复画面")
         elif msg_type == "point_set":
             self.measure_point_label.setText(f"测点: ({info.get('u')},{info.get('v')})")
         elif msg_type == "measurement":

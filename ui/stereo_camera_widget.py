@@ -424,6 +424,22 @@ class StereoFishCameraWidget(QWidget):
                     self.video_label.setText("摄像头已关闭\n点击'开启摄像头'恢复画面")
         elif msg_type == "point_set":
             self.measure_point_label.setText(f"测点: ({info.get('u')},{info.get('v')})")
+        elif msg_type == "node_state":
+            # 板上真实状态（GET_STATE 应答）：UI 按实际情况显示而非固定假设
+            enabled = bool(info.get("camera_enabled", False))
+            self.camera_on = enabled
+            self.cam_btn.setText("关闭摄像头" if enabled else "开启摄像头")
+            self.camera_state_label.setText(
+                f"摄像头: {'已开启' if enabled else '关闭——点击开启摄像头出画面'}")
+            if enabled:
+                self.video_label.setText("摄像头已开启——等待画面…")
+            else:
+                self.video_label.setText(
+                    "摄像头处于关闭状态\n点击'开启摄像头'按钮开始回传")
+            self.range_state_label.setText(
+                f"测距状态: {'开' if info.get('ranging') else '关'}")
+            self.mode_label.setText(
+                f"介质: {'水下模型' if info.get('mode') == 'underwater' else '空气模型'}")
         elif msg_type == "measurement":
             self._update_measurement(info)
 
@@ -482,10 +498,10 @@ class StereoFishCameraWidget(QWidget):
             self.cam_btn.setEnabled(True)
             self.status_label.setText("连接状态: 已连接")
             self._stream_seen = False
-            self.camera_on = False
-            self.camera_state_label.setText("摄像头: 未开启（点击'开启摄像头'出画面）")
-            self.video_label.setText(
-                "已连接到视频服务——画面未开启\n点击'开启摄像头'按钮开始回传")
+            # 不猜测板上状态：向节点查询真实相机/测距状态（GET_STATE 应答）
+            self.camera_state_label.setText("摄像头: 查询中…")
+            self.video_label.setText("已连接到视频服务\n正在查询摄像头状态…")
+            self.stream_client.send_command("GET_STATE")
         else:
             self.range_btn.setEnabled(False)
             self.record_btn.setEnabled(False)

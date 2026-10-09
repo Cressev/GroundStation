@@ -105,6 +105,7 @@ class DepthPanel(QWidget):
         self.client = DepthTcpClient(host)
         self.recording = False
         self.records = []
+        self._zero_meta = {}
         self.zero_offset = self._load_zero()
         self._calibrating = False
         self._calib_samples = []
@@ -256,14 +257,18 @@ class DepthPanel(QWidget):
     # ---------- 深度零点标定 ----------
 
     def _load_zero(self):
-        """从 depth_zero.json 读取已保存的零点；缺失/损坏返回 0.0。"""
+        """从 depth_zero.json 读取已保存的零点及元信息；缺失/损坏返回 0.0。"""
         try:
-            return float(json.loads(ZERO_PATH.read_text(encoding="utf-8"))["zero_offset_m"])
+            info = json.loads(ZERO_PATH.read_text(encoding="utf-8"))
+            self._zero_meta = {"samples": info.get("samples"),
+                               "timestamp": str(info.get("timestamp", ""))}
+            return float(info["zero_offset_m"])
         except (OSError, ValueError, KeyError, TypeError):
+            self._zero_meta = {}
             return 0.0
 
     def _save_zero(self):
-        """把当前零点与元信息写入 depth_zero.json。"""
+        """把当前零点与元信息写入 depth_zero.json（下次启动自动加载）。"""
         ZERO_PATH.write_text(json.dumps({
             "zero_offset_m": self.zero_offset,
             "samples": self._calib_zero_samples,
@@ -271,13 +276,18 @@ class DepthPanel(QWidget):
         }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _refresh_calib_status(self):
-        """刷新标定状态标签文字。"""
+        """刷新标定状态标签文字（含标定时间与样本数，便于确认已加载）。"""
         if self._calibrating:
             self.calib_status_label.setText(
                 f"标定中… 已采集 {len(self._calib_samples)} 个样本")
         elif self.zero_offset:
+            meta = getattr(self, "_zero_meta", {})
+            ts = meta.get("timestamp", "")
+            when = f"{ts[5:16]} 标定" if len(ts) >= 16 else ""
+            n = meta.get("samples")
+            extra = "，".join(x for x in (when, f"{n} 样本" if n else "") if x)
             self.calib_status_label.setText(
-                f"当前零点: {self.zero_offset:+.3f} m")
+                f"当前零点: {self.zero_offset:+.3f} m" + (f"（{extra}）" if extra else ""))
         else:
             self.calib_status_label.setText("未标定（显示原始值）")
 
@@ -312,6 +322,9 @@ class DepthPanel(QWidget):
         self.zero_offset = sum(samples) / len(samples)
         self._calib_zero_samples = len(samples)
         self._save_zero()
+        self._zero_meta = {"samples": len(samples),
+                           "timestamp": datetime.datetime.now().strftime(
+                               "%Y-%m-%d %H:%M:%S")}
         self._refresh_calib_status()
         QMessageBox.information(
             self, "标定完成",
@@ -323,6 +336,7 @@ class DepthPanel(QWidget):
         self._calibrating = False
         self.calib_btn.setEnabled(True)
         self.zero_offset = 0.0
+        self._zero_meta = {}
         try:
             ZERO_PATH.unlink()
         except OSError:

@@ -8,7 +8,8 @@ Data Visualization Components
 import numpy as np
 import pyqtgraph as pg
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
-                             QLabel, QGroupBox, QGridLayout, QSizePolicy)
+                             QLabel, QGroupBox, QGridLayout, QSizePolicy,
+                             QPushButton)
 from PyQt5.QtCore import QTimer, pyqtSignal, Qt
 from PyQt5.QtGui import QFont
 import time
@@ -76,7 +77,15 @@ class DataVisualizationWidget(QWidget):
         """创建XY轨迹图标签"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        
+
+        # 清除按钮：清空历史数据，时间归零从头开始
+        clear_row = QHBoxLayout()
+        clear_btn = QPushButton("清除曲线（从头开始）")
+        clear_btn.clicked.connect(self.clear_data)
+        clear_row.addWidget(clear_btn)
+        clear_row.addStretch()
+        layout.addLayout(clear_row)
+
         # XY轨迹图
         self.xy_plot = pg.PlotWidget(title="XY平面轨迹")
         self.xy_plot.setLabel('left', 'Y位置 (m)')
@@ -111,7 +120,15 @@ class DataVisualizationWidget(QWidget):
         """创建时间序列图标签"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        
+
+        # 清除按钮：清空历史数据，时间归零从头开始
+        clear_row = QHBoxLayout()
+        clear_btn = QPushButton("清除曲线（从头开始）")
+        clear_btn.clicked.connect(self.clear_data)
+        clear_row.addWidget(clear_btn)
+        clear_row.addStretch()
+        layout.addLayout(clear_row)
+
         # Z-t图
         self.z_plot = pg.PlotWidget(title="深度-时间图")
         self.z_plot.setLabel('left', 'Z位置 (m)')

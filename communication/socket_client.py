@@ -186,10 +186,22 @@ class SocketCommunication(FishCommunicationInterface):
         try:
             data = json.loads(json_str)
 
-            # gs_bridge 状态回推（含控制板遥测）：走状态回调，不构造 FishState
+            # gs_bridge 状态回推（含控制板遥测/IMU）：遥测走状态回调；
+            # IMU 欧拉角合并进持久 FishState 并触发数据回调（图表实时刷新）
             if data.get("type") == "state":
                 if self._state_callback:
                     self._state_callback(data)
+                imu = data.get("imu")
+                if imu:
+                    st = self._last_state or FishState()
+                    st.orientation = {
+                        "roll": imu.get("roll", 0.0),
+                        "pitch": imu.get("pitch", 0.0),
+                        "yaw": imu.get("yaw", 0.0),
+                    }
+                    self._last_state = st
+                    if self._data_callback:
+                        self._data_callback(st)
                 return
 
             state = FishState()
@@ -197,13 +209,16 @@ class SocketCommunication(FishCommunicationInterface):
 
             if data.get("type") == "depth":
                 # 双目鱼深度 JSON（10Hz）：五路数值原样进 state.depth，
-                # 标定后深度由主窗口按零点扣减后补进 "calibrated"
-                state.depth = {k: data.get(k) for k in
-                               ("raw_1", "filtered_1", "raw_2",
-                                "filtered_2", "fused")}
-                self._last_state = state
+                # 标定后深度由主窗口按零点扣减后补进 "calibrated"。
+                # 复用持久 state，保留 IMU 分支已合并的姿态
+                st = self._last_state or FishState()
+                st.depth = {k: data.get(k) for k in
+                            ("raw_1", "filtered_1", "raw_2",
+                             "filtered_2", "fused")}
+                st.timestamp = data.get("timestamp", time.time())
+                self._last_state = st
                 if self._data_callback:
-                    self._data_callback(state)
+                    self._data_callback(st)
                 return
 
             # 旧版单尾鱼组合格式：IMU/UWB/depth

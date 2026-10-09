@@ -14,7 +14,8 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QMenuBar, QStatusBar, QAction, QTabWidget,
                              QGroupBox, QGridLayout, QLabel, QPushButton,
                              QComboBox, QMessageBox, QSplitter, QTextEdit,
-                             QLineEdit, QScrollArea, QApplication, QCheckBox)
+                             QLineEdit, QScrollArea, QApplication, QCheckBox,
+                             QSizePolicy)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QFont, QKeySequence, QIcon
 
@@ -147,7 +148,9 @@ class MainWindow(QMainWindow):
         # 右侧面板 - 包含按键状态和数据记录控制
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(5, 5, 5, 5)
+        right_layout.setContentsMargins(2, 2, 2, 2)
+        right_panel.setMinimumWidth(170)   # 可拖窄到此为止，内容自适应
+        control_panel.setMinimumWidth(170)
         
         # 创建右侧标签页
         right_tabs = QTabWidget()
@@ -166,10 +169,12 @@ class MainWindow(QMainWindow):
         right_tabs.addTab(self.data_recording_widget, "数据记录")
         
         right_layout.addWidget(right_tabs)
+        # 拖窄时内容自适应面板宽度，而不是被 sizeHint 顶住
+        right_tabs.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         main_splitter.addWidget(right_panel)
-        
-        # 设置分割器比例 (控制面板:中央区域:按键状态 = 2:6:2)
-        main_splitter.setSizes([250, 700, 250])
+
+        # 设置分割器比例 (控制面板:中央区域:右侧栏 = 2:8:2)
+        main_splitter.setSizes([220, 900, 200])
         main_splitter.setStretchFactor(0, 0)
         main_splitter.setStretchFactor(1, 1)
         main_splitter.setStretchFactor(2, 0)
@@ -675,6 +680,8 @@ class MainWindow(QMainWindow):
                         fish_state.depth["calibrated"] = \
                             fish_state.depth["fused"] - zero
                     self.visualization_widget.update_data(fish_state)
+                    # 分传感器 CSV（IMU/深度）：记录进行中时随帧追加
+                    self.data_recording_widget.add_sensor_points(fish_state)
                     
                     # 添加到数据记录器（如果有控制命令的话，使用最后的控制命令）
                     last_command = getattr(self, '_last_control_command', None)

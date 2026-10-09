@@ -80,7 +80,9 @@ records/ 下按时间戳命名）。板上相机曝光/增益需在 v4l2-ctl 预
               "tail_offset":rad,"pec_angle":us}   （JSON 行）
 板上->地面站: {"type":"state","ack_count":N,"last_command":{...},
               "telemetry":{"cpu_percent":..,"soc_temp_c":..,"mem_used_mb":..,
-              "mem_total_mb":..,"cpu_freq_mhz":..}}（2Hz 回推，遥测供底栏显示）
+              "mem_total_mb":..,"cpu_freq_mhz":..},
+              "imu":{"roll":rad,"pitch":rad,"yaw":rad}}（2Hz 回推，遥测供底栏、
+              IMU 供姿态图/时间序列；四元数由 gs_bridge 转欧拉角）
               {"type":"depth","raw_1":..,"filtered_1":..,"fused":..}（10Hz，订阅
               /fish/sensors/depth 转发，供深度面板显示/记录）
 ```

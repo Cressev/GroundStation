@@ -122,16 +122,11 @@ class DepthPanel(QWidget):
             self._disconnect()
         self.host = host
         self.client.host = host
-        self.conn_status_label.setText(f"状态: 未连接（数据源 {host}:9999）")
+        self.conn_status_label.setText("状态: 未连接")
 
     def _init_ui(self):
         """构建界面：连接控制 + 实时数值 + 记录控制。"""
         layout = QVBoxLayout(self)
-
-        title = QLabel("深度（WF5803 深度传感器）")
-        title.setAlignment(Qt.AlignCenter)
-        title.setFont(QFont("Arial", 14, QFont.Bold))
-        layout.addWidget(title)
 
         conn_group = QGroupBox("连接")
         conn_layout = QHBoxLayout(conn_group)
@@ -164,7 +159,7 @@ class DepthPanel(QWidget):
 
         calib_group = QGroupBox("深度零点标定")
         calib_layout = QHBoxLayout(calib_group)
-        self.calib_btn = QPushButton("标定（采集10秒）")
+        self.calib_btn = QPushButton("标定")
         self.calib_btn.setToolTip("采集接下来10秒的融合深度取均值作为新的深度0点")
         self.calib_btn.clicked.connect(self._start_calibration)
         self.calib_clear_btn = QPushButton("清除标定")
@@ -285,13 +280,8 @@ class DepthPanel(QWidget):
             self.calib_status_label.setText(
                 f"标定中… 已采集 {len(self._calib_samples)} 个样本")
         elif self.zero_offset:
-            meta = getattr(self, "_zero_meta", {})
-            ts = meta.get("timestamp", "")
-            when = f"{ts[5:16]} 标定" if len(ts) >= 16 else ""
-            n = meta.get("samples")
-            extra = "，".join(x for x in (when, f"{n} 样本" if n else "") if x)
             self.calib_status_label.setText(
-                f"当前零点: {self.zero_offset:+.3f} m" + (f"（{extra}）" if extra else ""))
+                f"当前零点: {self.zero_offset:+.3f} m")
         else:
             self.calib_status_label.setText("未标定（显示原始值）")
 
@@ -374,9 +364,9 @@ class DepthPanel(QWidget):
             pass
 
     def _on_connection_status(self, connected, message):
-        """更新连接状态标签。"""
+        """更新连接状态标签（只显示状态本身，不附带原因）。"""
         self.conn_status_label.setText(
-            f"状态: {'已连接' if connected else '未连接'} ({message})")
+            f"状态: {'已连接' if connected else '未连接'}")
 
     def closeEvent(self, event):
         """组件销毁时停止数据接收线程。"""

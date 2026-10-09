@@ -13,6 +13,8 @@ from PyQt5.QtGui import QFont, QPalette
 
 import sys
 import os
+import time
+import datetime
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data.recorder import DataRecorder
@@ -29,13 +31,9 @@ class DataRecordingWidget(QWidget):
         self.data_recorder = DataRecorder()
         self.graphics_exporter = GraphicsExporter()
 
-        # 分传感器 CSV 写入器（IMU/深度）：开始记录时创建，停止时关闭
-        self._imu_writer = None
-        self._imu_file = None
-        self._depth_writer = None
-        self._depth_file = None
-        self._imu_points = 0
-        self._depth_points = 0
+        # 分传感器数据缓存（IMU/深度）：记录中累积，停止时按保存时刻落盘 CSV
+        self._imu_rows = []
+        self._depth_rows = []
 
         self._init_ui()
         self._init_connections()
@@ -151,111 +149,96 @@ class DataRecordingWidget(QWidget):
         export_layout.addLayout(export_button_layout)
         layout.addWidget(export_group)
 
-        # 分传感器数据保存路径组（IMU/深度，各自独立 CSV）
-        path_group = QGroupBox("传感器数据保存路径")
+        # 分传感器数据保存目录组（IMU/深度；文件按保存时间自动命名）
+        path_group = QGroupBox("传感器数据保存目录")
         path_layout = QVBoxLayout(path_group)
 
         imu_row = QHBoxLayout()
-        imu_row.addWidget(QLabel("IMU:"))
-        self.imu_path_input = QLineEdit("records/imu_data.csv")
+        imu_row.addWidget(QLabel("IMU 目录:"))
+        self.imu_path_input = QLineEdit("records/imu")
         imu_row.addWidget(self.imu_path_input, 1)
         self.imu_path_btn = QPushButton("浏览…")
         self.imu_path_btn.clicked.connect(
-            lambda: self._browse_sensor_path(self.imu_path_input, "IMU 数据"))
+            lambda: self._browse_sensor_dir(self.imu_path_input, "IMU 数据"))
         imu_row.addWidget(self.imu_path_btn)
         path_layout.addLayout(imu_row)
 
         depth_row = QHBoxLayout()
-        depth_row.addWidget(QLabel("深度:"))
-        self.depth_path_input = QLineEdit("records/depth_data.csv")
+        depth_row.addWidget(QLabel("深度目录:"))
+        self.depth_path_input = QLineEdit("records/depth")
         depth_row.addWidget(self.depth_path_input, 1)
         self.depth_path_btn = QPushButton("浏览…")
         self.depth_path_btn.clicked.connect(
-            lambda: self._browse_sensor_path(self.depth_path_input, "深度数据"))
+            lambda: self._browse_sensor_dir(self.depth_path_input, "深度数据"))
         depth_row.addWidget(self.depth_path_btn)
         path_layout.addLayout(depth_row)
 
-        self.sensor_path_hint = QLabel("点\"开始记录\"后按上述路径写入 CSV")
+        self.sensor_path_hint = QLabel(
+            "停止记录时在上述目录生成 CSV，文件名=保存时刻")
         self.sensor_path_hint.setStyleSheet("color: #666; font-size: 10pt;")
         path_layout.addWidget(self.sensor_path_hint)
         layout.addWidget(path_group)
 
         layout.addStretch()
 
-    def _browse_sensor_path(self, line_edit, title):
-        """浏览选择某个传感器 CSV 的保存位置。"""
-        path, _ = QFileDialog.getSaveFileName(
-            self, f"选择{title}保存位置", line_edit.text(), "CSV 数据 (*.csv)")
+    def _browse_sensor_dir(self, line_edit, title):
+        """浏览选择某个传感器数据的保存目录。"""
+        path = QFileDialog.getExistingDirectory(
+            self, f"选择{title}保存目录", line_edit.text() or "records")
         if path:
-            if not path.lower().endswith(".csv"):
-                path += ".csv"
             line_edit.setText(path)
 
     def add_sensor_points(self, fish_state):
-        """记录进行中时，把 IMU/深度数据追加分写到各自 CSV（主定时器调用）。"""
+        """记录进行中时，把 IMU/深度数据缓存进各自序列（主定时器调用）。
+
+        停止记录时统一按\"保存目录/保存时刻.csv\"落盘。
+        """
         if not self.data_recorder.is_recording:
             return
         now = time.time()
-        try:
-            if self._imu_writer is not None:
-                o = fish_state.orientation
-                self._imu_writer.writerow(
-                    [f"{now:.3f}", o.get("roll", 0.0), o.get("pitch", 0.0),
-                     o.get("yaw", 0.0)])
-                self._imu_points += 1
-            d = getattr(fish_state, "depth", None) or {}
-            if self._depth_writer is not None and d:
-                self._depth_writer.writerow(
-                    [f"{now:.3f}", d.get("raw_1"), d.get("filtered_1"),
-                     d.get("raw_2"), d.get("filtered_2"), d.get("fused"),
-                     d.get("calibrated")])
-                self._depth_points += 1
-        except (OSError, ValueError):
-            pass
+        o = fish_state.orientation
+        self._imu_rows.append(
+            [f"{now:.3f}", o.get("roll", 0.0), o.get("pitch", 0.0),
+             o.get("yaw", 0.0)])
+        d = getattr(fish_state, "depth", None) or {}
+        self._depth_rows.append(
+            [f"{now:.3f}", d.get("raw_1"), d.get("filtered_1"),
+             d.get("raw_2"), d.get("filtered_2"), d.get("fused"),
+             d.get("calibrated")])
 
-    def _open_sensor_writers(self):
-        """按界面路径打开 IMU/深度 CSV 写入器（开始记录时调用）。"""
+    def _save_sensor_csvs(self):
+        """停止记录：把缓存序列写入 <目录>/<保存时刻>.csv（每传感器一个文件）。"""
         import csv as _csv
         import os as _os
-        try:
-            imu_path = self.imu_path_input.text().strip() or "records/imu_data.csv"
-            d = _os.path.dirname(os.path.abspath(imu_path))
-            _os.makedirs(d, exist_ok=True)
-            self._imu_file = open(imu_path, "w", newline="", encoding="utf-8")
-            self._imu_writer = _csv.writer(self._imu_file)
-            self._imu_writer.writerow(["时间戳", "roll(rad)", "pitch(rad)", "yaw(rad)"])
-            self._imu_points = 0
-        except OSError as exc:
-            self._imu_writer = None
-            self.sensor_path_hint.setText(f"IMU 路径打开失败: {exc}")
-        try:
-            depth_path = self.depth_path_input.text().strip() or "records/depth_data.csv"
-            d = _os.path.dirname(os.path.abspath(depth_path))
-            _os.makedirs(d, exist_ok=True)
-            self._depth_file = open(depth_path, "w", newline="", encoding="utf-8")
-            self._depth_writer = _csv.writer(self._depth_file)
-            self._depth_writer.writerow(
-                ["时间戳", "原始1", "滤波1", "原始2", "滤波2", "融合", "标定后"])
-            self._depth_points = 0
-        except OSError as exc:
-            self._depth_writer = None
-            self.sensor_path_hint.setText(f"深度路径打开失败: {exc}")
+        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        jobs = (
+            ("IMU", self.imu_path_input, self._imu_rows,
+             ["时间戳", "roll(rad)", "pitch(rad)", "yaw(rad)"]),
+            ("深度", self.depth_path_input, self._depth_rows,
+             ["时间戳", "原始1", "滤波1", "原始2", "滤波2", "融合", "标定后"]),
+        )
+        saved = []
+        for kind, line_edit, rows, header in jobs:
+            if not rows:
+                continue
+            dir_path = line_edit.text().strip() or f"records/{kind}"
+            try:
+                _os.makedirs(dir_path, exist_ok=True)
+                file_path = _os.path.join(dir_path, f"{stamp}.csv")
+                with open(file_path, "w", newline="", encoding="utf-8") as f:
+                    writer = _csv.writer(f)
+                    writer.writerow(header)
+                    writer.writerows(rows)
+                saved.append(f"{kind} {len(rows)}点 -> {file_path}")
+            except OSError as exc:
+                saved.append(f"{kind} 保存失败: {exc}")
+        if saved:
+            self.sensor_path_hint.setText("；".join(saved))
 
-    def _close_sensor_writers(self):
-        """关闭分传感器 CSV 写入器并汇报落盘位置（停止记录时调用）。"""
-        for kind, fh, writer, n in (("IMU", self._imu_file, self._imu_writer,
-                                     self._imu_points),
-                                    ("深度", self._depth_file, self._depth_writer,
-                                     self._depth_points)):
-            if writer is not None:
-                try:
-                    fh.close()
-                finally:
-                    pass
-                self.sensor_path_hint.setText(
-                    self.sensor_path_hint.text() + f"  [{kind} 已存 {n} 点]")
-        self._imu_writer = self._imu_file = None
-        self._depth_writer = self._depth_file = None
+    def _reset_sensor_rows(self):
+        """开始记录：清空两路缓存序列，从零累积。"""
+        self._imu_rows = []
+        self._depth_rows = []
     
     def _init_connections(self):
         """初始化信号连接"""
@@ -272,11 +255,10 @@ class DataRecordingWidget(QWidget):
         self.graphics_exporter.export_failed.connect(self._on_export_failed)
     
     def _start_recording(self):
-        """开始记录（同时按界面路径打开 IMU/深度分传感器 CSV）"""
+        """开始记录（清空传感器缓存，从零累积）"""
         self.data_recorder.start_recording()
-        self._open_sensor_writers()
-        self.sensor_path_hint.setText(
-            self.sensor_path_hint.text().split("  [")[0] + "  记录中…")
+        self._reset_sensor_rows()
+        self.sensor_path_hint.setText("记录中… 停止时按保存时刻落盘 CSV")
 
     def _pause_recording(self):
         """暂停/恢复记录"""
@@ -286,9 +268,9 @@ class DataRecordingWidget(QWidget):
             self.data_recorder.pause_recording()
 
     def _stop_recording(self):
-        """停止记录（关闭并落盘 IMU/深度 CSV）"""
+        """停止记录（IMU/深度缓存按保存时刻落盘为 CSV）"""
         self.data_recorder.stop_recording()
-        self._close_sensor_writers()
+        self._save_sensor_csvs()
     
     def _save_csv(self):
         """保存CSV文件"""

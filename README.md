@@ -33,9 +33,9 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
 | `ui/depth_panel.py` | **新增** 双尾鱼深度面板：`DepthTcpClient`（TCP 9999 客户端，接收 gs_bridge 的 10Hz `{"type":"depth",...}` 推送）、大字号实时深度显示、**深度零点标定**（"标定"按钮采集 10 秒融合值均值设为 0 点，零点持久化 `depth_zero.json`，可"清除标定"；CSV 含标定后深度列）、开始/停止 CSV 记录（停止弹对话框仅存 .csv）。**数据源 IP 跟随主连接**：主连接成功后自动切到本次输入的 IP 并连上深度流，也可用面板内按钮手动连/断 |
 | `ui/fish_camera_widget.py` | 单尾鱼机载相机组件（TCP 9998 客户端 + 机上录制控制），仅 single 变体使用 |
 | `ui/video_display.py` | 笔记本外接 USB 相机监控（VideoDisplayWidget + VideoMonitorWidget 容器），仅 single 变体使用 |
-| `ui/visualization.py` | pyqtgraph 数据可视化（XY 轨迹/深度/姿态/实时朝向）；时间序列的深度-时间图含双目鱼五路曲线：原始1/原始2/滤波1/滤波2/标定后（扣 depth_zero.json 零点） |
+| `ui/visualization.py` | pyqtgraph 数据可视化（XY 轨迹/深度/姿态/实时朝向）；时间序列的深度-时间图含双目鱼五路曲线：原始1/原始2/滤波1/滤波2/标定后（扣 depth_zero.json 零点）；时间轴模式可切 全局(0到最新)/滑动窗口(最近10秒)，并有清除曲线与重置画布按钮 |
 | `ui/keyboard_status.py` | 键盘按键状态面板与特殊功能键处理 |
-| `ui/data_recording.py` | 数据记录/CSV/Excel 导出控制面板 |
+| `ui/data_recording.py` | 数据记录/CSV/Excel 导出控制面板；传感器数据保存目录组（IMU/深度各自目录，停止记录时按保存时刻在目录内生成 CSV） |
 | `controllers/base.py` | KeyboardController 等控制器：把键盘事件合成为 ControlCommand（频率/幅值/偏置/胸鳍角） |
 | `communication/base.py` | 通信抽象基类（FishState/ControlCommand/FishCommunicationInterface） |
 | `communication/socket_client.py` | 双尾/单尾 TCP 控制客户端（9999，JSON 行协议）：state 回推走状态回调（遥测），depth 推送装入 FishState.depth 供时间序列图，兼容旧版单尾鱼组合格式 |

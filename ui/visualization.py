@@ -9,7 +9,7 @@ import numpy as np
 import pyqtgraph as pg
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
                              QLabel, QGroupBox, QGridLayout, QSizePolicy,
-                             QPushButton)
+                             QPushButton, QCheckBox)
 from PyQt5.QtCore import QTimer, pyqtSignal, Qt
 from PyQt5.QtGui import QFont
 import time
@@ -45,6 +45,7 @@ class DataVisualizationWidget(QWidget):
         
         self.start_time = time.time()
         self.plot_enabled = True  # 绘图开关状态
+        self.sliding_time = False  # 时间轴模式：False=全局(0到最新)，True=滑动窗口(最近10秒)
         self._init_ui()
         
         # 更新定时器
@@ -128,6 +129,23 @@ class DataVisualizationWidget(QWidget):
         clear_row.addWidget(clear_btn)
         clear_row.addStretch()
         layout.addLayout(clear_row)
+
+        # 时间轴模式：全局（0 到最新） / 滑动窗口（最近10秒），互斥
+        # 重置画布：用户缩放/拖动过曲线后，一键恢复自适应窗口
+        mode_row = QHBoxLayout()
+        self.global_time_cb = QCheckBox("全局时间序列（0 到最新）")
+        self.global_time_cb.setChecked(True)
+        self.sliding_time_cb = QCheckBox("滑动窗口（最近10秒）")
+        self.global_time_cb.toggled.connect(self._on_time_mode_toggled)
+        self.sliding_time_cb.toggled.connect(self._on_time_mode_toggled)
+        reset_view_btn = QPushButton("重置画布")
+        reset_view_btn.setToolTip("取消缩放/拖动，恢复自适应窗口")
+        reset_view_btn.clicked.connect(self._reset_time_series_view)
+        mode_row.addWidget(self.global_time_cb)
+        mode_row.addWidget(self.sliding_time_cb)
+        mode_row.addWidget(reset_view_btn)
+        mode_row.addStretch()
+        layout.addLayout(mode_row)
 
         # Z-t图
         self.z_plot = pg.PlotWidget(title="深度-时间图")
@@ -542,13 +560,16 @@ class DataVisualizationWidget(QWidget):
             # 更新底部状态栏
             self.xy_status_label.setText(f'当前位置: X: {x_data[-1]:.3f} m, Y: {y_data[-1]:.3f} m')
         
-        # 更新Z-t图
+        # 更新Z-t图（按时间轴模式：全局 / 最近10秒滑动窗口）
+        t_min = self._time_window_min(times)
         z_data = list(self.data_history['z'])
-        self.z_curve.setData(times, z_data)
+        z_pts = [(t, v) for t, v in zip(times, z_data) if t >= t_min]
+        self.z_curve.setData([p[0] for p in z_pts], [p[1] for p in z_pts])
         # 更新双目鱼深度五路曲线（None 值段自动断线）
         for key, curve in self._depth_curves.items():
             y = list(self.data_history[key])
-            pts = [(t, v) for t, v in zip(times, y) if v is not None]
+            pts = [(t, v) for t, v in zip(times, y)
+                   if v is not None and t >= t_min]
             if pts:
                 curve.setData([p[0] for p in pts], [p[1] for p in pts])
             else:
@@ -559,15 +580,18 @@ class DataVisualizationWidget(QWidget):
             self.z_status_label.setText(f'当前深度(标定后): {cal[-1]:.3f} m')
         elif z_data:
             self.z_status_label.setText(f'当前深度: Z: {z_data[-1]:.3f} m')
-        
-        # 更新RPY-t图
+
+        # 更新RPY-t图（同一时间轴模式）
         roll_data = list(self.data_history['roll'])
         pitch_data = list(self.data_history['pitch'])
         yaw_data = list(self.data_history['yaw'])
-        
-        self.roll_curve.setData(times, roll_data)
-        self.pitch_curve.setData(times, pitch_data)
-        self.yaw_curve.setData(times, yaw_data)
+
+        roll_pts = [(t, v) for t, v in zip(times, roll_data) if t >= t_min]
+        pitch_pts = [(t, v) for t, v in zip(times, pitch_data) if t >= t_min]
+        yaw_pts = [(t, v) for t, v in zip(times, yaw_data) if t >= t_min]
+        self.roll_curve.setData([p[0] for p in roll_pts], [p[1] for p in roll_pts])
+        self.pitch_curve.setData([p[0] for p in pitch_pts], [p[1] for p in pitch_pts])
+        self.yaw_curve.setData([p[0] for p in yaw_pts], [p[1] for p in yaw_pts])
         
         # 更新底部状态栏
         if roll_data and pitch_data and yaw_data:
@@ -653,6 +677,40 @@ class DataVisualizationWidget(QWidget):
         except Exception as e:
             print(f"姿态更新异常: {e}")
     
+    def _on_time_mode_toggled(self, checked):
+        """时间轴模式切换：全局 / 滑动窗口两个勾选框互斥，且不允许同时取消。"""
+        cb = self.sender()
+        other = self.sliding_time_cb if cb is self.global_time_cb \
+            else self.global_time_cb
+        if checked:
+            self.sliding_time = (cb is self.sliding_time_cb)
+            if other.isChecked():
+                other.blockSignals(True)
+                other.setChecked(False)
+                other.blockSignals(False)
+        else:
+            # 不允许两个都不选：把被取消的重新勾上
+            if not other.isChecked():
+                cb.blockSignals(True)
+                cb.setChecked(True)
+                cb.blockSignals(False)
+            self.sliding_time = (cb is self.sliding_time_cb)
+        self._update_plots()
+
+    def _reset_time_series_view(self):
+        """重置时间序列两个图的视窗：取消用户缩放/拖动，恢复自适应。"""
+        for plot in (self.z_plot, self.rpy_plot):
+            plot.enableAutoRange(x=True, y=True)
+            plot.autoRange()
+
+    def _time_window_min(self, times):
+        """滑动窗口模式返回最近10秒的时间下限；全局模式返回最早时间。"""
+        if not times:
+            return 0.0
+        if getattr(self, "sliding_time", False):
+            return max(0.0, times[-1] - 10.0)
+        return times[0]
+
     def clear_data(self):
         """清空数据"""
         for key in self.data_history:

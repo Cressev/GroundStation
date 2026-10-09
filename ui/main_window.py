@@ -94,7 +94,16 @@ class MainWindow(QMainWindow):
         self.connection_time_label = QLabel("未连接")
         self.connection_time_label.setStyleSheet("color: gray; font-weight: bold;")
         self.status_bar.addPermanentWidget(self.connection_time_label)
-        
+
+        # 控制板遥测标签（CPU/温度/内存，2Hz state 回推 + 1Hz 刷新显示）
+        self.telemetry_label = QLabel("控制板: --")
+        self.telemetry_label.setStyleSheet("color: #2a6496; font-weight: bold;")
+        self.status_bar.addPermanentWidget(self.telemetry_label)
+        self._last_telemetry = None
+        self.telemetry_timer = QTimer(self)
+        self.telemetry_timer.setInterval(1000)
+        self.telemetry_timer.timeout.connect(self._refresh_telemetry_label)
+
         self.status_bar.showMessage("系统启动完成")
         
         # 创建中央组件
@@ -536,10 +545,11 @@ class MainWindow(QMainWindow):
                 return
             
             self.communication = SocketCommunication(ip_address=ip_address, port=port)
-            
+
             # 设置数据回调，实时更新UI
             self.communication.set_data_callback(self._on_sensor_data_received)
             self.communication.set_connection_callback(self._on_connection_changed)
+            self.communication.set_state_callback(self._on_board_state)
             
             self.connection_button.setEnabled(False)
             self.ip_input.setEnabled(False)
@@ -568,6 +578,7 @@ class MainWindow(QMainWindow):
                 # Socket通信不需要定时器轮询，数据通过回调实时更新
                 # 但保留定时器用于UI刷新和数据记录
                 self.data_timer.start(50)  # 20Hz
+                self.telemetry_timer.start()  # 1Hz 刷新底栏遥测显示
                 
                 # 记录连接开始时间
                 self.connection_start_time = time.time()
@@ -598,6 +609,8 @@ class MainWindow(QMainWindow):
         try:
             # 停止数据定时器
             self.data_timer.stop()
+            self.telemetry_timer.stop()
+            self.telemetry_label.setText("控制板: --")
             
             # 断开前发送停止命令，确保机器鱼停止运动
             self._send_stop_command()
@@ -674,6 +687,26 @@ class MainWindow(QMainWindow):
         # 注意：此方法在工作线程中调用，直接更新会有线程安全问题
         # 数据通过get_fish_state()获取，定时器_update_data会读取并更新UI
         pass
+
+    def _on_board_state(self, state: dict):
+        """控制板状态回推（由Socket线程调用，仅存数据不改UI）"""
+        self._last_telemetry = state.get("telemetry")
+
+    def _refresh_telemetry_label(self):
+        """刷新底栏控制板遥测显示（1Hz，GUI 线程内执行）。"""
+        t = self._last_telemetry
+        if not t:
+            self.telemetry_label.setText("控制板: --")
+            return
+        cpu, temp = t.get("cpu_percent"), t.get("soc_temp_c")
+        used, total = t.get("mem_used_mb"), t.get("mem_total_mb")
+        freq = t.get("cpu_freq_mhz")
+        cpu_txt = f"{cpu:.0f}%" if cpu is not None else "--"
+        temp_txt = f"{temp:.1f}°C" if temp is not None else "--"
+        mem_txt = f"{used}/{total}MB" if used is not None and total else "--"
+        freq_txt = f"{freq}MHz" if freq else "--"
+        self.telemetry_label.setText(
+            f"控制板  CPU {cpu_txt} | {temp_txt} | 内存 {mem_txt} | 大核 {freq_txt}")
     
     def _on_connection_changed(self, connected: bool):
         """连接状态变化回调（在socket工作线程中调用）"""

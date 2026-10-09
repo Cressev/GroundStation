@@ -45,7 +45,9 @@ class SocketCommunication(FishCommunicationInterface):
         # 数据回调
         self._data_callback: Optional[Callable[[FishState], None]] = None
         self._connection_callback: Optional[Callable[[bool], None]] = None
-        
+        # 板端状态回推回调（state JSON 原始 dict，含控制板遥测）
+        self._state_callback: Optional[Callable[[Dict[str, Any]], None]] = None
+
         # 接收缓冲区
         self._recv_buffer = ""
         
@@ -141,6 +143,10 @@ class SocketCommunication(FishCommunicationInterface):
     def set_connection_callback(self, callback: Callable[[bool], None]):
         """设置连接状态回调函数"""
         self._connection_callback = callback
+
+    def set_state_callback(self, callback: Callable[[Dict[str, Any]], None]):
+        """设置板端状态回推回调（state JSON 原始 dict，含遥测字段）"""
+        self._state_callback = callback
     
     def _receive_loop(self):
         """接收数据循环"""
@@ -179,7 +185,13 @@ class SocketCommunication(FishCommunicationInterface):
         """解析传感器数据"""
         try:
             data = json.loads(json_str)
-            
+
+            # gs_bridge 状态回推（含控制板遥测）：走状态回调，不构造 FishState
+            if data.get("type") == "state":
+                if self._state_callback:
+                    self._state_callback(data)
+                return
+
             state = FishState()
             
             # 解析IMU数据 -> orientation

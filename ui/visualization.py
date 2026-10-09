@@ -698,9 +698,12 @@ class DataVisualizationWidget(QWidget):
         self._update_plots()
 
     def _reset_time_series_view(self):
-        """重置时间序列两个图的视窗：取消用户缩放/拖动，恢复自适应。"""
+        """重置时间序列两个图的视窗。
+
+        只做一次性适配（autoRange），不重新 enableAutoRange——否则每 0.1 秒
+        的数据刷新都会把视窗拉回全景，用户的缩放/拖动全部被弹回，感觉失灵。
+        """
         for plot in (self.z_plot, self.rpy_plot):
-            plot.enableAutoRange(x=True, y=True)
             plot.autoRange()
 
     def _time_window_min(self, times):

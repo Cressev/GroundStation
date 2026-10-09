@@ -147,7 +147,7 @@ class DepthPanel(QWidget):
         value_layout = QGridLayout(value_group)
         self.depth_big_label = QLabel("--.-- m")
         self.depth_big_label.setAlignment(Qt.AlignCenter)
-        self.depth_big_label.setFont(QFont("Arial", 36, QFont.Bold))
+        self.depth_big_label.setFont(QFont("Arial", 22, QFont.Bold))
         value_layout.addWidget(self.depth_big_label, 0, 0, 1, 2)
         self.raw_label = QLabel("原始: --")
         self.filtered_label = QLabel("滤波: --")

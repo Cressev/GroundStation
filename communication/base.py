@@ -20,6 +20,9 @@ class FishState:
     def __init__(self):
         self.position = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.orientation = {"roll": 0.0, "pitch": 0.0, "yaw": 0.0}
+        # 双目鱼深度数据（gs_bridge depth JSON）：
+        # raw_1/filtered_1/raw_2/filtered_2/fused/calibrated，空 dict = 无数据
+        self.depth = {}
         self.timestamp = time.time()
 
 @dataclass

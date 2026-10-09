@@ -667,6 +667,13 @@ class MainWindow(QMainWindow):
             try:
                 fish_state = self.communication.get_fish_state()
                 if fish_state:
+                    # 双目鱼：深度五路按零点补出标定后值（零点来自深度面板的
+                    # depth_zero.json，未标定时零点为 0，标定后曲线=fused）
+                    if fish_state.depth and fish_state.depth.get("fused") is not None:
+                        zero = self.depth_panel.zero_offset \
+                            if hasattr(self, "depth_panel") else 0.0
+                        fish_state.depth["calibrated"] = \
+                            fish_state.depth["fused"] - zero
                     self.visualization_widget.update_data(fish_state)
                     
                     # 添加到数据记录器（如果有控制命令的话，使用最后的控制命令）

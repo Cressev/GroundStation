@@ -29,11 +29,17 @@ class DataVisualizationWidget(QWidget):
         self.data_history = {
             'time': deque(maxlen=PLOT_HISTORY_LENGTH),
             'x': deque(maxlen=PLOT_HISTORY_LENGTH),
-            'y': deque(maxlen=PLOT_HISTORY_LENGTH), 
+            'y': deque(maxlen=PLOT_HISTORY_LENGTH),
             'z': deque(maxlen=PLOT_HISTORY_LENGTH),
             'roll': deque(maxlen=PLOT_HISTORY_LENGTH),
             'pitch': deque(maxlen=PLOT_HISTORY_LENGTH),
-            'yaw': deque(maxlen=PLOT_HISTORY_LENGTH)
+            'yaw': deque(maxlen=PLOT_HISTORY_LENGTH),
+            # 双目鱼深度五路序列（米；d_cal 为扣零点后的标定值）
+            'd_raw1': deque(maxlen=PLOT_HISTORY_LENGTH),
+            'd_raw2': deque(maxlen=PLOT_HISTORY_LENGTH),
+            'd_filt1': deque(maxlen=PLOT_HISTORY_LENGTH),
+            'd_filt2': deque(maxlen=PLOT_HISTORY_LENGTH),
+            'd_cal': deque(maxlen=PLOT_HISTORY_LENGTH),
         }
         
         self.start_time = time.time()
@@ -116,6 +122,15 @@ class DataVisualizationWidget(QWidget):
         self.z_plot.addLegend()
         
         self.z_curve = self.z_plot.plot(pen=pg.mkPen(color=UI_CONFIG["plot_colors"]["z"], width=2), name='深度')
+
+        # 双目鱼深度五路曲线（10Hz，标定后=融合值扣零点）
+        self._depth_curves = {
+            'd_raw1': self.z_plot.plot(pen=pg.mkPen(color='#7f7f7f', width=1), name='原始1'),
+            'd_raw2': self.z_plot.plot(pen=pg.mkPen(color='#c49c94', width=1), name='原始2'),
+            'd_filt1': self.z_plot.plot(pen=pg.mkPen(color='#1f77b4', width=2), name='滤波1'),
+            'd_filt2': self.z_plot.plot(pen=pg.mkPen(color='#2ca02c', width=2), name='滤波2'),
+            'd_cal': self.z_plot.plot(pen=pg.mkPen(color='#d62728', width=2), name='标定后'),
+        }
         
         layout.addWidget(self.z_plot)
         
@@ -481,6 +496,13 @@ class DataVisualizationWidget(QWidget):
         self.data_history['roll'].append(fish_state.orientation['roll'])
         self.data_history['pitch'].append(fish_state.orientation['pitch'])
         self.data_history['yaw'].append(fish_state.orientation['yaw'])
+
+        # 双目鱼深度五路（无数据时补 None 断线，pyqtgraph 自动留空）
+        d = getattr(fish_state, 'depth', None) or {}
+        for key, field in (('d_raw1', 'raw_1'), ('d_raw2', 'raw_2'),
+                           ('d_filt1', 'filtered_1'), ('d_filt2', 'filtered_2'),
+                           ('d_cal', 'calibrated')):
+            self.data_history[key].append(d.get(field))
         
         # 更新数值标签
         self._update_value_labels(fish_state)
@@ -506,8 +528,19 @@ class DataVisualizationWidget(QWidget):
         # 更新Z-t图
         z_data = list(self.data_history['z'])
         self.z_curve.setData(times, z_data)
-        # 更新底部状态栏
-        if z_data:
+        # 更新双目鱼深度五路曲线（None 值段自动断线）
+        for key, curve in self._depth_curves.items():
+            y = list(self.data_history[key])
+            pts = [(t, v) for t, v in zip(times, y) if v is not None]
+            if pts:
+                curve.setData([p[0] for p in pts], [p[1] for p in pts])
+            else:
+                curve.setData([], [])
+        # 更新底部状态栏（优先显示标定后深度）
+        cal = list(self.data_history['d_cal'])
+        if cal and cal[-1] is not None:
+            self.z_status_label.setText(f'当前深度(标定后): {cal[-1]:.3f} m')
+        elif z_data:
             self.z_status_label.setText(f'当前深度: Z: {z_data[-1]:.3f} m')
         
         # 更新RPY-t图
@@ -613,6 +646,8 @@ class DataVisualizationWidget(QWidget):
         self.xy_curve.setData([], [])
         self.xy_point.setData([], [])
         self.z_curve.setData([], [])
+        for curve in self._depth_curves.values():
+            curve.setData([], [])
         self.roll_curve.setData([], [])
         self.pitch_curve.setData([], [])
         self.yaw_curve.setData([], [])

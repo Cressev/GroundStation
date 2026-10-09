@@ -193,6 +193,20 @@ class SocketCommunication(FishCommunicationInterface):
                 return
 
             state = FishState()
+            state.timestamp = data.get("timestamp", time.time())
+
+            if data.get("type") == "depth":
+                # 双目鱼深度 JSON（10Hz）：五路数值原样进 state.depth，
+                # 标定后深度由主窗口按零点扣减后补进 "calibrated"
+                state.depth = {k: data.get(k) for k in
+                               ("raw_1", "filtered_1", "raw_2",
+                                "filtered_2", "fused")}
+                self._last_state = state
+                if self._data_callback:
+                    self._data_callback(state)
+                return
+
+            # 旧版单尾鱼组合格式：IMU/UWB/depth
             
             # 解析IMU数据 -> orientation
             imu = data.get('imu', {})

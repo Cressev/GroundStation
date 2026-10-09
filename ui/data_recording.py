@@ -176,6 +176,7 @@ class DataRecordingWidget(QWidget):
         self.sensor_path_hint = QLabel(
             "停止记录时在上述目录生成 CSV，文件名=保存时刻")
         self.sensor_path_hint.setStyleSheet("color: #666; font-size: 10pt;")
+        self.sensor_path_hint.setWordWrap(True)
         path_layout.addWidget(self.sensor_path_hint)
         layout.addWidget(path_group)
 

@@ -111,6 +111,10 @@ class DepthPanel(QWidget):
         self._calib_samples = []
         self._init_ui()
         self._init_connections()
+        # 侧栏窄面板：说明文字允许换行，避免压缩时被裁断
+        for lbl in (self.conn_status_label, self.calib_status_label,
+                    self.record_status_label):
+            lbl.setWordWrap(True)
 
     def set_host(self, host):
         """切换数据源地址（断开当前连接，下次连接生效）。"""

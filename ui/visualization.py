@@ -46,6 +46,7 @@ class DataVisualizationWidget(QWidget):
         self.start_time = time.time()
         self.plot_enabled = True  # 绘图开关状态
         self.sliding_time = False  # 时间轴模式：False=全局(0到最新)，True=滑动窗口(最近10秒)
+        self.follow_latest = True  # 视图跟随最新数据；用户缩放/拖动后转自由视察
         self._init_ui()
         
         # 更新定时器
@@ -194,7 +195,12 @@ class DataVisualizationWidget(QWidget):
         self.rpy_status_label = QLabel("当前姿态: Roll: 0.000, Pitch: 0.000, Yaw: 0.000")
         self.rpy_status_label.setStyleSheet("font-size: 11pt; padding: 5px; background-color: #f0f0f0;")
         layout.addWidget(self.rpy_status_label)
-        
+
+        # 用户手动缩放/拖动任一图 -> 停止跟随，视窗交还给用户自由视察
+        for plot in (self.z_plot, self.rpy_plot):
+            plot.getViewBox().sigRangeChangedManually.connect(
+                self._on_manual_view_change)
+
         return widget
     
     def _create_attitude_tab(self):
@@ -597,6 +603,19 @@ class DataVisualizationWidget(QWidget):
         if roll_data and pitch_data and yaw_data:
             self.rpy_status_label.setText(f'当前姿态: Roll: {roll_data[-1]:.3f}, Pitch: {pitch_data[-1]:.3f}, Yaw: {yaw_data[-1]:.3f}')
         
+        # 跟随模式：视窗每帧贴住当前时间窗（自由视察模式下不动，
+        # 由 sigRangeChangedManually 感知用户缩放/拖动后切换）
+        if self.follow_latest and times:
+            t_max = times[-1]
+            if getattr(self, "sliding_time", False):
+                x0, x1 = max(0.0, t_max - 10.0), t_max + 0.05
+            else:
+                x0, x1 = 0.0, max(t_max + 0.5, 5.0)
+            for plot in (self.z_plot, self.rpy_plot):
+                vb = plot.getViewBox()
+                vb.setXRange(x0, x1, padding=0)
+                vb.enableAutoRange(y=True)
+
         # 更新姿态可视化
         if roll_data and pitch_data and yaw_data:
             self._update_attitude_visualization(
@@ -697,12 +716,18 @@ class DataVisualizationWidget(QWidget):
             self.sliding_time = (cb is self.sliding_time_cb)
         self._update_plots()
 
-    def _reset_time_series_view(self):
-        """重置时间序列两个图的视窗。
+    def _on_manual_view_change(self, *args):
+        """用户缩放/拖动曲线（pyqtgraph 手动改范围信号）：停止跟随最新数据。"""
+        self.follow_latest = False
 
-        只做一次性适配（autoRange），不重新 enableAutoRange——否则每 0.1 秒
-        的数据刷新都会把视窗拉回全景，用户的缩放/拖动全部被弹回，感觉失灵。
+    def _reset_time_series_view(self):
+        """重置画布：恢复"跟随最新数据"模式（视窗随曲线滚动）。
+
+        三态语义：默认跟随 -> 用户缩放/拖动后转自由视察(sigRangeChangedManually
+        感知) -> 重置画布回到跟随。一次性 autoRange 只在点击瞬间拟合，新数据
+        到来后视窗冻结，滑动窗口会"看不到最新"，故必须恢复跟随标志。
         """
+        self.follow_latest = True
         for plot in (self.z_plot, self.rpy_plot):
             plot.autoRange()
 

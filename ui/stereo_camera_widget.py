@@ -230,7 +230,7 @@ class StereoFishCameraWidget(QWidget):
         video_scroll.setWidget(self.video_label)
         video_scroll.setWidgetResizable(True)
         video_scroll.setFrameShape(QFrame.NoFrame)
-        video_scroll.setAlignment(Qt.AlignHCenter, Qt.AlignTop)
+        video_scroll.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         video_layout.addWidget(video_scroll)
         layout.addWidget(video_group)
 

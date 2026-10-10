@@ -157,8 +157,9 @@ class StereoFishCameraWidget(QWidget):
         self._init_connections()
 
     def _init_ui(self):
-        """构建界面：连接控制、视频画布、测量数据面板。"""
-        layout = QVBoxLayout(self)
+        """构建界面：连接控制、视频画布、测量数据面板（整页可滚动）。"""
+        content = QWidget()
+        layout = QVBoxLayout(content)
 
         title = QLabel("双目测距（点击左校正图任意位置测距）")
         title.setAlignment(Qt.AlignCenter)
@@ -210,9 +211,9 @@ class StereoFishCameraWidget(QWidget):
         video_layout = QVBoxLayout(video_group)
         self.video_label = QLabel()
         self.video_label.setAlignment(Qt.AlignCenter)
-        # 画布固定按原生尺寸 1:1 渲染（两路 640x480 上下拼接 = 640x960）：
-        # 外层 QScrollArea 负责滚动，画面始终最大最清晰，不缩放适配视口
-        self.video_label.setFixedSize(640, 960)
+        # 竖版画布（两路 640x480 上下拼接 = 640x960, 2:3）：
+        # 画布静态排在页面里随整页滚动，按页面宽度缩放、保持比例
+        self.video_label.setMinimumSize(380, 570)
         self.video_label.setCursor(Qt.CrossCursor)
         self.video_label.setStyleSheet("""
             QLabel {
@@ -223,13 +224,7 @@ class StereoFishCameraWidget(QWidget):
         """)
         self.video_label.setText("未连接到双目鱼\n点击'连接视频'开始实时画面")
         self.video_label.mousePressEvent = self._on_video_click
-        # 视频页可滚动：窗口足够高时整幅竖版画布完整显示；
-        # 窗口矮于画布最小高度(600)时出现滚动条，上下拖动看全
-        video_scroll = QScrollArea()
-        video_scroll.setWidget(self.video_label)
-        video_scroll.setWidgetResizable(False)
-        video_scroll.setFrameShape(QFrame.NoFrame)
-        video_layout.addWidget(video_scroll)
+        video_layout.addWidget(self.video_label)
         layout.addWidget(video_group)
 
         measure_group = QGroupBox("测距结果")
@@ -260,6 +255,16 @@ class StereoFishCameraWidget(QWidget):
         status_layout.addWidget(self.resolution_label)
         layout.addWidget(status_group)
         layout.addStretch()
+
+        # 整页滚动：窗口矮时"双目测距"选项卡整体上下滚动
+        # （按钮/画布/测距结果/状态相对页面静止一起滚），窗口高时完整平铺
+        page_scroll = QScrollArea()
+        page_scroll.setWidget(content)
+        page_scroll.setWidgetResizable(True)
+        page_scroll.setFrameShape(QFrame.NoFrame)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(page_scroll)
 
     def _init_connections(self):
         """连接视频线程信号（QueuedConnection 保证线程安全）。"""
@@ -488,8 +493,11 @@ class StereoFishCameraWidget(QWidget):
             h, w, ch = rgb_frame.shape
             qt_image = QImage(rgb_frame.data, w, h, ch * w, QImage.Format_RGB888)
             self.resolution_label.setText(f"分辨率: {w}x{h}")
-            # 标签固定 640x960 = 画布原生尺寸，直接 1:1 贴图（最清晰）
-            self.video_label.setPixmap(QPixmap.fromImage(qt_image))
+            label_size = self.video_label.size()
+            scaled_image = qt_image.scaled(
+                label_size.width() - 12, label_size.height() - 12,
+                Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.video_label.setPixmap(QPixmap.fromImage(scaled_image))
             self._record_frame(frame)
         except Exception as exc:
             print(f"更新视频帧异常: {exc}")

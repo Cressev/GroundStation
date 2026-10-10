@@ -30,7 +30,7 @@ import tempfile
 
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QGroupBox, QMessageBox, QGridLayout,
-                             QFileDialog, QSizePolicy)
+                             QFileDialog, QSizePolicy, QScrollArea, QFrame)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt, pyqtSlot
 from PyQt5.QtGui import QImage, QPixmap, QFont
 
@@ -224,7 +224,14 @@ class StereoFishCameraWidget(QWidget):
         """)
         self.video_label.setText("未连接到双目鱼\n点击'连接视频'开始实时画面")
         self.video_label.mousePressEvent = self._on_video_click
-        video_layout.addWidget(self.video_label)
+        # 视频页可滚动：窗口足够高时整幅竖版画布完整显示；
+        # 窗口矮于画布最小高度(600)时出现滚动条，上下拖动看全
+        video_scroll = QScrollArea()
+        video_scroll.setWidget(self.video_label)
+        video_scroll.setWidgetResizable(True)
+        video_scroll.setFrameShape(QFrame.NoFrame)
+        video_scroll.setAlignment(Qt.AlignHCenter, Qt.AlignTop)
+        video_layout.addWidget(video_scroll)
         layout.addWidget(video_group)
 
         measure_group = QGroupBox("测距结果")

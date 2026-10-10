@@ -30,7 +30,7 @@ import tempfile
 
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QGroupBox, QMessageBox, QGridLayout,
-                             QFileDialog)
+                             QFileDialog, QSizePolicy)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt, pyqtSlot
 from PyQt5.QtGui import QImage, QPixmap, QFont
 
@@ -210,7 +210,10 @@ class StereoFishCameraWidget(QWidget):
         video_layout = QVBoxLayout(video_group)
         self.video_label = QLabel()
         self.video_label.setAlignment(Qt.AlignCenter)
-        self.video_label.setMinimumSize(480, 360)
+        # 竖版画布（两路 640x480 上下拼接 = 640x960，宽高比 2:3）：
+        # 最小尺寸贴合画布比例，缩放/拖分栏时高度优先扩展，避免横向大黑边
+        self.video_label.setMinimumSize(400, 600)
+        self.video_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.video_label.setCursor(Qt.CrossCursor)
         self.video_label.setStyleSheet("""
             QLabel {

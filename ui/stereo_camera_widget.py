@@ -210,10 +210,9 @@ class StereoFishCameraWidget(QWidget):
         video_layout = QVBoxLayout(video_group)
         self.video_label = QLabel()
         self.video_label.setAlignment(Qt.AlignCenter)
-        # 竖版画布（两路 640x480 上下拼接 = 640x960，宽高比 2:3）：
-        # 最小尺寸贴合画布比例，缩放/拖分栏时高度优先扩展，避免横向大黑边
-        self.video_label.setMinimumSize(400, 600)
-        self.video_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # 画布固定按原生尺寸 1:1 渲染（两路 640x480 上下拼接 = 640x960）：
+        # 外层 QScrollArea 负责滚动，画面始终最大最清晰，不缩放适配视口
+        self.video_label.setFixedSize(640, 960)
         self.video_label.setCursor(Qt.CrossCursor)
         self.video_label.setStyleSheet("""
             QLabel {
@@ -228,9 +227,8 @@ class StereoFishCameraWidget(QWidget):
         # 窗口矮于画布最小高度(600)时出现滚动条，上下拖动看全
         video_scroll = QScrollArea()
         video_scroll.setWidget(self.video_label)
-        video_scroll.setWidgetResizable(True)
+        video_scroll.setWidgetResizable(False)
         video_scroll.setFrameShape(QFrame.NoFrame)
-        video_scroll.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         video_layout.addWidget(video_scroll)
         layout.addWidget(video_group)
 
@@ -490,11 +488,8 @@ class StereoFishCameraWidget(QWidget):
             h, w, ch = rgb_frame.shape
             qt_image = QImage(rgb_frame.data, w, h, ch * w, QImage.Format_RGB888)
             self.resolution_label.setText(f"分辨率: {w}x{h}")
-            label_size = self.video_label.size()
-            scaled_image = qt_image.scaled(
-                label_size.width() - 10, label_size.height() - 10,
-                Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            self.video_label.setPixmap(QPixmap.fromImage(scaled_image))
+            # 标签固定 640x960 = 画布原生尺寸，直接 1:1 贴图（最清晰）
+            self.video_label.setPixmap(QPixmap.fromImage(qt_image))
             self._record_frame(frame)
         except Exception as exc:
             print(f"更新视频帧异常: {exc}")

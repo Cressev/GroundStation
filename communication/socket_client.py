@@ -34,6 +34,7 @@ class SocketCommunication(FishCommunicationInterface):
     """基于Socket的通信实现，用于实时数据传输"""
     
     def __init__(self, ip_address: str = None, port: int = None):
+        """初始化Socket通信：目标IP/端口、线程句柄与数据/状态/心跳回调。"""
         super().__init__()
         self.fish_ip = ip_address if ip_address else FISH_IP
         self.port = port if port else SOCKET_PORT

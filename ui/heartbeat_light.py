@@ -32,6 +32,7 @@ class HeartbeatLight(QWidget):
     LIVE = "#2ecc71"   # 脉冲亮绿
 
     def __init__(self, parent=None):
+        """构造呼吸灯：圆点+文字标签、33ms 衰减定时器与跨线程脉冲信号。"""
         super().__init__(parent)
         self._level = 0.0          # 0..1 脉冲亮度
         self._connected = False
@@ -75,6 +76,7 @@ class HeartbeatLight(QWidget):
         self._paint()
 
     def _tick(self):
+        """衰减定时器槽：亮度按周期衰减，沉到阈值以下即熄灭并停止重绘。"""
         if self._level > 0.0:
             self._level *= 0.80
             if self._level <= 0.02:

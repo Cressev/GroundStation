@@ -187,6 +187,12 @@ class StereoFishCameraWidget(QWidget):
             "板上相机默认不随启动脚本开启；点击发 CAM_ON 打开，再点发 CAM_OFF 关闭")
         self.cam_btn.clicked.connect(self._toggle_camera)
         control_layout.addWidget(self.cam_btn)
+        self.board_rec_btn = QPushButton("板上高清录制")
+        self.board_rec_btn.setEnabled(False)
+        self.board_rec_btn.setToolTip(
+            "命令板子以 2560x720 录制 MJPG 并保存在板子本地（录制期间预览暂停）")
+        self.board_rec_btn.clicked.connect(self._toggle_board_recording)
+        control_layout.addWidget(self.board_rec_btn)
         control_layout.addStretch()
 
         self.mode_label = QLabel("介质: 水下模型")
@@ -374,6 +380,22 @@ class StereoFishCameraWidget(QWidget):
         self.camera_state_label.setText(
             f"摄像头: {'开启中…' if self.camera_on else '关闭中…'}")
 
+    def _toggle_board_recording(self):
+        """板上高清录制开关：REC_START / REC_STOP（2560x720 存板子本地）。
+
+        录制期间相机被 v4l2-ctl 独占，预览暂停；停止后预览自动恢复。
+        """
+        if not self.stream_client.running:
+            QMessageBox.warning(self, "切换失败", "请先连接视频服务")
+            return
+        self.board_rec_on = not getattr(self, "board_rec_on", False)
+        self.stream_client.send_command(
+            "REC_START" if self.board_rec_on else "REC_STOP")
+        self.board_rec_btn.setText(
+            "停止板上录制" if self.board_rec_on else "板上高清录制")
+        self.status_label.setText(
+            f"板上录制: {'已发起' if self.board_rec_on else '已停止'}")
+
     def _get_fish_ip(self):
         """从主窗口读取 IP 输入框（未连接控制时用 DUAL_FISH_CONFIG 默认值）。"""
         try:
@@ -437,6 +459,12 @@ class StereoFishCameraWidget(QWidget):
                     self.video_label.setText("摄像头已关闭\n点击'开启摄像头'恢复画面")
         elif msg_type == "point_set":
             self.measure_point_label.setText(f"测点: ({info.get('u')},{info.get('v')})")
+        elif msg_type == "recording":
+            # 板上录制状态回报（REC_STOP 后带文件名）
+            info_file = info.get("file", "")
+            if info.get("state") == "stopped" or info_file:
+                self.status_label.setText(
+                    f"板上录制文件: {info_file}" if info_file else "板上录制已停止")
         elif msg_type == "node_state":
             # 板上真实状态（GET_STATE 应答）：UI 按实际情况显示而非固定假设
             enabled = bool(info.get("camera_enabled", False))

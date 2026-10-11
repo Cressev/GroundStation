@@ -538,13 +538,13 @@ class DataVisualizationWidget(QWidget):
         self.data_history['pitch'].append(fish_state.orientation['pitch'])
         self.data_history['yaw'].append(fish_state.orientation['yaw'])
 
-        # 双目鱼深度五路（换算 cm；无数据时补 None 断线，pyqtgraph 自动留空）
+        # 双目鱼深度五路（数值本身就是 cm，直接入历史；
+        # 无数据时补 None 断线，pyqtgraph 自动留空）
         d = getattr(fish_state, 'depth', None) or {}
         for key, field in (('d_raw1', 'raw_1'), ('d_raw2', 'raw_2'),
                            ('d_filt1', 'filtered_1'), ('d_filt2', 'filtered_2'),
                            ('d_cal', 'calibrated')):
-            v = d.get(field)
-            self.data_history[key].append(None if v is None else v * 100.0)
+            self.data_history[key].append(d.get(field))
         
         # 更新数值标签
         self._update_value_labels(fish_state)

@@ -40,6 +40,7 @@ class SocketCommunication(FishCommunicationInterface):
         
         self.socket = None
         self._receive_thread = None
+        self._heartbeat_thread = None
         self._stop_event = threading.Event()
         
         # 数据回调
@@ -65,6 +66,11 @@ class SocketCommunication(FishCommunicationInterface):
             self._receive_thread = threading.Thread(target=self._receive_loop)
             self._receive_thread.daemon = True
             self._receive_thread.start()
+
+            # 启动心跳线程：gs_bridge 静默超过 2s 会判为断链并周期发兜底停止帧
+            self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop)
+            self._heartbeat_thread.daemon = True
+            self._heartbeat_thread.start()
             
             print(f"Socket连接成功: {self.fish_ip}:{self.port}")
             
@@ -149,6 +155,16 @@ class SocketCommunication(FishCommunicationInterface):
         """设置板端状态回推回调（state JSON 原始 dict，含遥测字段）"""
         self._state_callback = callback
     
+    def _heartbeat_loop(self):
+        """每 0.5s 发送一行心跳 JSON（gs_bridge 静默 2s 即判为断链并兜底停止）。"""
+        payload = (json.dumps({"type": "ping"}) + "\n").encode("utf-8")
+        while not self._stop_event.is_set() and self._connected and self.socket:
+            try:
+                self.socket.sendall(payload)
+            except Exception:
+                break  # 发送失败=连接已死，交给接收线程走断线回调
+            time.sleep(0.5)
+
     def _receive_loop(self):
         """接收数据循环"""
         while not self._stop_event.is_set() and self._connected:

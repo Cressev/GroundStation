@@ -24,6 +24,7 @@ from ui.keyboard_status import KeyboardStatusWidget
 from ui.video_display import VideoMonitorWidget
 from ui.data_recording import DataRecordingWidget
 from ui.stereo_camera_widget import StereoFishCameraWidget
+from ui.image_enhancement_widget import ImageEnhancementWidget
 from ui.depth_panel import DepthPanel
 from ui.connection_store import ConnectionStore
 from controllers.base import KeyboardController
@@ -138,6 +139,18 @@ class MainWindow(QMainWindow):
         if self.variant == "dual":
             self.video_widget = StereoFishCameraWidget()
             center_tabs.addTab(self.video_widget, "双目测距")
+            mock_video_path = os.environ.get("GROUNDSTATION_MOCK_VIDEO", "")
+            self.enhancement_widget = ImageEnhancementWidget(
+                mock_video_path=mock_video_path or None)
+            center_tabs.addTab(self.enhancement_widget, "图像增强对比")
+            # 复用现有 9998 视频连接，禁止为了增强页面再建立第二条视频流。
+            self.video_widget.stream_client.frame_received.connect(
+                self.enhancement_widget.push_live_frame, Qt.QueuedConnection)
+            self.video_widget.stream_client.connection_status.connect(
+                self.enhancement_widget.set_live_connection_status,
+                Qt.QueuedConnection)
+            if mock_video_path:
+                center_tabs.setCurrentWidget(self.enhancement_widget)
         else:
             self.video_widget = VideoMonitorWidget()
             center_tabs.addTab(self.video_widget, "视频监控")
@@ -900,7 +913,11 @@ class MainWindow(QMainWindow):
         # 停用控制器
         if self.current_controller:
             self.current_controller.deactivate()
-            
+
+        # 停止图像增强页的 Mock 与后台增强线程
+        if hasattr(self, 'enhancement_widget'):
+            self.enhancement_widget.shutdown()
+
         # 断开连接
         if self.communication and self.communication.connected:
             self.communication.disconnect()

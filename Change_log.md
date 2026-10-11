@@ -1,5 +1,62 @@
 # Change Log
 
+## 2026-10-11
+
+### 迁移：图像增强对比功能并入 dual-fish-stereo 最新基线
+
+- 从 `wxy-image_enhence` 分支把图像增强对比功能整体移植到拉取的最新
+  `feature/dual-fish-stereo` 基线上；基线侧的遥测、深度(cm)、滚动区、1:1 渲染、
+  GET_STATE 等改动全部保留，无覆盖。
+- `ui/main_window.py` 按新基线手工重新接线（导入、dual 分支挂载第三个标签页、
+  `frame_received`/`connection_status` 信号连接、closeEvent 停止增强线程），写法与
+  wxy 分支一致；新版 `StereoVideoClient` 信号签名未变，1280×960 画布协议未变，
+  增强页"仅双目图区域（上半部）"选项继续有效。
+- README/Change_log/`.gitignore`（权重与本地备份排除）同步合并。
+
+## 2026-10-10
+
+### 调整：图像增强改为左右对比布局
+
+- 图像增强页由上下排列改为左侧原始画面、右侧增强画面，更适配竖向真实视频。
+- 根据实测取消视频窗之间的可拖动分隔器，改为普通等宽水平布局，避免拖动时反复缩放视频造成明显卡顿。
+- 视频显示由 `QLabel.setPixmap()` 改为自定义 `VideoCanvas.paintEvent()`；视频帧只在布局分配的画布矩形内等比例绘制，不再有 Pixmap 反向改变画布尺寸的路径。
+- Mock 源状态中的长文件名不再参与控制网格的最小宽度计算，避免加载视频时扩宽增强页并带动画布和主窗口一起变大。
+- 对比截图和 MP4 对比录像同步改为左原图、右增强图，界面与导出结果保持一致。
+
+## 2026-10-07
+
+### 接入：UIEC²-Net、U-shape Transformer 与 Ucolor
+
+- 新增 `enhancers/` 统一适配层，三个模型都在增强线程中延迟加载，不阻塞 PyQt 主线程。
+- UIEC²-Net 使用 320×240/目 PyTorch CUDA 推理；U-shape 使用 256×256/目，并让左右目
+  共享输出归一化范围，避免双目亮度独立漂移。
+- Ucolor 原 TensorFlow 2.4 CPU 模型转换为外部张量 ONNX，新增 GDCP 预处理与
+  ONNX Runtime CUDA 推理；固定图像与原框架最大像素差 1、平均差 0.020。
+- 模型失败时保留原图并在状态栏显示真实错误，后台线程继续运行；模型切换时释放旧模型。
+- 修复 PyTorch 与 ONNX Runtime 同进程的 OpenMP、CUDA/cuDNN DLL 加载顺序冲突，验证
+  Ucolor→UIEC²-Net、Ucolor→U-shape 切换均成功。
+- 新增 `models/README.md` 和 `ref/convert_ucolor_to_onnx.py`，记录模型位置、校验值、转换、
+  解压及 `fish_ui_gpu` 环境复现步骤；大权重和转换产物不提交 Git。
+- RTX 5060 Laptop GPU 实测：UIEC²-Net Mock 约 30 FPS，U-shape 约 20.8 FPS；Ucolor
+  单目约 3.2 FPS、双目约 1.8 FPS，首次加载约 35 秒。
+
+## 2026-10-06
+
+### 新增：双尾鱼图像增强上下对比页
+
+- 新增 `ui/image_enhancement_widget.py`：原始画面和增强画面上下排列，使用可拖动分隔线。
+- 复用双目测距页现有 9998 视频连接，不重复拉取网络视频流。
+- 支持本地视频循环 Mock，便于不连接机器鱼时设计和验证 UI。
+- 增强在线程中执行并只保留最新帧，显示输入/输出 FPS、单帧耗时和丢弃旧帧数。
+- 内置水下综合增强、CLAHE、Gamma 和灰度世界白平衡，以及场景预设和高级参数。
+- 支持单画面最大化、单帧截图、上下对比图保存和参数 JSON 导出。
+- 新增上下对比 MP4 录像：原图/增强图严格同帧，独立编码线程写盘，停止后报告帧数、
+  时长和录像队列丢帧，不阻塞 PyQt 主线程。
+- `GROUNDSTATION_MOCK_VIDEO` 环境变量可在启动时自动播放指定视频并切到增强页。
+- 重构算法选择层级：一级为传统图像增强、四个神经网络和不处理，传统方法下再选择
+  综合增强、CLAHE、Gamma 或灰度世界白平衡；未接入的网络明确禁用并标记“待接入”。
+- 传统高级参数按模式动态启用，示例预设只在水下综合增强中显示，避免无效参数造成误解。
+
 ## 2026-01-29 16:40
 
 ### 修复: socket回调线程安全问题（critical fix🔥）

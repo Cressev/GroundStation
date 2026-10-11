@@ -13,9 +13,12 @@
 ## 快速启动
 
 ```bash
-conda activate qt5
+conda activate fish_ui_gpu
 python main.py          # 先弹出版本选择对话框，选择后进入主窗口
 ```
+
+`fish_ui_gpu` 是启用 UIEC²-Net、U-shape Transformer 和 Ucolor 的推荐环境；`qt5` 环境仍可
+运行传统增强和其余地面站功能，但无法运行三个 CUDA 模型。
 
 服务端启动方式见 `catkin_ws_in_fish/部署说明.md`（单尾鱼）与
 `pico_stereo/USAGE.md` + `gs_bridge`（双尾鱼，由代理部署在 pico 上）。
@@ -29,9 +32,18 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
 | `ui/fish_variant_dialog.py` | **新增** 启动版本选择对话框（dual/single 卡片式选择） |
 | `ui/connection_store.py` | **新增** 连接档案持久化（本地 connections.json 记录 备注+IP+端口，双尾鱼页面下拉直选） |
 | `ui/heartbeat_light.py` | **新增** 心跳呼吸灯（状态栏左下角）：脉冲只由真实心跳发送事件驱动——通信层每成功发出一拍 ping 经 Qt 信号点亮、两拍间自然衰减，停发即沉暗，不做装饰性空闪；悬停显示累计拍数与最后时刻；断链转灰 |
-| `ui/main_window.py` | 主窗口：按 `variant` 加载视频页（dual=双目测距组件 / single=原视频监控）与深度页（仅 dual）、连接默认值、菜单、键盘事件分发、安全启用开关；主连接成功后自动连视频流并同步深度面板数据源 IP；底栏常驻控制板遥测标签（CPU/温度/内存/频率，1Hz 刷新） |
+| `ui/main_window.py` | 主窗口：按 `variant` 加载视频页（dual=双目测距组件 / single=原视频监控）、图像增强对比页（仅 dual）与深度页（仅 dual）、连接默认值、菜单、键盘事件分发、安全启用开关；主连接成功后自动连视频流并同步深度面板数据源 IP；底栏常驻控制板遥测标签（CPU/温度/内存/频率，1Hz 刷新） |
 | `ui/stereo_camera_widget.py` | **新增** 双尾鱼视频+测距组件：`StereoVideoClient`（TCP 9998 客户端，协议兼容老版）+ `StereoFishCameraWidget`（双路画面上下排布显示、RANGE_ON/OFF 测距开关、**开启/关闭摄像头按钮**（板上相机默认不自启）、测量 JSON 刷新标签；点击→SET_POINT 1:1 映射）；连接时 GET_STATE 查询板端真实相机/测距状态联动 UI；画布 640x960 竖版按页面宽度等比缩放，选项卡整页可滚动 |
 | `ui/depth_panel.py` | **新增** 双尾鱼深度面板：`DepthTcpClient`（TCP 9999 客户端，接收 gs_bridge 的 10Hz `{"type":"depth",...}` 推送）、大字号实时深度显示、**深度零点标定**（"标定"按钮采集 10 秒融合值均值设为 0 点，零点持久化 `depth_zero.json`，可"清除标定"；CSV 含标定后深度列）、开始/停止 CSV 记录（停止弹对话框仅存 .csv）。**深度单位为 cm**（板上节点输出即 cm，零点标定与显示同单位，全程无换算）。**数据源 IP 跟随主连接**：主连接成功后自动切到本次输入的 IP 并连上深度流，也可用面板内按钮手动连/断 |
+| `ui/image_enhancement_widget.py` | 双尾鱼图像增强对比页：原图/增强图左右等宽显示，复用现有 9998 视频帧；一级选择传统方法/神经网络/不处理，传统方法下含综合增强、CLAHE、Gamma、白平衡；支持本地 Mock 视频、实时 FPS/延迟/丢帧统计、单画面放大、截图、左右对比 MP4 录像和参数导出 |
+| `enhancers/__init__.py` | 神经网络增强器工厂：按选项延迟导入对应适配器，避免启动界面时立即占用 GPU |
+| `enhancers/base.py` | 神经网络统一接口，以及单目/双目拆分、等比例补边和原尺寸恢复工具 |
+| `enhancers/model_paths.py` | UIEC²-Net、U-shape 外部源码/权重和 Ucolor 本地 ONNX 路径检查；支持 `GROUNDSTATION_BASELINE_ROOT` 覆盖默认 baseline 目录 |
+| `enhancers/uiec2_enhancer.py` | UIEC²-Net PyTorch/CUDA 适配器，320×240/目，左右目合为一个 batch 推理 |
+| `enhancers/ushape_enhancer.py` | U-shape Transformer PyTorch/CUDA 适配器，256×256/目，双目共享输出归一化范围 |
+| `enhancers/ucolor_enhancer.py` | Ucolor ONNX Runtime/CUDA 适配器，包含 GDCP 透射率图预处理和 TensorFlow 转换模型推理 |
+| `ref/convert_ucolor_to_onnx.py` | 在旧 TensorFlow 环境中把 Ucolor 检查点转换成外部张量 ONNX zip，并替换 ONNX 不支持的 RGB→HSV 算子 |
+| `models/README.md` | 大模型本地路径、SHA256、Ucolor 转换/解压步骤和数值对齐结果；实际权重由 `.gitignore` 排除 |
 | `ui/fish_camera_widget.py` | 单尾鱼机载相机组件（TCP 9998 客户端 + 机上录制控制），仅 single 变体使用 |
 | `ui/video_display.py` | 笔记本外接 USB 相机监控（VideoDisplayWidget + VideoMonitorWidget 容器），仅 single 变体使用 |
 | `ui/visualization.py` | pyqtgraph 数据可视化（XY 轨迹/深度/姿态/实时朝向）；时间序列的深度-时间图含双目鱼五路曲线：原始1/原始2/滤波1/滤波2/标定后（扣 depth_zero.json 零点）；时间轴模式可切 全局(0到最新)/滑动窗口(最近10秒)，并有清除曲线与重置画布按钮 |
@@ -73,6 +85,86 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
 文件对话框选择保存位置与文件名（**仅支持 mp4**，mp4v 编码；取消则存到
 records/ 下按时间戳命名）。板上相机曝光/增益需在 v4l2-ctl 预设好
 （depth_node 已自动设置，室内默认 exposure_absolute=1300 + gain=120）。
+
+## 图像增强对比页
+
+双尾鱼模式下中央区域新增第三个标签页 `图像增强对比`。页面把同一视频帧的原图和增强图
+左右等宽排列，不提供可拖动分隔线；窗口尺寸变化时两侧自动同步调整。增强处理在独立线程
+中进行，队列只保留最新帧；
+处理速度低于采集速度时主动丢弃旧帧，优先保证实时预览延迟不会持续累积。
+
+- 实时模式：复用 `StereoVideoClient.frame_received`，不会向 pico 再建立第二条 9998 连接。
+- Mock 模式：页面内点击“加载 Mock 视频”，选择本地 mp4/avi/mov/mkv 并循环播放。
+- 布局约束：左右视频窗固定等宽，使用自定义绘制画布而不是 `QLabel.setPixmap()`；画布只在
+  布局已经分配的矩形内等比例绘图，视频原始分辨率不会参与页面尺寸计算。较长的状态文字
+  和 Mock 文件名不会参与页面最小宽度计算，鼠标悬停可查看完整内容。
+- 增强方法：传统图像增强、UIEC²-Net、U-shape Transformer、Ucolor、
+  LightUcolorRetinex 或不处理。前三个开源网络已经接入并可选择；LightUcolorRetinex 在最终
+  结构和权重确定前保持禁用。
+- 传统模式：水下综合增强、CLAHE 局部对比度、Gamma 明暗校正和灰度世界白平衡。
+  水下综合增强按“灰度世界→CLAHE→Gamma→饱和度→对比度”的固定顺序处理；单项模式
+  只启用自身真正使用的高级参数。
+- 参数：增强强度是所有已实现方法外层的原图混合比例；Gamma、对比度、饱和度和
+  CLAHE 只属于传统方法。浑浊水体、清水、偏蓝绿色、低照度均明确标为“示例预设”，
+  仅在水下综合增强中显示，尚未使用课题组真实水下数据完成标定。
+- 处理区域：整张画面，或仅处理双目测距画布上半部。
+- 输出：单画面放大/截图、左右对比截图、左右对比 MP4 录像、增强参数 JSON，以及
+  输入/输出 FPS、处理耗时、丢弃旧帧数等实时指标。
+
+“开始保存对比视频”会先要求选择 `.mp4` 路径；录像内容为严格同一时刻的原图在左、增强图
+在右，并带 `ORIGINAL` / `ENHANCED` 标记。再次点击“停止并保存视频”后，后台线程会写完
+录像队列并关闭文件，然后显示实际帧数、视频时长和录像队列丢帧数。编码使用 `mp4v`，
+录像声明帧率取当前增强输出帧率且最高 25 FPS，避免增强处理略慢于输入时造成明显快放。
+
+调试时也可以在启动前用环境变量指定 Mock 视频；程序会自动切到增强对比页：
+
+```powershell
+$env:GROUNDSTATION_MOCK_VIDEO = 'D:\桌面\1632b6b4313f804820195bfe22956b48.mp4'
+python main.py
+Remove-Item Env:GROUNDSTATION_MOCK_VIDEO
+```
+
+启动后选择“双尾双目鱼”。Mock 播放期间暂不显示 Pico 实时帧，点击“停止 Mock”后自动恢复
+使用现有 Pico 视频流。`仅双目图区域（上半部）`用于 1280×960 双目测距画布，只增强上半部
+左右校正图，保留下半部视差伪彩与测距叠加的原始含义。
+
+### 三个开源网络的本机部署
+
+默认从 `C:\Users\yiiixw\Documents\ChatGPT\图像增强\baseline` 读取 UIEC²-Net 与
+U-shape 源码/权重；目录改变时，在启动前设置：
+
+```powershell
+$env:GROUNDSTATION_BASELINE_ROOT = '你的\baseline\绝对路径'
+```
+
+当前 `fish_ui_gpu` 由原 `pytorch` 环境克隆，保留 PyTorch 2.7.1+cu128，再安装 PyQt5、
+pyqtgraph 与 ONNX Runtime。重建环境时使用下列顺序；ONNX Runtime GPU 构建与 CUDA 12.4
+依赖必须同时固定，NumPy 固定 1.26.4 以兼容现有 SciPy：
+
+```powershell
+conda create -n fish_ui_gpu --clone pytorch
+conda run -n fish_ui_gpu python -m pip install PyQt5==5.15.10 pyqtgraph==0.13.7
+conda install -n fish_ui_gpu --override-channels -c defaults `
+  'onnxruntime=1.22.2=py310h5bbf1a5_0_cuda' 'cuda-cupti=12.4.127' 'numpy=1.26.4' -y
+conda install -n fish_ui_gpu -c conda-forge nomkl 'libblas=*=*openblas' -y
+conda list -n fish_ui_gpu llvm-openmp   # 若能列出该包，再执行下一行
+conda remove -n fish_ui_gpu llvm-openmp -y
+```
+
+最后两步用于避免 ONNX Runtime 的 `libomp.dll` 与 PyTorch 的 `libiomp5md.dll` 同进程冲突。
+代码还会在 Ucolor 会话创建前预载 PyTorch CUDA/cuDNN，确保先选 Ucolor、后切换 PyTorch
+模型也不会被 Conda CUDA DLL 遮蔽。不要用 `KMP_DUPLICATE_LIB_OK=TRUE` 绕过冲突。
+
+本机 RTX 5060 Laptop GPU、Mock 视频实测如下；这是吞吐参考，不是固定承诺：
+
+| 方法 | 内部输入 | 实测 |
+|---|---|---|
+| UIEC²-Net | 320×240/目，双目 batch | Mock 约 30 FPS，单次约 23 ms |
+| U-shape Transformer | 256×256/目，双目 batch | Mock 约 20.8 FPS，单次约 51 ms |
+| Ucolor | 256×256/目，固定 batch=1 | 单目约 305–310 ms（约 3.2 FPS）；双目约 558 ms（约 1.8 FPS） |
+
+Ucolor 首次选择需约 35 秒完成 600 MB 权重加载和 cuDNN 预热，期间状态栏显示“正在加载”；
+加载完成前界面保持响应。增强线程永远只保留最新帧，慢模型不会把旧帧排成长队。
 
 控制（9999，gs_bridge）：
 

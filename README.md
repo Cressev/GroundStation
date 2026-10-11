@@ -12,13 +12,17 @@
 
 ## 快速启动
 
-```powershell
+```bash
 conda activate fish_ui_gpu
 python main.py          # 先弹出版本选择对话框，选择后进入主窗口
 ```
 
 `fish_ui_gpu` 是启用 UIEC²-Net、U-shape Transformer 和 Ucolor 的推荐环境；`qt5` 环境仍可
 运行传统增强和其余地面站功能，但无法运行三个 CUDA 模型。
+
+高分屏自适应：启动时按 Windows 显示缩放比例真实缩放（High-DPI PassThrough 策略），
+125%/150% 缩放的机器与 100% 缩放的机器观感比例一致，修复了旧版在 150% 缩放下
+被 Qt 取整成 2 倍导致整窗字体异常偏大的问题。
 
 服务端启动方式见 `catkin_ws_in_fish/部署说明.md`（单尾鱼）与
 `pico_stereo/USAGE.md` + `gs_bridge`（双尾鱼，由代理部署在 pico 上）。
@@ -28,11 +32,13 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
 | 文件 | 说明 |
 |---|---|
 | `main.py` | 入口：高 DPI 设置 → 版本选择对话框 → 按变体构造 MainWindow |
-| `config.py` | 全局配置：单尾鱼 IP/端口、`DUAL_FISH_CONFIG`（pico IP + 9999/9998 端口）、控制限幅、键位映射、UI/视频/记录参数 |
+| `config.py` | 全局配置：单尾鱼 IP/端口、`DUAL_FISH_CONFIG`（pico IP + 9999/9998 端口）、控制限幅、键位映射、键盘默认参数 `KEYBOARD_CONTROL_DEFAULTS`（含相位差 1.57）、UI/视频/记录参数 |
 | `ui/fish_variant_dialog.py` | **新增** 启动版本选择对话框（dual/single 卡片式选择） |
 | `ui/connection_store.py` | **新增** 连接档案持久化（本地 connections.json 记录 备注+IP+端口，双尾鱼页面下拉直选） |
-| `ui/main_window.py` | 主窗口：按 `variant` 加载视频页（dual=双目测距组件 / single=原视频监控）、连接默认值、菜单、键盘事件分发、安全启用开关 |
-| `ui/stereo_camera_widget.py` | **新增** 双尾鱼视频+测距组件：`StereoVideoClient`（TCP 9998 客户端，协议兼容老版）+ `StereoFishCameraWidget`（双路画面上下排布显示、RANGE_ON/OFF 测距开关、测量 JSON 刷新标签；点击→SET_POINT 预留） |
+| `ui/heartbeat_light.py` | **新增** 心跳呼吸灯（状态栏左下角）：脉冲只由真实心跳发送事件驱动——通信层每成功发出一拍 ping 经 Qt 信号点亮、两拍间自然衰减，停发即沉暗，不做装饰性空闪；悬停显示累计拍数与最后时刻；断链转灰 |
+| `ui/main_window.py` | 主窗口：按 `variant` 加载视频页（dual=双目测距组件 / single=原视频监控）、图像增强对比页（仅 dual）与深度页（仅 dual）、连接默认值、菜单、键盘事件分发、安全启用开关；主连接成功后自动连视频流并同步深度面板数据源 IP；底栏常驻控制板遥测标签（CPU/温度/内存/频率，1Hz 刷新） |
+| `ui/stereo_camera_widget.py` | **新增** 双尾鱼视频+测距组件：`StereoVideoClient`（TCP 9998 客户端，协议兼容老版）+ `StereoFishCameraWidget`（双路画面上下排布显示、RANGE_ON/OFF 测距开关、**开启/关闭摄像头按钮**（板上相机默认不自启）、测量 JSON 刷新标签；点击→SET_POINT 1:1 映射）；连接时 GET_STATE 查询板端真实相机/测距状态联动 UI；画布 640x960 竖版按页面宽度等比缩放，选项卡整页可滚动 |
+| `ui/depth_panel.py` | **新增** 双尾鱼深度面板：`DepthTcpClient`（TCP 9999 客户端，接收 gs_bridge 的 10Hz `{"type":"depth",...}` 推送）、大字号实时深度显示、**深度零点标定**（"标定"按钮采集 10 秒融合值均值设为 0 点，零点持久化 `depth_zero.json`，可"清除标定"；CSV 含标定后深度列）、开始/停止 CSV 记录（停止弹对话框仅存 .csv）。**深度单位为 cm**（板上节点输出即 cm，零点标定与显示同单位，全程无换算）。**数据源 IP 跟随主连接**：主连接成功后自动切到本次输入的 IP 并连上深度流，也可用面板内按钮手动连/断 |
 | `ui/image_enhancement_widget.py` | 双尾鱼图像增强对比页：原图/增强图左右等宽显示，复用现有 9998 视频帧；一级选择传统方法/神经网络/不处理，传统方法下含综合增强、CLAHE、Gamma、白平衡；支持本地 Mock 视频、实时 FPS/延迟/丢帧统计、单画面放大、截图、左右对比 MP4 录像和参数导出 |
 | `enhancers/__init__.py` | 神经网络增强器工厂：按选项延迟导入对应适配器，避免启动界面时立即占用 GPU |
 | `enhancers/base.py` | 神经网络统一接口，以及单目/双目拆分、等比例补边和原尺寸恢复工具 |
@@ -44,12 +50,12 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
 | `models/README.md` | 大模型本地路径、SHA256、Ucolor 转换/解压步骤和数值对齐结果；实际权重由 `.gitignore` 排除 |
 | `ui/fish_camera_widget.py` | 单尾鱼机载相机组件（TCP 9998 客户端 + 机上录制控制），仅 single 变体使用 |
 | `ui/video_display.py` | 笔记本外接 USB 相机监控（VideoDisplayWidget + VideoMonitorWidget 容器），仅 single 变体使用 |
-| `ui/visualization.py` | pyqtgraph 数据可视化（XY 轨迹/深度/姿态/实时朝向） |
+| `ui/visualization.py` | pyqtgraph 数据可视化（XY 轨迹/深度/姿态/实时朝向）；时间序列的深度-时间图含双目鱼五路曲线：原始1/原始2/滤波1/滤波2/标定后（扣 depth_zero.json 零点）；时间轴模式可切 全局(0到最新)/滑动窗口(最近10秒)，并有清除曲线与重置画布按钮 |
 | `ui/keyboard_status.py` | 键盘按键状态面板与特殊功能键处理 |
-| `ui/data_recording.py` | 数据记录/CSV/Excel 导出控制面板 |
-| `controllers/base.py` | KeyboardController 等控制器：把键盘事件合成为 ControlCommand（频率/幅值/偏置/胸鳍角） |
+| `ui/data_recording.py` | 数据记录/CSV/Excel 导出控制面板；传感器数据保存目录组（IMU/深度各自目录，停止记录时按保存时刻在目录内生成 CSV） |
+| `controllers/base.py` | KeyboardController 等控制器：把键盘事件合成为 ControlCommand（频率/幅值/偏置/**相位差**/胸鳍角）；参数栏含相位差旋钮（默认 1.57 rad，±6.282） |
 | `communication/base.py` | 通信抽象基类（FishState/ControlCommand/FishCommunicationInterface） |
-| `communication/socket_client.py` | 单尾鱼 TCP 控制客户端（9999，JSON 行协议，50Hz 传感器推送接收） |
+| `communication/socket_client.py` | 双尾/单尾 TCP 控制客户端（9999，JSON 行协议）：state 回推走状态回调（遥测 + IMU 欧拉角并入 FishState.orientation 实时驱动姿态图），depth 推送装入 FishState.depth 供时间序列图，兼容旧版单尾鱼组合格式 |
 | `communication/ssh_ros.py` | SSH 执行 ROS 命令的辅助（旧链路备用） |
 | `data/recorder.py` | 传感器/控制数据记录器（CSV + metadata） |
 | `utils/graphics_exporter.py` | 可视化图形导出 |
@@ -71,6 +77,8 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
 地面站->服务端: 文本行
   SET_POINT u v   点击测距（u,v 为左校正图像素坐标）
   RANGE_ON / RANGE_OFF   启动/停止板上测距程序（纯视频回传 <-> 测距模式）
+  CAM_ON / CAM_OFF 开关板上摄像头（一键启动默认不开相机，板上回 {"type":"camera"} 确认）
+  GET_STATE       查询板上真实状态（回 {"type":"node_state",...}，UI 连接时自动调用）
   PING            探活
 ```
 
@@ -167,7 +175,13 @@ Ucolor 首次选择需约 35 秒完成 600 MB 权重加载和 cuDNN 预热，期
 ```
 地面站->板上: {"type":"control","tail_frequency":Hz,"tail_amplitude":rad,
               "tail_offset":rad,"pec_angle":us}   （JSON 行）
-板上->地面站: {"type":"state","ack_count":N,"last_command":{...}}（2Hz 回推）
+板上->地面站: {"type":"state","ack_count":N,"last_command":{...},
+              "telemetry":{"cpu_percent":..,"soc_temp_c":..,"mem_used_mb":..,
+              "mem_total_mb":..,"cpu_freq_mhz":..},
+              "imu":{"roll":rad,"pitch":rad,"yaw":rad}}（2Hz 回推，遥测供底栏、
+              IMU 供姿态图/时间序列；四元数由 gs_bridge 转欧拉角）
+              {"type":"depth","raw_1":..,"filtered_1":..,"fused":..}（10Hz，订阅
+              /fish/sensors/depth 转发，供深度面板显示/记录）
 ```
 
 gs_bridge 将 control 翻译为 `fish_interfaces/ActuatorCommand` 发布到

@@ -1,9 +1,9 @@
 {
-  "base_bias": -0.5,
-  "slow_frequency": 1.5,
-  "slow_amplitude": 0.3000000000000001,
-  "slow_turn_bias": 0.3,
-  "fast_frequency": 2.0,
-  "fast_amplitude": 0.3,
-  "fast_turn_bias": 0.4
+  "base_bias": 0.0,
+  "slow_frequency": 0.9999999999999997,
+  "slow_amplitude": 0.19999999999999984,
+  "slow_turn_bias": 0.1999999999999999,
+  "fast_frequency": 1.4999999999999996,
+  "fast_amplitude": 0.2999999999999998,
+  "fast_turn_bias": 0.2499999999999999
 }

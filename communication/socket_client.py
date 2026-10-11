@@ -34,18 +34,25 @@ class SocketCommunication(FishCommunicationInterface):
     """基于Socket的通信实现，用于实时数据传输"""
     
     def __init__(self, ip_address: str = None, port: int = None):
+        """初始化Socket通信：目标IP/端口、线程句柄与三类数据回调。"""
         super().__init__()
         self.fish_ip = ip_address if ip_address else FISH_IP
         self.port = port if port else SOCKET_PORT
         
         self.socket = None
         self._receive_thread = None
+        self._heartbeat_thread = None
         self._stop_event = threading.Event()
         
         # 数据回调
         self._data_callback: Optional[Callable[[FishState], None]] = None
         self._connection_callback: Optional[Callable[[bool], None]] = None
-        
+        # 板端状态回推回调（state JSON 原始 dict，含控制板遥测）
+        self._state_callback: Optional[Callable[[Dict[str, Any]], None]] = None
+        # 心跳拍回调：每成功发出一拍 ping 调一次（在心跳后台线程中触发，
+        # 使用方需自行转投 UI 线程，如经 Qt 信号 QueuedConnection）
+        self._heartbeat_callback: Optional[Callable[[], None]] = None
+
         # 接收缓冲区
         self._recv_buffer = ""
         
@@ -63,6 +70,11 @@ class SocketCommunication(FishCommunicationInterface):
             self._receive_thread = threading.Thread(target=self._receive_loop)
             self._receive_thread.daemon = True
             self._receive_thread.start()
+
+            # 启动心跳线程：gs_bridge 静默超过 2s 会判为断链并周期发兜底停止帧
+            self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop)
+            self._heartbeat_thread.daemon = True
+            self._heartbeat_thread.start()
             
             print(f"Socket连接成功: {self.fish_ip}:{self.port}")
             
@@ -114,6 +126,7 @@ class SocketCommunication(FishCommunicationInterface):
                 'tail_frequency': command.tail_frequency,
                 'tail_amplitude': command.tail_amplitude,
                 'tail_offset': command.tail_offset,
+                'tail_phase_diff': getattr(command, 'tail_phase_diff', 1.57),
                 'pec_angle': getattr(command, 'pec_angle', 1500),
                 'timestamp': command.timestamp
             }
@@ -141,7 +154,27 @@ class SocketCommunication(FishCommunicationInterface):
     def set_connection_callback(self, callback: Callable[[bool], None]):
         """设置连接状态回调函数"""
         self._connection_callback = callback
+
+    def set_state_callback(self, callback: Callable[[Dict[str, Any]], None]):
+        """设置板端状态回推回调（state JSON 原始 dict，含遥测字段）"""
+        self._state_callback = callback
+
+    def set_heartbeat_callback(self, callback: Optional[Callable[[], None]]):
+        """注册心跳拍回调：每成功发出一拍 ping 触发一次（后台线程上下文）。"""
+        self._heartbeat_callback = callback
     
+    def _heartbeat_loop(self):
+        """每 0.5s 发送一行心跳 JSON（gs_bridge 静默 2s 即判为断链并兜底停止）。"""
+        payload = (json.dumps({"type": "ping"}) + "\n").encode("utf-8")
+        while not self._stop_event.is_set() and self._connected and self.socket:
+            try:
+                self.socket.sendall(payload)
+                if self._heartbeat_callback:
+                    self._heartbeat_callback()
+            except Exception:
+                break  # 发送失败=连接已死，交给接收线程走断线回调
+            time.sleep(0.5)
+
     def _receive_loop(self):
         """接收数据循环"""
         while not self._stop_event.is_set() and self._connected:
@@ -179,8 +212,43 @@ class SocketCommunication(FishCommunicationInterface):
         """解析传感器数据"""
         try:
             data = json.loads(json_str)
-            
+
+            # gs_bridge 状态回推（含控制板遥测/IMU）：遥测走状态回调；
+            # IMU 欧拉角合并进持久 FishState 并触发数据回调（图表实时刷新）
+            if data.get("type") == "state":
+                if self._state_callback:
+                    self._state_callback(data)
+                imu = data.get("imu")
+                if imu:
+                    st = self._last_state or FishState()
+                    st.orientation = {
+                        "roll": imu.get("roll", 0.0),
+                        "pitch": imu.get("pitch", 0.0),
+                        "yaw": imu.get("yaw", 0.0),
+                    }
+                    self._last_state = st
+                    if self._data_callback:
+                        self._data_callback(st)
+                return
+
             state = FishState()
+            state.timestamp = data.get("timestamp", time.time())
+
+            if data.get("type") == "depth":
+                # 双目鱼深度 JSON（10Hz）：五路数值原样进 state.depth，
+                # 标定后深度由主窗口按零点扣减后补进 "calibrated"。
+                # 复用持久 state，保留 IMU 分支已合并的姿态
+                st = self._last_state or FishState()
+                st.depth = {k: data.get(k) for k in
+                            ("raw_1", "filtered_1", "raw_2",
+                             "filtered_2", "fused")}
+                st.timestamp = data.get("timestamp", time.time())
+                self._last_state = st
+                if self._data_callback:
+                    self._data_callback(st)
+                return
+
+            # 旧版单尾鱼组合格式：IMU/UWB/depth
             
             # 解析IMU数据 -> orientation
             imu = data.get('imu', {})

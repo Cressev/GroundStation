@@ -14,7 +14,8 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QMenuBar, QStatusBar, QAction, QTabWidget,
                              QGroupBox, QGridLayout, QLabel, QPushButton,
                              QComboBox, QMessageBox, QSplitter, QTextEdit,
-                             QLineEdit, QScrollArea, QApplication, QCheckBox)
+                             QLineEdit, QScrollArea, QApplication, QCheckBox,
+                             QSizePolicy)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QFont, QKeySequence, QIcon
 
@@ -24,7 +25,9 @@ from ui.video_display import VideoMonitorWidget
 from ui.data_recording import DataRecordingWidget
 from ui.stereo_camera_widget import StereoFishCameraWidget
 from ui.image_enhancement_widget import ImageEnhancementWidget
+from ui.depth_panel import DepthPanel
 from ui.connection_store import ConnectionStore
+from ui.heartbeat_light import HeartbeatLight, HeartbeatSignalBridge
 from controllers.base import KeyboardController
 from communication.socket_client import SocketCommunication
 from communication.base import FishState, ControlCommand
@@ -38,7 +41,7 @@ class MainWindow(QMainWindow):
     connection_changed_signal = pyqtSignal(bool)  # 连接状态变化信号
     
     def __init__(self, variant="single"):
-        """按鱼体变体构造主窗口及其通信、控制和显示组件。"""
+        """按鱼体变体（dual/single）初始化主窗口与各面板。"""
         super().__init__()
 
         # 机器鱼变体: "dual"=双尾双目鱼(pico) / "single"=单尾单目鱼(orangepi)
@@ -94,7 +97,24 @@ class MainWindow(QMainWindow):
         self.connection_time_label = QLabel("未连接")
         self.connection_time_label.setStyleSheet("color: gray; font-weight: bold;")
         self.status_bar.addPermanentWidget(self.connection_time_label)
-        
+
+        # 控制板遥测标签（CPU/温度/内存，2Hz state 回推 + 1Hz 刷新显示）
+        self.telemetry_label = QLabel("控制板: --")
+        self.telemetry_label.setStyleSheet("color: #2a6496; font-weight: bold;")
+        self.status_bar.addPermanentWidget(self.telemetry_label)
+        self._last_telemetry = None
+        self.telemetry_timer = QTimer(self)
+        self.telemetry_timer.setInterval(1000)
+        self.telemetry_timer.timeout.connect(self._refresh_telemetry_label)
+
+        # 心跳呼吸灯（状态栏最左常驻图标）：只由控制链路真实心跳拍驱动，
+        # 通信层每成功发出一拍 ping 经信号桥转投主线程点亮；断链转灰
+        self.heartbeat_light = HeartbeatLight()
+        self._heartbeat_bridge = HeartbeatSignalBridge()
+        self._heartbeat_bridge.beat.connect(
+            self.heartbeat_light.beat, Qt.QueuedConnection)
+        self.status_bar.insertPermanentWidget(0, self.heartbeat_light)
+
         self.status_bar.showMessage("系统启动完成")
         
         # 创建中央组件
@@ -150,11 +170,18 @@ class MainWindow(QMainWindow):
         # 右侧面板 - 包含按键状态和数据记录控制
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(5, 5, 5, 5)
+        right_layout.setContentsMargins(2, 2, 2, 2)
+        right_panel.setMinimumWidth(170)   # 可拖窄到此为止，内容自适应
+        control_panel.setMinimumWidth(170)
         
         # 创建右侧标签页
         right_tabs = QTabWidget()
-        
+
+        # 深度标签页（双尾鱼变体专属）
+        if self.variant == "dual":
+            self.depth_panel = DepthPanel(DUAL_FISH_CONFIG["fish_ip"])
+            right_tabs.addTab(self.depth_panel, "深度")
+
         # 按键状态标签页
         self.keyboard_status_widget = KeyboardStatusWidget()
         right_tabs.addTab(self.keyboard_status_widget, "按键状态")
@@ -164,10 +191,12 @@ class MainWindow(QMainWindow):
         right_tabs.addTab(self.data_recording_widget, "数据记录")
         
         right_layout.addWidget(right_tabs)
+        # 拖窄时内容自适应面板宽度，而不是被 sizeHint 顶住
+        right_tabs.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         main_splitter.addWidget(right_panel)
-        
-        # 设置分割器比例 (控制面板:中央区域:按键状态 = 2:6:2)
-        main_splitter.setSizes([250, 700, 250])
+
+        # 设置分割器比例 (控制面板:中央区域:右侧栏 = 2:8:2)
+        main_splitter.setSizes([220, 900, 200])
         main_splitter.setStretchFactor(0, 0)
         main_splitter.setStretchFactor(1, 1)
         main_splitter.setStretchFactor(2, 0)
@@ -543,10 +572,13 @@ class MainWindow(QMainWindow):
                 return
             
             self.communication = SocketCommunication(ip_address=ip_address, port=port)
-            
+
             # 设置数据回调，实时更新UI
             self.communication.set_data_callback(self._on_sensor_data_received)
             self.communication.set_connection_callback(self._on_connection_changed)
+            self.communication.set_state_callback(self._on_board_state)
+            # 心跳拍回调：通信线程每成功发出一拍 ping，经信号桥转投主线程点亮呼吸灯
+            self.communication.set_heartbeat_callback(self._heartbeat_bridge.beat.emit)
             
             self.connection_button.setEnabled(False)
             self.ip_input.setEnabled(False)
@@ -565,10 +597,17 @@ class MainWindow(QMainWindow):
                 if self.variant == "dual" and hasattr(self.video_widget, "_toggle_connection"):
                     if not self.video_widget.stream_client.running:
                         self.video_widget._toggle_connection()
+
+                # 双尾鱼：深度面板跟随本次连接的 IP 并自动连上深度数据流
+                if self.variant == "dual" and hasattr(self, "depth_panel"):
+                    self.depth_panel.set_host(ip_address)
+                    if not self.depth_panel.client.running:
+                        self.depth_panel._toggle_connection()
                 
                 # Socket通信不需要定时器轮询，数据通过回调实时更新
                 # 但保留定时器用于UI刷新和数据记录
                 self.data_timer.start(50)  # 20Hz
+                self.telemetry_timer.start()  # 1Hz 刷新底栏遥测显示
                 
                 # 记录连接开始时间
                 self.connection_start_time = time.time()
@@ -599,15 +638,20 @@ class MainWindow(QMainWindow):
         try:
             # 停止数据定时器
             self.data_timer.stop()
+            self.telemetry_timer.stop()
+            self.telemetry_label.setText("控制板: --")
             
             # 断开前发送停止命令，确保机器鱼停止运动
             self._send_stop_command()
             time.sleep(0.2)  # 等待命令发送
             
-            # 双尾鱼：同步断开视频流
-            if self.variant == "dual" and hasattr(self.video_widget, "stream_client"):
-                if self.video_widget.stream_client.running:
-                    self.video_widget._disconnect()
+            # 双尾鱼：同步断开视频流与深度面板
+            if self.variant == "dual":
+                if hasattr(self.video_widget, "stream_client"):
+                    if self.video_widget.stream_client.running:
+                        self.video_widget._disconnect()
+                if hasattr(self, "depth_panel") and self.depth_panel.client.running:
+                    self.depth_panel._disconnect()
             
             if self.communication:
                 self.communication.disconnect()
@@ -652,7 +696,16 @@ class MainWindow(QMainWindow):
             try:
                 fish_state = self.communication.get_fish_state()
                 if fish_state:
+                    # 双目鱼：深度五路按零点补出标定后值（零点来自深度面板的
+                    # depth_zero.json，未标定时零点为 0，标定后曲线=fused）
+                    if fish_state.depth and fish_state.depth.get("fused") is not None:
+                        zero = self.depth_panel.zero_offset \
+                            if hasattr(self, "depth_panel") else 0.0
+                        fish_state.depth["calibrated"] = \
+                            fish_state.depth["fused"] - zero
                     self.visualization_widget.update_data(fish_state)
+                    # 分传感器 CSV（IMU/深度）：记录进行中时随帧追加
+                    self.data_recording_widget.add_sensor_points(fish_state)
                     
                     # 添加到数据记录器（如果有控制命令的话，使用最后的控制命令）
                     last_command = getattr(self, '_last_control_command', None)
@@ -672,6 +725,26 @@ class MainWindow(QMainWindow):
         # 注意：此方法在工作线程中调用，直接更新会有线程安全问题
         # 数据通过get_fish_state()获取，定时器_update_data会读取并更新UI
         pass
+
+    def _on_board_state(self, state: dict):
+        """控制板状态回推（由Socket线程调用，仅存数据不改UI）"""
+        self._last_telemetry = state.get("telemetry")
+
+    def _refresh_telemetry_label(self):
+        """刷新底栏控制板遥测显示（1Hz，GUI 线程内执行）。"""
+        t = self._last_telemetry
+        if not t:
+            self.telemetry_label.setText("控制板: --")
+            return
+        cpu, temp = t.get("cpu_percent"), t.get("soc_temp_c")
+        used, total = t.get("mem_used_mb"), t.get("mem_total_mb")
+        freq = t.get("cpu_freq_mhz")
+        cpu_txt = f"{cpu:.0f}%" if cpu is not None else "--"
+        temp_txt = f"{temp:.1f}°C" if temp is not None else "--"
+        mem_txt = f"{used}/{total}MB" if used is not None and total else "--"
+        freq_txt = f"{freq}MHz" if freq else "--"
+        self.telemetry_label.setText(
+            f"控制板  CPU {cpu_txt} | {temp_txt} | 内存 {mem_txt} | 大核 {freq_txt}")
     
     def _on_connection_changed(self, connected: bool):
         """连接状态变化回调（在socket工作线程中调用）"""
@@ -682,6 +755,8 @@ class MainWindow(QMainWindow):
     def _handle_connection_changed(self, connected: bool):
         """处理连接状态变化（在主线程中执行）"""
         try:
+            # 心跳灯随链路状态转绿底/转灰
+            self.heartbeat_light.set_connected(connected)
             if not connected:
                 # 连接断开，重置UI状态
                 self.data_timer.stop()
@@ -855,7 +930,7 @@ class MainWindow(QMainWindow):
         # 停止图像增强页的 Mock 与后台增强线程
         if hasattr(self, 'enhancement_widget'):
             self.enhancement_widget.shutdown()
-            
+
         # 断开连接
         if self.communication and self.communication.connected:
             self.communication.disconnect()

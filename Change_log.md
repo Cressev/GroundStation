@@ -1,5 +1,34 @@
 # Change Log
 
+## 2026-10-11 (2)
+
+### 修复：高分屏字体异常偏大 + 补回心跳呼吸灯
+
+- **DPI**：main.py 增加 High-DPI PassThrough 缩放策略。Qt5 对 Windows 125%/150%
+  非整数缩放默认四舍五入（1.5→2 倍），导致这类机器上整窗字体控件比 100% 缩放的
+  机器大一圈；PassThrough 按真实比例缩放，各机器观感一致。
+- **心跳灯**：`ui/heartbeat_light.py` 此前只在 README 中记录、文件从未提交进 git
+  （任何分支都没有），按 README 行为规格重新实现：脉冲只由通信层每成功发出一拍
+  ping 驱动（`socket_client.set_heartbeat_callback` 新钩子 → Qt 信号桥 QueuedConnection
+  转投主线程），两拍间自然衰减、停发即沉暗、不做装饰性空闪；悬停显示累计拍数与
+  最后时刻；断链转灰。状态栏最左侧常驻，连接状态联动。
+- 验证：py_compile/AST docstring 全过；fish_ui_gpu 离屏实测 devicePixelRatio
+  （QT_SCALE_FACTOR=1.5 时 1.5，修复前策略下为 2.0）；主窗口构造后呼吸灯在位、
+  注入两拍后亮度/拍数/悬停提示正确、断链转灰正确。
+
+## 2026-10-11
+
+### 迁移：图像增强对比功能并入 dual-fish-stereo 最新基线
+
+- 从 `wxy-image_enhence` 分支把图像增强对比功能整体移植到拉取的最新
+  `feature/dual-fish-stereo` 基线上；基线侧的遥测、深度(cm)、滚动区、1:1 渲染、
+  GET_STATE 等改动全部保留，无覆盖。
+- `ui/main_window.py` 按新基线手工重新接线（导入、dual 分支挂载第三个标签页、
+  `frame_received`/`connection_status` 信号连接、closeEvent 停止增强线程），写法与
+  wxy 分支一致；新版 `StereoVideoClient` 信号签名未变，1280×960 画布协议未变，
+  增强页"仅双目图区域（上半部）"选项继续有效。
+- README/Change_log/`.gitignore`（权重与本地备份排除）同步合并。
+
 ## 2026-10-10
 
 ### 调整：图像增强改为左右对比布局

@@ -30,7 +30,7 @@ import tempfile
 
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QGroupBox, QMessageBox, QGridLayout,
-                             QFileDialog)
+                             QFileDialog, QSizePolicy, QScrollArea, QFrame)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt, pyqtSlot
 from PyQt5.QtGui import QImage, QPixmap, QFont
 
@@ -157,8 +157,9 @@ class StereoFishCameraWidget(QWidget):
         self._init_connections()
 
     def _init_ui(self):
-        """构建界面：连接控制、视频画布、测量数据面板。"""
-        layout = QVBoxLayout(self)
+        """构建界面：连接控制、视频画布、测量数据面板（整页可滚动）。"""
+        content = QWidget()
+        layout = QVBoxLayout(content)
 
         title = QLabel("双目测距（点击左校正图任意位置测距）")
         title.setAlignment(Qt.AlignCenter)
@@ -180,6 +181,12 @@ class StereoFishCameraWidget(QWidget):
             "录制当前双目画面(两路上下排布)；停止后弹出对话框选择 mp4 保存位置")
         self.record_btn.clicked.connect(self._toggle_recording)
         control_layout.addWidget(self.record_btn)
+        self.cam_btn = QPushButton("开启摄像头")
+        self.cam_btn.setEnabled(False)
+        self.cam_btn.setToolTip(
+            "板上相机默认不随启动脚本开启；点击发 CAM_ON 打开，再点发 CAM_OFF 关闭")
+        self.cam_btn.clicked.connect(self._toggle_camera)
+        control_layout.addWidget(self.cam_btn)
         control_layout.addStretch()
 
         self.mode_label = QLabel("介质: 水下模型")
@@ -204,7 +211,9 @@ class StereoFishCameraWidget(QWidget):
         video_layout = QVBoxLayout(video_group)
         self.video_label = QLabel()
         self.video_label.setAlignment(Qt.AlignCenter)
-        self.video_label.setMinimumSize(480, 360)
+        # 竖版画布（两路 640x480 上下拼接 = 640x960, 2:3）：
+        # 画布静态排在页面里随整页滚动，按页面宽度缩放、保持比例
+        self.video_label.setMinimumSize(380, 570)
         self.video_label.setCursor(Qt.CrossCursor)
         self.video_label.setStyleSheet("""
             QLabel {
@@ -236,13 +245,26 @@ class StereoFishCameraWidget(QWidget):
         status_group = QGroupBox("状态信息")
         status_layout = QVBoxLayout(status_group)
         self.status_label = QLabel("连接状态: 未连接")
+        self.camera_state_label = QLabel("摄像头: 未连接")
+        self.camera_state_label.setFont(QFont("Arial", 11, QFont.Bold))
         self.fps_label = QLabel("帧率: --")
         self.resolution_label = QLabel("分辨率: --")
         status_layout.addWidget(self.status_label)
+        status_layout.addWidget(self.camera_state_label)
         status_layout.addWidget(self.fps_label)
         status_layout.addWidget(self.resolution_label)
         layout.addWidget(status_group)
         layout.addStretch()
+
+        # 整页滚动：窗口矮时"双目测距"选项卡整体上下滚动
+        # （按钮/画布/测距结果/状态相对页面静止一起滚），窗口高时完整平铺
+        page_scroll = QScrollArea()
+        page_scroll.setWidget(content)
+        page_scroll.setWidgetResizable(True)
+        page_scroll.setFrameShape(QFrame.NoFrame)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(page_scroll)
 
     def _init_connections(self):
         """连接视频线程信号（QueuedConnection 保证线程安全）。"""
@@ -338,6 +360,20 @@ class StereoFishCameraWidget(QWidget):
         self.range_state_label.setText(
             f"测距状态: {'开' if self.ranging_on else '关'}")
 
+    def _toggle_camera(self):
+        """开关板上相机：发送 CAM_ON / CAM_OFF（启动脚本默认不开相机）。
+
+        命令在板端是幂等的：重复 CAM_ON/CAM_OFF 无副作用。
+        """
+        if not self.stream_client.running:
+            QMessageBox.warning(self, "切换失败", "请先连接视频服务")
+            return
+        self.camera_on = not getattr(self, "camera_on", False)
+        self.stream_client.send_command("CAM_ON" if self.camera_on else "CAM_OFF")
+        self.cam_btn.setText("关闭摄像头" if self.camera_on else "开启摄像头")
+        self.camera_state_label.setText(
+            f"摄像头: {'开启中…' if self.camera_on else '关闭中…'}")
+
     def _get_fish_ip(self):
         """从主窗口读取 IP 输入框（未连接控制时用 DUAL_FISH_CONFIG 默认值）。"""
         try:
@@ -387,8 +423,36 @@ class StereoFishCameraWidget(QWidget):
             self.range_btn.setText("停止测距" if self.ranging_on else "启动测距")
             self.range_state_label.setText(
                 f"测距状态: {'开' if self.ranging_on else '关'}")
+        elif msg_type == "camera":
+            # 板端两种形态：命令回执 {"enabled": bool}、1Hz 推送 {"state": "on"/"off"}。
+            # 幂等处理：1Hz 重复推送同状态时不重设控件（避免无谓刷新）
+            enabled = bool(info.get("enabled", info.get("state") == "on"))
+            if enabled != getattr(self, "camera_on", False):
+                self.camera_on = enabled
+                self.cam_btn.setText("关闭摄像头" if enabled else "开启摄像头")
+                self.camera_state_label.setText(
+                    f"摄像头: {'已开启' if enabled else '已关闭'}")
+                if not enabled:
+                    self._stream_seen = False
+                    self.video_label.setText("摄像头已关闭\n点击'开启摄像头'恢复画面")
         elif msg_type == "point_set":
             self.measure_point_label.setText(f"测点: ({info.get('u')},{info.get('v')})")
+        elif msg_type == "node_state":
+            # 板上真实状态（GET_STATE 应答）：UI 按实际情况显示而非固定假设
+            enabled = bool(info.get("camera_enabled", False))
+            self.camera_on = enabled
+            self.cam_btn.setText("关闭摄像头" if enabled else "开启摄像头")
+            self.camera_state_label.setText(
+                f"摄像头: {'已开启' if enabled else '关闭——点击开启摄像头出画面'}")
+            if enabled:
+                self.video_label.setText("摄像头已开启——等待画面…")
+            else:
+                self.video_label.setText(
+                    "摄像头处于关闭状态\n点击'开启摄像头'按钮开始回传")
+            self.range_state_label.setText(
+                f"测距状态: {'开' if info.get('ranging') else '关'}")
+            self.mode_label.setText(
+                f"介质: {'水下模型' if info.get('mode') == 'underwater' else '空气模型'}")
         elif msg_type == "measurement":
             self._update_measurement(info)
 
@@ -412,6 +476,11 @@ class StereoFishCameraWidget(QWidget):
         """刷新视频帧并统计帧率。"""
         try:
             self.current_frame = frame
+            if not getattr(self, "_stream_seen", False):
+                # 首帧到达 = 相机确实在出图（覆盖按钮请求后的"开启中…"状态）
+                self._stream_seen = True
+                self.camera_on = True
+                self.camera_state_label.setText("摄像头: 已开启（画面回传中）")
             self._fps_count += 1
             now = time.time()
             if now - self._fps_t0 >= 1.0:
@@ -426,7 +495,7 @@ class StereoFishCameraWidget(QWidget):
             self.resolution_label.setText(f"分辨率: {w}x{h}")
             label_size = self.video_label.size()
             scaled_image = qt_image.scaled(
-                label_size.width() - 10, label_size.height() - 10,
+                label_size.width() - 12, label_size.height() - 12,
                 Qt.KeepAspectRatio, Qt.SmoothTransformation)
             self.video_label.setPixmap(QPixmap.fromImage(scaled_image))
             self._record_frame(frame)
@@ -439,12 +508,21 @@ class StereoFishCameraWidget(QWidget):
         if connected:
             self.range_btn.setEnabled(True)
             self.record_btn.setEnabled(True)
+            self.cam_btn.setEnabled(True)
             self.status_label.setText("连接状态: 已连接")
+            self._stream_seen = False
+            # 不猜测板上状态：向节点查询真实相机/测距状态（GET_STATE 应答）
+            self.camera_state_label.setText("摄像头: 查询中…")
+            self.video_label.setText("已连接到视频服务\n正在查询摄像头状态…")
+            self.stream_client.send_command("GET_STATE")
         else:
             self.range_btn.setEnabled(False)
             self.record_btn.setEnabled(False)
+            self.cam_btn.setEnabled(False)
             self.range_state_label.setText("测距状态: 关")
             self.status_label.setText("连接状态: 未连接")
+            self.camera_state_label.setText("摄像头: 未连接")
+            self._stream_seen = False
             self.resolution_label.setText("分辨率: --")
             self.video_label.clear()
             self.video_label.setText(f"连接已断开\n{message}")

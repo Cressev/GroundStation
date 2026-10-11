@@ -8,7 +8,8 @@ Data Visualization Components
 import numpy as np
 import pyqtgraph as pg
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
-                             QLabel, QGroupBox, QGridLayout, QSizePolicy)
+                             QLabel, QGroupBox, QGridLayout, QSizePolicy,
+                             QPushButton, QCheckBox)
 from PyQt5.QtCore import QTimer, pyqtSignal, Qt
 from PyQt5.QtGui import QFont
 import time
@@ -29,15 +30,23 @@ class DataVisualizationWidget(QWidget):
         self.data_history = {
             'time': deque(maxlen=PLOT_HISTORY_LENGTH),
             'x': deque(maxlen=PLOT_HISTORY_LENGTH),
-            'y': deque(maxlen=PLOT_HISTORY_LENGTH), 
+            'y': deque(maxlen=PLOT_HISTORY_LENGTH),
             'z': deque(maxlen=PLOT_HISTORY_LENGTH),
             'roll': deque(maxlen=PLOT_HISTORY_LENGTH),
             'pitch': deque(maxlen=PLOT_HISTORY_LENGTH),
-            'yaw': deque(maxlen=PLOT_HISTORY_LENGTH)
+            'yaw': deque(maxlen=PLOT_HISTORY_LENGTH),
+            # 双目鱼深度五路序列（米；d_cal 为扣零点后的标定值）
+            'd_raw1': deque(maxlen=PLOT_HISTORY_LENGTH),
+            'd_raw2': deque(maxlen=PLOT_HISTORY_LENGTH),
+            'd_filt1': deque(maxlen=PLOT_HISTORY_LENGTH),
+            'd_filt2': deque(maxlen=PLOT_HISTORY_LENGTH),
+            'd_cal': deque(maxlen=PLOT_HISTORY_LENGTH),
         }
         
         self.start_time = time.time()
         self.plot_enabled = True  # 绘图开关状态
+        self.sliding_time = False  # 时间轴模式：False=全局(0到最新)，True=滑动窗口(最近10秒)
+        self.follow_latest = True  # 视图跟随最新数据；用户缩放/拖动后转自由视察
         self._init_ui()
         
         # 更新定时器
@@ -70,7 +79,15 @@ class DataVisualizationWidget(QWidget):
         """创建XY轨迹图标签"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        
+
+        # 清除按钮：清空历史数据，时间归零从头开始
+        clear_row = QHBoxLayout()
+        clear_btn = QPushButton("清除曲线（从头开始）")
+        clear_btn.clicked.connect(self.clear_data)
+        clear_row.addWidget(clear_btn)
+        clear_row.addStretch()
+        layout.addLayout(clear_row)
+
         # XY轨迹图
         self.xy_plot = pg.PlotWidget(title="XY平面轨迹")
         self.xy_plot.setLabel('left', 'Y位置 (m)')
@@ -105,10 +122,35 @@ class DataVisualizationWidget(QWidget):
         """创建时间序列图标签"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        
+
+        # 清除按钮：清空历史数据，时间归零从头开始
+        clear_row = QHBoxLayout()
+        clear_btn = QPushButton("清除曲线（从头开始）")
+        clear_btn.clicked.connect(self.clear_data)
+        clear_row.addWidget(clear_btn)
+        clear_row.addStretch()
+        layout.addLayout(clear_row)
+
+        # 时间轴模式：全局（0 到最新） / 滑动窗口（最近10秒），互斥
+        # 重置画布：用户缩放/拖动过曲线后，一键恢复自适应窗口
+        mode_row = QHBoxLayout()
+        self.global_time_cb = QCheckBox("全局时间序列（0 到最新）")
+        self.global_time_cb.setChecked(True)
+        self.sliding_time_cb = QCheckBox("滑动窗口（最近10秒）")
+        self.global_time_cb.toggled.connect(self._on_time_mode_toggled)
+        self.sliding_time_cb.toggled.connect(self._on_time_mode_toggled)
+        reset_view_btn = QPushButton("重置画布")
+        reset_view_btn.setToolTip("取消缩放/拖动，恢复自适应窗口")
+        reset_view_btn.clicked.connect(self._reset_time_series_view)
+        mode_row.addWidget(self.global_time_cb)
+        mode_row.addWidget(self.sliding_time_cb)
+        mode_row.addWidget(reset_view_btn)
+        mode_row.addStretch()
+        layout.addLayout(mode_row)
+
         # Z-t图
         self.z_plot = pg.PlotWidget(title="深度-时间图")
-        self.z_plot.setLabel('left', 'Z位置 (m)')
+        self.z_plot.setLabel('left', '深度 (cm)')
         self.z_plot.setLabel('bottom', '时间 (s)')
         self.z_plot.showGrid(x=True, y=True)
         
@@ -116,6 +158,15 @@ class DataVisualizationWidget(QWidget):
         self.z_plot.addLegend()
         
         self.z_curve = self.z_plot.plot(pen=pg.mkPen(color=UI_CONFIG["plot_colors"]["z"], width=2), name='深度')
+
+        # 双目鱼深度五路曲线（10Hz，标定后=融合值扣零点）
+        self._depth_curves = {
+            'd_raw1': self.z_plot.plot(pen=pg.mkPen(color='#7f7f7f', width=1), name='原始1'),
+            'd_raw2': self.z_plot.plot(pen=pg.mkPen(color='#c49c94', width=1), name='原始2'),
+            'd_filt1': self.z_plot.plot(pen=pg.mkPen(color='#1f77b4', width=2), name='滤波1'),
+            'd_filt2': self.z_plot.plot(pen=pg.mkPen(color='#2ca02c', width=2), name='滤波2'),
+            'd_cal': self.z_plot.plot(pen=pg.mkPen(color='#d62728', width=2), name='标定后'),
+        }
         
         layout.addWidget(self.z_plot)
         
@@ -144,7 +195,12 @@ class DataVisualizationWidget(QWidget):
         self.rpy_status_label = QLabel("当前姿态: Roll: 0.000, Pitch: 0.000, Yaw: 0.000")
         self.rpy_status_label.setStyleSheet("font-size: 11pt; padding: 5px; background-color: #f0f0f0;")
         layout.addWidget(self.rpy_status_label)
-        
+
+        # 用户手动缩放/拖动任一图 -> 停止跟随，视窗交还给用户自由视察
+        for plot in (self.z_plot, self.rpy_plot):
+            plot.getViewBox().sigRangeChangedManually.connect(
+                self._on_manual_view_change)
+
         return widget
     
     def _create_attitude_tab(self):
@@ -481,6 +537,14 @@ class DataVisualizationWidget(QWidget):
         self.data_history['roll'].append(fish_state.orientation['roll'])
         self.data_history['pitch'].append(fish_state.orientation['pitch'])
         self.data_history['yaw'].append(fish_state.orientation['yaw'])
+
+        # 双目鱼深度五路（数值本身就是 cm，直接入历史；
+        # 无数据时补 None 断线，pyqtgraph 自动留空）
+        d = getattr(fish_state, 'depth', None) or {}
+        for key, field in (('d_raw1', 'raw_1'), ('d_raw2', 'raw_2'),
+                           ('d_filt1', 'filtered_1'), ('d_filt2', 'filtered_2'),
+                           ('d_cal', 'calibrated')):
+            self.data_history[key].append(d.get(field))
         
         # 更新数值标签
         self._update_value_labels(fish_state)
@@ -503,26 +567,56 @@ class DataVisualizationWidget(QWidget):
             # 更新底部状态栏
             self.xy_status_label.setText(f'当前位置: X: {x_data[-1]:.3f} m, Y: {y_data[-1]:.3f} m')
         
-        # 更新Z-t图
+        # 更新Z-t图（按时间轴模式：全局 / 最近10秒滑动窗口）
+        t_min = self._time_window_min(times)
         z_data = list(self.data_history['z'])
-        self.z_curve.setData(times, z_data)
-        # 更新底部状态栏
-        if z_data:
+        z_pts = [(t, v) for t, v in zip(times, z_data) if t >= t_min]
+        self.z_curve.setData([p[0] for p in z_pts], [p[1] for p in z_pts])
+        # 更新双目鱼深度五路曲线（None 值段自动断线）
+        for key, curve in self._depth_curves.items():
+            y = list(self.data_history[key])
+            pts = [(t, v) for t, v in zip(times, y)
+                   if v is not None and t >= t_min]
+            if pts:
+                curve.setData([p[0] for p in pts], [p[1] for p in pts])
+            else:
+                curve.setData([], [])
+        # 更新底部状态栏（优先显示标定后深度）
+        cal = list(self.data_history['d_cal'])
+        if cal and cal[-1] is not None:
+            self.z_status_label.setText(f'当前深度(标定后): {cal[-1]:.1f} cm')
+        elif z_data:
             self.z_status_label.setText(f'当前深度: Z: {z_data[-1]:.3f} m')
-        
-        # 更新RPY-t图
+
+        # 更新RPY-t图（同一时间轴模式）
         roll_data = list(self.data_history['roll'])
         pitch_data = list(self.data_history['pitch'])
         yaw_data = list(self.data_history['yaw'])
-        
-        self.roll_curve.setData(times, roll_data)
-        self.pitch_curve.setData(times, pitch_data)
-        self.yaw_curve.setData(times, yaw_data)
+
+        roll_pts = [(t, v) for t, v in zip(times, roll_data) if t >= t_min]
+        pitch_pts = [(t, v) for t, v in zip(times, pitch_data) if t >= t_min]
+        yaw_pts = [(t, v) for t, v in zip(times, yaw_data) if t >= t_min]
+        self.roll_curve.setData([p[0] for p in roll_pts], [p[1] for p in roll_pts])
+        self.pitch_curve.setData([p[0] for p in pitch_pts], [p[1] for p in pitch_pts])
+        self.yaw_curve.setData([p[0] for p in yaw_pts], [p[1] for p in yaw_pts])
         
         # 更新底部状态栏
         if roll_data and pitch_data and yaw_data:
             self.rpy_status_label.setText(f'当前姿态: Roll: {roll_data[-1]:.3f}, Pitch: {pitch_data[-1]:.3f}, Yaw: {yaw_data[-1]:.3f}')
         
+        # 跟随模式：视窗每帧贴住当前时间窗（自由视察模式下不动，
+        # 由 sigRangeChangedManually 感知用户缩放/拖动后切换）
+        if self.follow_latest and times:
+            t_max = times[-1]
+            if getattr(self, "sliding_time", False):
+                x0, x1 = max(0.0, t_max - 10.0), t_max + 0.05
+            else:
+                x0, x1 = 0.0, max(t_max + 0.5, 5.0)
+            for plot in (self.z_plot, self.rpy_plot):
+                vb = plot.getViewBox()
+                vb.setXRange(x0, x1, padding=0)
+                vb.enableAutoRange(y=True)
+
         # 更新姿态可视化
         if roll_data and pitch_data and yaw_data:
             self._update_attitude_visualization(
@@ -603,6 +697,49 @@ class DataVisualizationWidget(QWidget):
         except Exception as e:
             print(f"姿态更新异常: {e}")
     
+    def _on_time_mode_toggled(self, checked):
+        """时间轴模式切换：全局 / 滑动窗口两个勾选框互斥，且不允许同时取消。"""
+        cb = self.sender()
+        other = self.sliding_time_cb if cb is self.global_time_cb \
+            else self.global_time_cb
+        if checked:
+            self.sliding_time = (cb is self.sliding_time_cb)
+            if other.isChecked():
+                other.blockSignals(True)
+                other.setChecked(False)
+                other.blockSignals(False)
+        else:
+            # 不允许两个都不选：把被取消的重新勾上
+            if not other.isChecked():
+                cb.blockSignals(True)
+                cb.setChecked(True)
+                cb.blockSignals(False)
+            self.sliding_time = (cb is self.sliding_time_cb)
+        self._update_plots()
+
+    def _on_manual_view_change(self, *args):
+        """用户缩放/拖动曲线（pyqtgraph 手动改范围信号）：停止跟随最新数据。"""
+        self.follow_latest = False
+
+    def _reset_time_series_view(self):
+        """重置画布：恢复"跟随最新数据"模式（视窗随曲线滚动）。
+
+        三态语义：默认跟随 -> 用户缩放/拖动后转自由视察(sigRangeChangedManually
+        感知) -> 重置画布回到跟随。一次性 autoRange 只在点击瞬间拟合，新数据
+        到来后视窗冻结，滑动窗口会"看不到最新"，故必须恢复跟随标志。
+        """
+        self.follow_latest = True
+        for plot in (self.z_plot, self.rpy_plot):
+            plot.autoRange()
+
+    def _time_window_min(self, times):
+        """滑动窗口模式返回最近10秒的时间下限；全局模式返回最早时间。"""
+        if not times:
+            return 0.0
+        if getattr(self, "sliding_time", False):
+            return max(0.0, times[-1] - 10.0)
+        return times[0]
+
     def clear_data(self):
         """清空数据"""
         for key in self.data_history:
@@ -613,6 +750,8 @@ class DataVisualizationWidget(QWidget):
         self.xy_curve.setData([], [])
         self.xy_point.setData([], [])
         self.z_curve.setData([], [])
+        for curve in self._depth_curves.values():
+            curve.setData([], [])
         self.roll_curve.setData([], [])
         self.pitch_curve.setData([], [])
         self.yaw_curve.setData([], [])

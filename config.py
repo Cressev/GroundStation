@@ -12,7 +12,7 @@ ROS_MASTER_URI = f"http://{FISH_IP}:11311"
 
 # 双尾双目鱼（pico RK3588S）配置
 DUAL_FISH_CONFIG = {
-    "fish_ip": "10.224.132.154",   # pico 当前 IP（换网后需更新）
+    "fish_ip": "10.77.77.2",       # pico 有线静态 IP（稳定；WiFi IP 会漂移）
     "socket_port": 9999,           # 控制桥 gs_bridge 端口（JSON 控制命令）
     "video_port": 9998,            # 双目视频/测距服务端口（pico_stereo depth_node）
     "ssh_username": "root",
@@ -60,6 +60,7 @@ KEYBOARD_CONTROL_DEFAULTS = {
     "fast_frequency": 4.0,
     "fast_amplitude": 0.5,
     "fast_turn_bias": 0.5,
+    "tail_phase_diff": 1.57,
 }
 
 # 传感器数据配置

@@ -1,5 +1,21 @@
 # Change Log
 
+## 2026-10-11 (3)
+
+### 合并：对方心跳呼吸灯实现（d861580）并入 wxy 线
+
+- 对方将最初版心跳呼吸灯推上 dual 分支（此前 README 记录了该文件但从未入库）；
+  按分支约定 merge 进 wxy，三处冲突（`ui/heartbeat_light.py` add-add、
+  `ui/main_window.py`、`communication/socket_client.py`）**均以对方实现为准**：
+  MainWindow 类级 `heartbeat_pulse_signal` 信号、`trigger_pulse(拍号)` 计数、
+  33ms 衰减三态灯（灰/暗绿待活/呼吸绿，"●+心跳"文字标签）。
+- 本地此前的重实现版废弃；保留本地独有改动：main.py 的 High-DPI PassThrough、
+  图像增强对比页、分支约定文档。
+- socket_client 心跳回调最终形态 = 对方版本（回调带累计拍号 `callback(seq)`），
+  并补齐三处历史缺失 docstring（AGENTS 约束 #4）。
+- 验证：py_compile/docstring 全过；真机烟测 PassThrough 在位、灯挂状态栏最左、
+  连接后拍号 1 立即点亮、泵事件 0.6s 自然衰减、断链转灰清零、增强页回归通过。
+
 ## 2026-10-11 (2)
 
 ### 修复：高分屏字体异常偏大 + 补回心跳呼吸灯

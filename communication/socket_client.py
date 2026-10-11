@@ -34,7 +34,6 @@ class SocketCommunication(FishCommunicationInterface):
     """基于Socket的通信实现，用于实时数据传输"""
     
     def __init__(self, ip_address: str = None, port: int = None):
-        """初始化Socket通信：目标IP/端口、线程句柄与三类数据回调。"""
         super().__init__()
         self.fish_ip = ip_address if ip_address else FISH_IP
         self.port = port if port else SOCKET_PORT
@@ -49,9 +48,9 @@ class SocketCommunication(FishCommunicationInterface):
         self._connection_callback: Optional[Callable[[bool], None]] = None
         # 板端状态回推回调（state JSON 原始 dict，含控制板遥测）
         self._state_callback: Optional[Callable[[Dict[str, Any]], None]] = None
-        # 心跳拍回调：每成功发出一拍 ping 调一次（在心跳后台线程中触发，
-        # 使用方需自行转投 UI 线程，如经 Qt 信号 QueuedConnection）
-        self._heartbeat_callback: Optional[Callable[[], None]] = None
+        # 心跳回调（每真实发出一拍心跳调用一次，供 UI 呼吸灯等）
+        self._heartbeat_callback: Optional[Callable[[int], None]] = None
+        self._hb_seq = 0
 
         # 接收缓冲区
         self._recv_buffer = ""
@@ -159,8 +158,11 @@ class SocketCommunication(FishCommunicationInterface):
         """设置板端状态回推回调（state JSON 原始 dict，含遥测字段）"""
         self._state_callback = callback
 
-    def set_heartbeat_callback(self, callback: Optional[Callable[[], None]]):
-        """注册心跳拍回调：每成功发出一拍 ping 触发一次（后台线程上下文）。"""
+    def set_heartbeat_callback(self, callback: Callable[[int], None]):
+        """设置心跳回调：每真实发出一拍心跳调用一次（参数=累计拍数）。
+
+        注意回调在心跳线程执行，UI 侧请经 Qt 信号转回主线程。
+        """
         self._heartbeat_callback = callback
     
     def _heartbeat_loop(self):
@@ -169,8 +171,9 @@ class SocketCommunication(FishCommunicationInterface):
         while not self._stop_event.is_set() and self._connected and self.socket:
             try:
                 self.socket.sendall(payload)
+                self._hb_seq += 1
                 if self._heartbeat_callback:
-                    self._heartbeat_callback()
+                    self._heartbeat_callback(self._hb_seq)  # 真实发出后才触发（UI 呼吸灯）
             except Exception:
                 break  # 发送失败=连接已死，交给接收线程走断线回调
             time.sleep(0.5)

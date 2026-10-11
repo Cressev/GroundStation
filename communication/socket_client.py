@@ -48,6 +48,9 @@ class SocketCommunication(FishCommunicationInterface):
         self._connection_callback: Optional[Callable[[bool], None]] = None
         # 板端状态回推回调（state JSON 原始 dict，含控制板遥测）
         self._state_callback: Optional[Callable[[Dict[str, Any]], None]] = None
+        # 心跳回调（每真实发出一拍心跳调用一次，供 UI 呼吸灯等）
+        self._heartbeat_callback: Optional[Callable[[int], None]] = None
+        self._hb_seq = 0
 
         # 接收缓冲区
         self._recv_buffer = ""
@@ -154,6 +157,13 @@ class SocketCommunication(FishCommunicationInterface):
     def set_state_callback(self, callback: Callable[[Dict[str, Any]], None]):
         """设置板端状态回推回调（state JSON 原始 dict，含遥测字段）"""
         self._state_callback = callback
+
+    def set_heartbeat_callback(self, callback: Callable[[int], None]):
+        """设置心跳回调：每真实发出一拍心跳调用一次（参数=累计拍数）。
+
+        注意回调在心跳线程执行，UI 侧请经 Qt 信号转回主线程。
+        """
+        self._heartbeat_callback = callback
     
     def _heartbeat_loop(self):
         """每 0.5s 发送一行心跳 JSON（gs_bridge 静默 2s 即判为断链并兜底停止）。"""
@@ -161,6 +171,9 @@ class SocketCommunication(FishCommunicationInterface):
         while not self._stop_event.is_set() and self._connected and self.socket:
             try:
                 self.socket.sendall(payload)
+                self._hb_seq += 1
+                if self._heartbeat_callback:
+                    self._heartbeat_callback(self._hb_seq)  # 真实发出后才触发（UI 呼吸灯）
             except Exception:
                 break  # 发送失败=连接已死，交给接收线程走断线回调
             time.sleep(0.5)

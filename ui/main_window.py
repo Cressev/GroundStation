@@ -27,6 +27,7 @@ from ui.stereo_camera_widget import StereoFishCameraWidget
 from ui.image_enhancement_widget import ImageEnhancementWidget
 from ui.depth_panel import DepthPanel
 from ui.connection_store import ConnectionStore
+from ui.heartbeat_light import HeartbeatLight
 from controllers.base import KeyboardController
 from communication.socket_client import SocketCommunication
 from communication.base import FishState, ControlCommand
@@ -38,6 +39,7 @@ class MainWindow(QMainWindow):
     
     # 定义信号用于线程安全的UI更新
     connection_changed_signal = pyqtSignal(bool)  # 连接状态变化信号
+    heartbeat_pulse_signal = pyqtSignal(int)      # 心跳拍信号（心跳线程→UI呼吸灯）
     
     def __init__(self, variant="single"):
         """按鱼体变体（dual/single）初始化主窗口与各面板。"""
@@ -91,6 +93,12 @@ class MainWindow(QMainWindow):
         # 创建状态栏
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
+
+        # 心跳呼吸灯（左下角）：脉冲只由真实心跳发送事件驱动，不做装饰性空闪
+        self.heartbeat_light = HeartbeatLight()
+        self.heartbeat_light.set_connected(False)
+        self.heartbeat_pulse_signal.connect(self.heartbeat_light.trigger_pulse)
+        self.status_bar.insertPermanentWidget(0, self.heartbeat_light)
         
         # 添加连接时间标签到状态栏右侧
         self.connection_time_label = QLabel("未连接")
@@ -568,6 +576,9 @@ class MainWindow(QMainWindow):
             self.communication.set_data_callback(self._on_sensor_data_received)
             self.communication.set_connection_callback(self._on_connection_changed)
             self.communication.set_state_callback(self._on_board_state)
+            # 心跳呼吸灯：心跳线程真实发出一拍 → 信号排队回 UI 线程点亮
+            self.communication.set_heartbeat_callback(
+                self.heartbeat_pulse_signal.emit)
             
             self.connection_button.setEnabled(False)
             self.ip_input.setEnabled(False)
@@ -744,6 +755,7 @@ class MainWindow(QMainWindow):
     def _handle_connection_changed(self, connected: bool):
         """处理连接状态变化（在主线程中执行）"""
         try:
+            self.heartbeat_light.set_connected(connected)  # 呼吸灯随连接状态亮/灰
             if not connected:
                 # 连接断开，重置UI状态
                 self.data_timer.stop()

@@ -27,6 +27,7 @@ from ui.stereo_camera_widget import StereoFishCameraWidget
 from ui.image_enhancement_widget import ImageEnhancementWidget
 from ui.depth_panel import DepthPanel
 from ui.connection_store import ConnectionStore
+from ui.heartbeat_light import HeartbeatLight, HeartbeatSignalBridge
 from controllers.base import KeyboardController
 from communication.socket_client import SocketCommunication
 from communication.base import FishState, ControlCommand
@@ -105,6 +106,14 @@ class MainWindow(QMainWindow):
         self.telemetry_timer = QTimer(self)
         self.telemetry_timer.setInterval(1000)
         self.telemetry_timer.timeout.connect(self._refresh_telemetry_label)
+
+        # 心跳呼吸灯（状态栏最左常驻图标）：只由控制链路真实心跳拍驱动，
+        # 通信层每成功发出一拍 ping 经信号桥转投主线程点亮；断链转灰
+        self.heartbeat_light = HeartbeatLight()
+        self._heartbeat_bridge = HeartbeatSignalBridge()
+        self._heartbeat_bridge.beat.connect(
+            self.heartbeat_light.beat, Qt.QueuedConnection)
+        self.status_bar.insertPermanentWidget(0, self.heartbeat_light)
 
         self.status_bar.showMessage("系统启动完成")
         
@@ -568,6 +577,8 @@ class MainWindow(QMainWindow):
             self.communication.set_data_callback(self._on_sensor_data_received)
             self.communication.set_connection_callback(self._on_connection_changed)
             self.communication.set_state_callback(self._on_board_state)
+            # 心跳拍回调：通信线程每成功发出一拍 ping，经信号桥转投主线程点亮呼吸灯
+            self.communication.set_heartbeat_callback(self._heartbeat_bridge.beat.emit)
             
             self.connection_button.setEnabled(False)
             self.ip_input.setEnabled(False)
@@ -744,6 +755,8 @@ class MainWindow(QMainWindow):
     def _handle_connection_changed(self, connected: bool):
         """处理连接状态变化（在主线程中执行）"""
         try:
+            # 心跳灯随链路状态转绿底/转灰
+            self.heartbeat_light.set_connected(connected)
             if not connected:
                 # 连接断开，重置UI状态
                 self.data_timer.stop()

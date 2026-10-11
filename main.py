@@ -24,6 +24,11 @@ def main():
     # 在创建QApplication之前设置高DPI属性
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    # Qt5 对 Windows 125%/150% 这类非整数缩放默认四舍五入(1.5->2)，导致整窗
+    # 字体控件比别的机器大一圈；PassThrough 按真实比例缩放，各机器观感一致。
+    if hasattr(Qt, "HighDpiScaleFactorRoundingPolicy"):
+        QApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
 
     app = QApplication(sys.argv)
 

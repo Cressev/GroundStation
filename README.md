@@ -20,6 +20,10 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
 `fish_ui_gpu` 是启用 UIEC²-Net、U-shape Transformer 和 Ucolor 的推荐环境；`qt5` 环境仍可
 运行传统增强和其余地面站功能，但无法运行三个 CUDA 模型。
 
+高分屏自适应：启动时按 Windows 显示缩放比例真实缩放（High-DPI PassThrough 策略），
+125%/150% 缩放的机器与 100% 缩放的机器观感比例一致，修复了旧版在 150% 缩放下
+被 Qt 取整成 2 倍导致整窗字体异常偏大的问题。
+
 服务端启动方式见 `catkin_ws_in_fish/部署说明.md`（单尾鱼）与
 `pico_stereo/USAGE.md` + `gs_bridge`（双尾鱼，由代理部署在 pico 上）。
 

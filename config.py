@@ -60,6 +60,7 @@ KEYBOARD_CONTROL_DEFAULTS = {
     "fast_frequency": 4.0,
     "fast_amplitude": 0.5,
     "fast_turn_bias": 0.5,
+    "tail_phase_diff": 1.57,
 }
 
 # 传感器数据配置

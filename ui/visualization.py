@@ -150,7 +150,7 @@ class DataVisualizationWidget(QWidget):
 
         # Z-t图
         self.z_plot = pg.PlotWidget(title="深度-时间图")
-        self.z_plot.setLabel('left', 'Z位置 (m)')
+        self.z_plot.setLabel('left', '深度 (cm)')
         self.z_plot.setLabel('bottom', '时间 (s)')
         self.z_plot.showGrid(x=True, y=True)
         
@@ -538,12 +538,13 @@ class DataVisualizationWidget(QWidget):
         self.data_history['pitch'].append(fish_state.orientation['pitch'])
         self.data_history['yaw'].append(fish_state.orientation['yaw'])
 
-        # 双目鱼深度五路（无数据时补 None 断线，pyqtgraph 自动留空）
+        # 双目鱼深度五路（换算 cm；无数据时补 None 断线，pyqtgraph 自动留空）
         d = getattr(fish_state, 'depth', None) or {}
         for key, field in (('d_raw1', 'raw_1'), ('d_raw2', 'raw_2'),
                            ('d_filt1', 'filtered_1'), ('d_filt2', 'filtered_2'),
                            ('d_cal', 'calibrated')):
-            self.data_history[key].append(d.get(field))
+            v = d.get(field)
+            self.data_history[key].append(None if v is None else v * 100.0)
         
         # 更新数值标签
         self._update_value_labels(fish_state)
@@ -583,7 +584,7 @@ class DataVisualizationWidget(QWidget):
         # 更新底部状态栏（优先显示标定后深度）
         cal = list(self.data_history['d_cal'])
         if cal and cal[-1] is not None:
-            self.z_status_label.setText(f'当前深度(标定后): {cal[-1]:.3f} m')
+            self.z_status_label.setText(f'当前深度(标定后): {cal[-1]:.1f} cm')
         elif z_data:
             self.z_status_label.setText(f'当前深度: Z: {z_data[-1]:.3f} m')
 

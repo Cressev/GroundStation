@@ -200,6 +200,8 @@ class KeyboardController(ControllerBase):
         add_spin(6, "fast_turn_bias", "快转", 0.0,
                  CONTROL_LIMITS["tail_offset"]["max"],
                  0.01, " rad")
+        add_spin(7, "tail_phase_diff", "相位差", -6.282, 6.282,
+                 0.1, " rad")
 
         button_layout = QHBoxLayout()
         apply_button = QPushButton("应用参数")
@@ -208,7 +210,7 @@ class KeyboardController(ControllerBase):
         stop_button.clicked.connect(self.stop_motion)
         button_layout.addWidget(apply_button)
         button_layout.addWidget(stop_button)
-        input_layout.addLayout(button_layout, 7, 0, 1, 2)
+        input_layout.addLayout(button_layout, 8, 0, 1, 2)
 
         layout.addWidget(input_group)
         
@@ -263,7 +265,7 @@ class KeyboardController(ControllerBase):
 
     def set_keyboard_parameters(self, base_bias, slow_frequency, slow_amplitude,
                                 slow_turn_bias, fast_frequency, fast_amplitude,
-                                fast_turn_bias):
+                                fast_turn_bias, tail_phase_diff=1.57):
         """应用键盘开环控制参数，所有输入在控制器层再次限幅。"""
         # 转向量以基础偏置为中心, 单侧范围受tail_offset.max限制
         turn_max = CONTROL_LIMITS["tail_offset"]["max"]
@@ -275,6 +277,7 @@ class KeyboardController(ControllerBase):
             "fast_frequency": self._clamp_frequency(fast_frequency),
             "fast_amplitude": self._clamp_amplitude(fast_amplitude),
             "fast_turn_bias": self._clamp(fast_turn_bias, 0.0, turn_max),
+            "tail_phase_diff": self._clamp(tail_phase_diff, -6.282, 6.282),
         }
         if hasattr(self, "_param_label"):
             self._param_label.setText(self._format_parameter_summary())
@@ -291,6 +294,7 @@ class KeyboardController(ControllerBase):
             fast_frequency=self._param_inputs["fast_frequency"].value(),
             fast_amplitude=self._param_inputs["fast_amplitude"].value(),
             fast_turn_bias=self._param_inputs["fast_turn_bias"].value(),
+            tail_phase_diff=self._param_inputs["tail_phase_diff"].value(),
         )
         self._save_parameters()
         self._last_sent_command = None
@@ -381,6 +385,7 @@ class KeyboardController(ControllerBase):
         # 基于运动状态设置参数
         p = self._keyboard_params
         motion_label_text = "停止"
+        self._current_command.tail_phase_diff = p.get("tail_phase_diff", 1.57)
         
         if self._motion_state == "stop":
             self._current_command.tail_frequency = 0.0

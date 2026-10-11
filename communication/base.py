@@ -37,6 +37,7 @@ class ControlCommand:
         self.tail_frequency = freq
         self.tail_amplitude = amp
         self.tail_offset = offset
+        self.tail_phase_diff = 1.57  # 双关节相位差 rad（90°=历史默认步态）
         self.timestamp = time.time()
 
 class FishCommunicationInterface(ABC):

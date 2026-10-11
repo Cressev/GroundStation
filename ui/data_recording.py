@@ -202,10 +202,12 @@ class DataRecordingWidget(QWidget):
             [f"{now:.3f}", o.get("roll", 0.0), o.get("pitch", 0.0),
              o.get("yaw", 0.0)])
         d = getattr(fish_state, "depth", None) or {}
+        def _cm(v):
+            return None if v is None else v * 100.0
         self._depth_rows.append(
-            [f"{now:.3f}", d.get("raw_1"), d.get("filtered_1"),
-             d.get("raw_2"), d.get("filtered_2"), d.get("fused"),
-             d.get("calibrated")])
+            [f"{now:.3f}", _cm(d.get("raw_1")), _cm(d.get("filtered_1")),
+             _cm(d.get("raw_2")), _cm(d.get("filtered_2")), _cm(d.get("fused")),
+             _cm(d.get("calibrated"))])
 
     def _save_sensor_csvs(self):
         """停止记录：把缓存序列写入 <目录>/<保存时刻>.csv（每传感器一个文件）。"""
@@ -216,7 +218,8 @@ class DataRecordingWidget(QWidget):
             ("IMU", self.imu_path_input, self._imu_rows,
              ["时间戳", "roll(rad)", "pitch(rad)", "yaw(rad)"]),
             ("深度", self.depth_path_input, self._depth_rows,
-             ["时间戳", "原始1", "滤波1", "原始2", "滤波2", "融合", "标定后"]),
+             ["时间戳", "原始1(cm)", "滤波1(cm)", "原始2(cm)", "滤波2(cm)",
+              "融合(cm)", "标定后(cm)"]),
         )
         saved = []
         for kind, line_edit, rows, header in jobs:

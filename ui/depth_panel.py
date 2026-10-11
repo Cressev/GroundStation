@@ -346,19 +346,21 @@ class DepthPanel(QWidget):
                 self._calib_samples.append(float(fused))
                 self._refresh_calib_status()
             if fused is None:
-                self.depth_big_label.setText("--.-- m")
+                self.depth_big_label.setText("--.-- cm")
             else:
-                depth = float(fused) - self.zero_offset
-                self.depth_big_label.setText(f"{depth:+.2f} m")
-            self.raw_label.setText(f"原始: {info.get('raw_1', 0):.3f}")
-            self.filtered_label.setText(f"滤波: {info.get('filtered_1', 0):.3f}")
-            self.fused_label.setText(f"融合: {info.get('fused', 0):.3f}")
+                depth_cm = (float(fused) - self.zero_offset) * 100.0
+                self.depth_big_label.setText(f"{depth_cm:+.1f} cm")
+            self.raw_label.setText(f"原始: {info.get('raw_1', 0) * 100:.1f} cm")
+            self.filtered_label.setText(f"滤波: {info.get('filtered_1', 0) * 100:.1f} cm")
+            self.fused_label.setText(f"融合: {info.get('fused', 0) * 100:.1f} cm")
             if self.recording:
                 now = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
                 calibrated = (None if fused is None
-                              else float(fused) - self.zero_offset)
-                self.records.append([now, info.get("raw_1"),
-                                     info.get("filtered_1"), info.get("fused"),
+                              else (float(fused) - self.zero_offset) * 100.0)
+                self.records.append([now,
+                                     info.get('raw_1', 0) * 100,
+                                     info.get('filtered_1', 0) * 100,
+                                     info.get('fused', 0) * 100,
                                      calibrated])
         elif msg_type == "state":
             pass

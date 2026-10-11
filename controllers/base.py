@@ -76,7 +76,7 @@ class KeyboardController(ControllerBase):
         # 运动状态（保持状态而非瞬时按键）
         self._motion_state = "stop"  # stop, slow_forward, slow_left, slow_right, fast_forward, fast_left, fast_right
         
-        # 胸鳍角度控制 (1300-2000μs)
+        # 胸鳍脉宽控制 (500-2500 μs)
         self._pec_angle = CONTROL_LIMITS["pec_angle"]["default"]
         self._pec_angle_step = 10  # 每次增减10μs
         
@@ -117,7 +117,8 @@ class KeyboardController(ControllerBase):
         """创建键盘控制界面"""
         from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, 
                                      QLabel, QGroupBox, QGridLayout,
-                                     QDoubleSpinBox, QPushButton, QSizePolicy)
+                                     QDoubleSpinBox, QSpinBox, QPushButton,
+                                     QSizePolicy)
         from PyQt5.QtCore import Qt
         from PyQt5.QtGui import QFont
         
@@ -203,6 +204,24 @@ class KeyboardController(ControllerBase):
         add_spin(7, "tail_phase_diff", "相位差", -6.282, 6.282,
                  0.1, " rad")
 
+        # 胸鳍脉宽直接设定：与 Q/E 增量调节共用同一个状态。
+        input_layout.addWidget(QLabel("胸鳍脉宽"), 8, 0)
+        pec_layout = QHBoxLayout()
+        self._pec_pulse_input = QSpinBox()
+        self._pec_pulse_input.setRange(
+            int(CONTROL_LIMITS["pec_angle"]["min"]),
+            int(CONTROL_LIMITS["pec_angle"]["max"]))
+        self._pec_pulse_input.setSingleStep(10)
+        self._pec_pulse_input.setValue(int(self._pec_angle))
+        self._pec_pulse_input.setSuffix(" μs")
+        self._pec_pulse_input.setMinimumWidth(112)
+        self._pec_pulse_input.setMaximumWidth(140)
+        set_pec_button = QPushButton("设定")
+        set_pec_button.clicked.connect(self._set_pec_from_widget)
+        pec_layout.addWidget(self._pec_pulse_input)
+        pec_layout.addWidget(set_pec_button)
+        input_layout.addLayout(pec_layout, 8, 1)
+
         button_layout = QHBoxLayout()
         apply_button = QPushButton("应用参数")
         apply_button.clicked.connect(self._apply_parameters_from_widget)
@@ -210,7 +229,7 @@ class KeyboardController(ControllerBase):
         stop_button.clicked.connect(self.stop_motion)
         button_layout.addWidget(apply_button)
         button_layout.addWidget(stop_button)
-        input_layout.addLayout(button_layout, 8, 0, 1, 2)
+        input_layout.addLayout(button_layout, 9, 0, 1, 2)
 
         layout.addWidget(input_group)
         
@@ -222,7 +241,7 @@ class KeyboardController(ControllerBase):
         self._freq_label = QLabel(f"摆尾频率: {self._current_command.tail_frequency:.2f} Hz")
         self._amp_label = QLabel(f"摆尾幅度: {self._current_command.tail_amplitude:.2f} rad")
         self._offset_label = QLabel(f"偏移角度: {self._current_command.tail_offset:.2f} rad")
-        self._pec_label = QLabel(f"胸鳍角度: {self._pec_angle} μs")
+        self._pec_label = QLabel(f"胸鳍脉宽: {self._pec_angle} μs")
         self._param_label = QLabel(self._format_parameter_summary())
         self._param_label.setWordWrap(True)
         
@@ -301,6 +320,23 @@ class KeyboardController(ControllerBase):
         self._update_control()
         self.status_changed.emit("键盘控制参数已应用并保存")
 
+    def set_pec_pulse(self, pulse_width):
+        """设定胸鳍 PWM 脉宽并立即生成一条包含该值的控制命令。"""
+        minimum = int(CONTROL_LIMITS["pec_angle"]["min"])
+        maximum = int(CONTROL_LIMITS["pec_angle"]["max"])
+        self._pec_angle = max(minimum, min(int(pulse_width), maximum))
+        if hasattr(self, "_pec_pulse_input"):
+            self._pec_pulse_input.setValue(self._pec_angle)
+        if hasattr(self, "_pec_label"):
+            self._pec_label.setText(f"胸鳍脉宽: {self._pec_angle} μs")
+        self._last_sent_command = None
+        self._update_control()
+        self.status_changed.emit(f"胸鳍脉宽已设定为 {self._pec_angle} μs")
+
+    def _set_pec_from_widget(self):
+        """读取胸鳍脉宽输入框，并通过控制器现有信号链发送。"""
+        self.set_pec_pulse(self._pec_pulse_input.value())
+
     def _format_parameter_summary(self):
         p = self._keyboard_params
         return (
@@ -370,17 +406,21 @@ class KeyboardController(ControllerBase):
         if not self._active:
             return
         
-        # Q/E控制胸鳍角度（增量式，长按生效）
+        # Q/E 控制胸鳍脉宽（增量式，长按生效）。仅按键调节时才回写输入框，
+        # 避免 100 ms 控制定时器覆盖用户尚未提交的手动输入。
+        pec_adjusted_by_key = False
         if self._key_states.get(KEYBOARD_MAPPING["increase_pec"], False):  # Q键
             self._pec_angle = min(
                 self._pec_angle + self._pec_angle_step,
                 CONTROL_LIMITS["pec_angle"]["max"]
             )
+            pec_adjusted_by_key = True
         elif self._key_states.get(KEYBOARD_MAPPING["decrease_pec"], False):  # E键
             self._pec_angle = max(
                 self._pec_angle - self._pec_angle_step,
                 CONTROL_LIMITS["pec_angle"]["min"]
             )
+            pec_adjusted_by_key = True
         
         # 基于运动状态设置参数
         p = self._keyboard_params
@@ -440,7 +480,10 @@ class KeyboardController(ControllerBase):
             self._freq_label.setText(f"摆尾频率: {self._current_command.tail_frequency:.2f} Hz")
             self._amp_label.setText(f"摆尾幅度: {self._current_command.tail_amplitude:.2f} rad")
             self._offset_label.setText(f"偏移角度: {self._current_command.tail_offset:.2f} rad")
-            self._pec_label.setText(f"胸鳍角度: {self._pec_angle} μs")
+            self._pec_label.setText(f"胸鳍脉宽: {self._pec_angle} μs")
+        if (pec_adjusted_by_key and hasattr(self, '_pec_pulse_input') and
+                self._pec_pulse_input.value() != self._pec_angle):
+            self._pec_pulse_input.setValue(self._pec_angle)
         
         # 只在命令变化时发送（避免静止时持续发送）
         current_cmd_tuple = (

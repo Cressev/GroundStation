@@ -9,11 +9,16 @@ from PyQt5.QtWidgets import QApplication
 
 from controllers.base import KeyboardController
 
+_APP = None
+
 
 def ensure_app():
+    """创建并持有唯一 QApplication，避免局部引用释放导致 QWidget 测试退出。"""
+    global _APP
     app = QApplication.instance()
     if app is None:
         app = QApplication([])
+    _APP = app
     return app
 
 
@@ -46,9 +51,9 @@ def test_slow_keyboard_mapping_uses_base_bias_and_turn_bias():
         fast_turn_bias=0.11,
     )
 
-    assert_command(last_command_after_key(controller, "W"), 1.1, 0.16, 0.04)
-    assert_command(last_command_after_key(controller, "A"), 1.1, 0.16, -0.02)
-    assert_command(last_command_after_key(controller, "D"), 1.1, 0.16, 0.10)
+    assert_command(last_command_after_key(controller, "w"), 1.1, 0.16, 0.04)
+    assert_command(last_command_after_key(controller, "a"), 1.1, 0.16, -0.02)
+    assert_command(last_command_after_key(controller, "d"), 1.1, 0.16, 0.10)
     assert_command(last_command_after_key(controller, "S"), 0.0, 0.0, 0.04)
 
     controller.deactivate()
@@ -89,7 +94,7 @@ def test_keyboard_parameters_are_clamped_before_commands_are_sent():
         fast_turn_bias=0.40,
     )
 
-    assert_command(last_command_after_key(controller, "D"), 4.0, 0.5, 0.38)
+    assert_command(last_command_after_key(controller, "d"), 4.0, 0.5, 0.38)
     assert_command(last_command_after_key(controller, "Shift+A"), 4.0, 0.5, -0.22)
 
     controller.deactivate()
@@ -111,9 +116,53 @@ def test_keyboard_controller_exposes_base_bias_for_safe_disconnect_stop():
     assert round(controller.get_base_bias(), 6) == 0.07
 
 
+def test_pec_pulse_can_be_set_directly_across_full_safe_range():
+    """胸鳍直接设定应立即发命令，并把越界值限制到 500–2500 μs。"""
+    ensure_app()
+    controller = KeyboardController()
+    controller.activate()
+    controller.get_control_widget()
+    assert controller._pec_pulse_input.minimum() == 500
+    assert controller._pec_pulse_input.maximum() == 2500
+    commands = []
+    controller.control_command_generated.connect(commands.append)
+
+    controller.set_pec_pulse(500)
+    assert commands[-1].pec_angle == 500
+    controller.set_pec_pulse(2500)
+    assert commands[-1].pec_angle == 2500
+    controller.set_pec_pulse(3000)
+    assert commands[-1].pec_angle == 2500
+    controller._pec_pulse_input.setValue(1750)
+    controller._set_pec_from_widget()
+    assert commands[-1].pec_angle == 1750
+
+    controller.deactivate()
+
+
+def test_pec_pulse_manual_input_is_not_overwritten_by_control_timer():
+    """控制定时器运行时应保留输入框中尚未点击设定的新数字。"""
+    ensure_app()
+    controller = KeyboardController()
+    controller.activate()
+    controller.get_control_widget()
+
+    controller._pec_pulse_input.lineEdit().setText("1820")
+    controller._update_control()
+
+    assert controller._pec_pulse_input.value() == 1820
+    assert controller._pec_angle == 1500
+    controller._set_pec_from_widget()
+    assert controller._pec_angle == 1820
+
+    controller.deactivate()
+
+
 if __name__ == "__main__":
     test_slow_keyboard_mapping_uses_base_bias_and_turn_bias()
     test_fast_keyboard_mapping_uses_fast_frequency_amplitude_and_turn_bias()
     test_keyboard_parameters_are_clamped_before_commands_are_sent()
     test_keyboard_controller_exposes_base_bias_for_safe_disconnect_stop()
+    test_pec_pulse_can_be_set_directly_across_full_safe_range()
+    test_pec_pulse_manual_input_is_not_overwritten_by_control_timer()
     print("keyboard parameter tests passed")

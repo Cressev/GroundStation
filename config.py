@@ -45,8 +45,8 @@ CONTROL_LIMITS = {
         "default": 0.0
     },
     "pec_angle": {
-        "min": 1300,  # μs (PWM脉宽)
-        "max": 2000,  # μs
+        "min": 500,   # μs (PWM脉宽，STM32 胸鳍完整安全范围)
+        "max": 2500,  # μs
         "default": 1500
     }
 }

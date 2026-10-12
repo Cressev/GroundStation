@@ -9,7 +9,7 @@ import numpy as np
 import pyqtgraph as pg
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
                              QLabel, QGroupBox, QGridLayout, QSizePolicy,
-                             QPushButton, QCheckBox)
+                             QPushButton, QCheckBox, QSpinBox)
 from PyQt5.QtCore import QTimer, pyqtSignal, Qt
 from PyQt5.QtGui import QFont
 import time
@@ -45,7 +45,8 @@ class DataVisualizationWidget(QWidget):
         
         self.start_time = time.time()
         self.plot_enabled = True  # 绘图开关状态
-        self.sliding_time = False  # 时间轴模式：False=全局(0到最新)，True=滑动窗口(最近10秒)
+        self.sliding_time = False  # 时间轴模式：False=全局，True=滑动窗口
+        self.sliding_window_seconds = 10.0
         self.follow_latest = True  # 视图跟随最新数据；用户缩放/拖动后转自由视察
         self._init_ui()
         
@@ -123,35 +124,39 @@ class DataVisualizationWidget(QWidget):
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        # 清除按钮：清空历史数据，时间归零从头开始
-        clear_row = QHBoxLayout()
-        clear_btn = QPushButton("清除曲线（从头开始）")
-        clear_btn.clicked.connect(self.clear_data)
-        clear_row.addWidget(clear_btn)
-        clear_row.addStretch()
-        layout.addLayout(clear_row)
-
-        # 时间轴模式：全局（0 到最新） / 滑动窗口（最近10秒），互斥
-        # 重置画布：用户缩放/拖动过曲线后，一键恢复自适应窗口
+        # 时间轴模式、窗口大小、清除和重置放在同一行。
         mode_row = QHBoxLayout()
-        self.global_time_cb = QCheckBox("全局时间序列（0 到最新）")
+        self.global_time_cb = QCheckBox("全局时间序列")
         self.global_time_cb.setChecked(True)
-        self.sliding_time_cb = QCheckBox("滑动窗口（最近10秒）")
+        self.sliding_time_cb = QCheckBox("滑动窗口")
         self.global_time_cb.toggled.connect(self._on_time_mode_toggled)
         self.sliding_time_cb.toggled.connect(self._on_time_mode_toggled)
+        self.sliding_window_input = QSpinBox()
+        self.sliding_window_input.setRange(1, 3600)
+        self.sliding_window_input.setValue(int(self.sliding_window_seconds))
+        self.sliding_window_input.setSuffix(" 秒")
+        self.sliding_window_input.setEnabled(False)
+        self.sliding_window_input.setKeyboardTracking(False)
+        self.sliding_window_input.valueChanged.connect(
+            self._on_sliding_window_changed)
+        clear_btn = QPushButton("清除曲线")
+        clear_btn.clicked.connect(self.clear_data)
         reset_view_btn = QPushButton("重置画布")
         reset_view_btn.setToolTip("取消缩放/拖动，恢复自适应窗口")
         reset_view_btn.clicked.connect(self._reset_time_series_view)
         mode_row.addWidget(self.global_time_cb)
         mode_row.addWidget(self.sliding_time_cb)
+        mode_row.addWidget(QLabel("窗口大小"))
+        mode_row.addWidget(self.sliding_window_input)
+        mode_row.addWidget(clear_btn)
         mode_row.addWidget(reset_view_btn)
         mode_row.addStretch()
         layout.addLayout(mode_row)
 
         # Z-t图
         self.z_plot = pg.PlotWidget(title="深度-时间图")
-        self.z_plot.setLabel('left', '深度 (cm)')
-        self.z_plot.setLabel('bottom', '时间 (s)')
+        self.z_plot.setLabel('left', '深度')
+        self.z_plot.setLabel('bottom', '时间')
         self.z_plot.showGrid(x=True, y=True)
         
         # 添加图例（在创建曲线之前）
@@ -177,8 +182,8 @@ class DataVisualizationWidget(QWidget):
         
         # RPY-t图
         self.rpy_plot = pg.PlotWidget(title="姿态角-时间图")
-        self.rpy_plot.setLabel('left', '角度 (rad)')
-        self.rpy_plot.setLabel('bottom', '时间 (s)')
+        self.rpy_plot.setLabel('left', '角度')
+        self.rpy_plot.setLabel('bottom', '时间')
         self.rpy_plot.showGrid(x=True, y=True)
         
         # 添加图例（在创建曲线之前）
@@ -567,7 +572,7 @@ class DataVisualizationWidget(QWidget):
             # 更新底部状态栏
             self.xy_status_label.setText(f'当前位置: X: {x_data[-1]:.3f} m, Y: {y_data[-1]:.3f} m')
         
-        # 更新Z-t图（按时间轴模式：全局 / 最近10秒滑动窗口）
+        # 更新 Z-t 图（按时间轴模式：全局 / 用户设定的滑动窗口）
         t_min = self._time_window_min(times)
         z_data = list(self.data_history['z'])
         z_pts = [(t, v) for t, v in zip(times, z_data) if t >= t_min]
@@ -584,7 +589,7 @@ class DataVisualizationWidget(QWidget):
         # 更新底部状态栏（优先显示标定后深度）
         cal = list(self.data_history['d_cal'])
         if cal and cal[-1] is not None:
-            self.z_status_label.setText(f'当前深度(标定后): {cal[-1]:.1f} cm')
+            self.z_status_label.setText(f'标定后深度: {cal[-1]:.1f} cm')
         elif z_data:
             self.z_status_label.setText(f'当前深度: Z: {z_data[-1]:.3f} m')
 
@@ -609,7 +614,8 @@ class DataVisualizationWidget(QWidget):
         if self.follow_latest and times:
             t_max = times[-1]
             if getattr(self, "sliding_time", False):
-                x0, x1 = max(0.0, t_max - 10.0), t_max + 0.05
+                x0 = max(0.0, t_max - self.sliding_window_seconds)
+                x1 = t_max + 0.05
             else:
                 x0, x1 = 0.0, max(t_max + 0.5, 5.0)
             for plot in (self.z_plot, self.rpy_plot):
@@ -715,7 +721,15 @@ class DataVisualizationWidget(QWidget):
                 cb.setChecked(True)
                 cb.blockSignals(False)
             self.sliding_time = (cb is self.sliding_time_cb)
+        self.sliding_window_input.setEnabled(self.sliding_time)
         self._update_plots()
+
+    def _on_sliding_window_changed(self, value):
+        """应用用户填写的滑动窗口秒数，并让视图重新跟随最新数据。"""
+        self.sliding_window_seconds = float(value)
+        if self.sliding_time:
+            self.follow_latest = True
+            self._update_plots()
 
     def _on_manual_view_change(self, *args):
         """用户缩放/拖动曲线（pyqtgraph 手动改范围信号）：停止跟随最新数据。"""
@@ -733,11 +747,11 @@ class DataVisualizationWidget(QWidget):
             plot.autoRange()
 
     def _time_window_min(self, times):
-        """滑动窗口模式返回最近10秒的时间下限；全局模式返回最早时间。"""
+        """滑动窗口模式返回用户设定的时间下限；全局模式返回最早时间。"""
         if not times:
             return 0.0
         if getattr(self, "sliding_time", False):
-            return max(0.0, times[-1] - 10.0)
+            return max(0.0, times[-1] - self.sliding_window_seconds)
         return times[0]
 
     def clear_data(self):

@@ -1,4 +1,4 @@
-# 机器鱼控制系统配置文件
+"""机器鱼地面站的网络、控制、视频与界面默认配置。"""
 
 # 网络配置
 FISH_IP = "192.168.137.215"  # 机器鱼IP地址
@@ -64,9 +64,11 @@ KEYBOARD_CONTROL_DEFAULTS = {
 }
 
 # 地面站深度闭环默认参数。深度单位为 cm，脉宽单位为 μs。
-# direction=-1 表示目标更深时减小胸鳍脉宽；首次下水验证前保留窄限幅。
+# 深度以水面为 0，水下为负数；direction=+1 使“目标更负”时减小胸鳍脉宽。
+# 首次闭环验证前保留窄限幅。
 DEPTH_CONTROL_DEFAULTS = {
-    "target_depth": 15.0,
+    "coordinate_convention": "negative_down_v1",
+    "target_depth": -15.0,
     "kp": 20.0,
     "ki": 0.0,
     "kd": 0.0,
@@ -75,7 +77,7 @@ DEPTH_CONTROL_DEFAULTS = {
     "minimum_pwm": 1300,
     "maximum_pwm": 1700,
     "sensor_timeout": 0.5,
-    "direction": -1,
+    "direction": 1,
 }
 
 # 传感器数据配置

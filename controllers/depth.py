@@ -95,6 +95,7 @@ class DepthController(KeyboardController):
     def _load_depth_parameters(self):
         """加载已保存参数；文件缺失或损坏时使用安全默认值。"""
         params = dict(DEPTH_CONTROL_DEFAULTS)
+        saved = {}
         try:
             saved = json.loads(self._params_path.read_text(encoding="utf-8"))
             for key in params:
@@ -102,6 +103,11 @@ class DepthController(KeyboardController):
                     params[key] = saved[key]
         except (OSError, ValueError, TypeError):
             pass
+        convention = DEPTH_CONTROL_DEFAULTS["coordinate_convention"]
+        if saved.get("coordinate_convention") != convention:
+            params["coordinate_convention"] = convention
+            params["target_depth"] = DEPTH_CONTROL_DEFAULTS["target_depth"]
+            params["direction"] = DEPTH_CONTROL_DEFAULTS["direction"]
         numeric_ranges = {
             "target_depth": (-500.0, 500.0),
             "kp": (0.0, 1000.0),
@@ -170,8 +176,8 @@ class DepthController(KeyboardController):
         self._maximum_pwm_input = self._integer_spin(500, 2500, 10, " μs")
         self._sensor_timeout_input = self._double_spin(0.2, 5.0, 0.1, 1, " s")
         self._direction_input = QComboBox()
-        self._direction_input.addItem("下潜时减小脉宽", -1)
-        self._direction_input.addItem("下潜时增大脉宽", 1)
+        self._direction_input.addItem("深度更负时减小脉宽", 1)
+        self._direction_input.addItem("深度更负时增大脉宽", -1)
 
         form.addRow("目标深度", self._target_depth_input)
         form.addRow("Kp", self._kp_input)
@@ -264,6 +270,7 @@ class DepthController(KeyboardController):
             self._set_pid_status("参数错误：需满足最小脉宽 ≤ 中位 ≤ 最大脉宽")
             return False
         self._depth_params = {
+            "coordinate_convention": DEPTH_CONTROL_DEFAULTS["coordinate_convention"],
             "target_depth": self._target_depth_input.value(),
             "kp": self._kp_input.value(),
             "ki": self._ki_input.value(),

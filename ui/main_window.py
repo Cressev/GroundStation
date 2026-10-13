@@ -15,8 +15,8 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QGroupBox, QGridLayout, QLabel, QPushButton,
                              QComboBox, QMessageBox, QSplitter, QTextEdit,
                              QLineEdit, QScrollArea, QApplication, QCheckBox,
-                             QSizePolicy)
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
+                             QSizePolicy, QActionGroup)
+from PyQt5.QtCore import Qt, QSettings, QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QFont, QKeySequence, QIcon
 
 from ui.visualization import DataVisualizationWidget
@@ -39,7 +39,7 @@ class MainWindow(QMainWindow):
     """主窗口类"""
     
     # 定义信号用于线程安全的UI更新
-    connection_changed_signal = pyqtSignal(bool)  # 连接状态变化信号
+    connection_changed_signal = pyqtSignal(object, bool)  # 携带连接实例，可忽略旧线程的迟到信号
     heartbeat_pulse_signal = pyqtSignal(int)      # 心跳拍信号（心跳线程→UI呼吸灯）
     
     def __init__(self, variant="single"):
@@ -53,15 +53,20 @@ class MainWindow(QMainWindow):
 
         # 初始化组件
         self.communication = None
+        self._fish_connection_state = "disconnected"
+        self._control_armed = False
         self.current_controller = None
+        self._current_controller_name = None
         self.controllers = {}
         self._last_control_command = None  # 最后的控制命令，用于数据记录
         self.connection_start_time = None  # 连接开始时间
+        self._settings = QSettings("FishRobot", "GroundStation")
         
         # 初始化界面
         self._init_ui()
         self._init_controllers()
         self._init_connections()
+        self._apply_main_ui_state()
         
         # 设置焦点策略以接收键盘事件
         self.setFocusPolicy(Qt.StrongFocus)
@@ -125,12 +130,12 @@ class MainWindow(QMainWindow):
         main_layout = QHBoxLayout(central_widget)
         
         # 创建分割器
-        main_splitter = QSplitter(Qt.Horizontal)
-        main_layout.addWidget(main_splitter)
+        self.main_splitter = QSplitter(Qt.Horizontal)
+        main_layout.addWidget(self.main_splitter)
         
         # 左侧控制面板
         control_panel = self._create_control_panel()
-        main_splitter.addWidget(control_panel)
+        self.main_splitter.addWidget(control_panel)
         
         # 中央区域 - 包含数据可视化和视频显示
         center_widget = QWidget()
@@ -165,7 +170,7 @@ class MainWindow(QMainWindow):
             center_tabs.addTab(self.video_widget, "视频监控")
         
         center_layout.addWidget(center_tabs)
-        main_splitter.addWidget(center_widget)
+        self.main_splitter.addWidget(center_widget)
         
         # 右侧面板 - 包含按键状态和数据记录控制
         right_panel = QWidget()
@@ -193,13 +198,14 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(right_tabs)
         # 拖窄时内容自适应面板宽度，而不是被 sizeHint 顶住
         right_tabs.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        main_splitter.addWidget(right_panel)
+        self.main_splitter.addWidget(right_panel)
 
         # 设置分割器比例 (控制面板:中央区域:右侧栏 = 2:8:2)
-        main_splitter.setSizes([220, 900, 200])
-        main_splitter.setStretchFactor(0, 0)
-        main_splitter.setStretchFactor(1, 1)
-        main_splitter.setStretchFactor(2, 0)
+        self.main_splitter.setSizes([360, 760, 280])
+        self.main_splitter.setStretchFactor(0, 0)
+        self.main_splitter.setStretchFactor(1, 1)
+        self.main_splitter.setStretchFactor(2, 0)
+        QTimer.singleShot(0, self._restore_splitter_sizes)
         
     def _create_menu_bar(self):
         """创建菜单栏"""
@@ -220,51 +226,76 @@ class MainWindow(QMainWindow):
         self.connect_action.triggered.connect(self._toggle_connection)
         connection_menu.addAction(self.connect_action)
         
-        # 视频菜单（dual 变体无摄像头启停，只有视频流连接开关）
+        self.video_actions = {}
+        # 视频菜单
         video_menu = menubar.addMenu('视频(&V)')
 
         if self.variant == "dual":
             start_video_action = QAction('连接视频流(&S)', self)
             start_video_action.triggered.connect(
-                lambda: self.video_widget._toggle_connection())
+                lambda: self.video_widget.connect_stream())
             video_menu.addAction(start_video_action)
+            self.video_actions["connect"] = start_video_action
 
             stop_video_action = QAction('断开视频流(&T)', self)
             stop_video_action.triggered.connect(
                 lambda: self.video_widget._disconnect())
             video_menu.addAction(stop_video_action)
+            self.video_actions["disconnect"] = stop_video_action
+
+            camera_action = QAction('开启摄像头', self)
+            camera_action.triggered.connect(
+                lambda: self.video_widget._toggle_camera())
+            video_menu.addAction(camera_action)
+            self.video_actions["camera_toggle"] = camera_action
         else:
             start_video_action = QAction('启动摄像头(&S)', self)
-            start_video_action.triggered.connect(lambda: self.video_widget._start_camera())
+            start_video_action.triggered.connect(self._start_legacy_camera)
             video_menu.addAction(start_video_action)
 
             stop_video_action = QAction('停止摄像头(&T)', self)
-            stop_video_action.triggered.connect(lambda: self.video_widget._stop_camera())
+            stop_video_action.triggered.connect(self._stop_legacy_camera)
             video_menu.addAction(stop_video_action)
         
         video_menu.addSeparator()
         
         # 视频记录
         start_video_record_action = QAction('开始录制(&R)', self)
-        start_video_record_action.triggered.connect(lambda: self.video_widget._start_recording())
+        start_video_record_action.triggered.connect(self._start_video_recording)
         video_menu.addAction(start_video_record_action)
+        self.video_actions["record_start"] = start_video_record_action
         
         stop_video_record_action = QAction('停止录制(&E)', self)
-        stop_video_record_action.triggered.connect(lambda: self.video_widget._stop_recording())
+        stop_video_record_action.triggered.connect(self._stop_video_recording)
         video_menu.addAction(stop_video_record_action)
+        self.video_actions["record_stop"] = stop_video_record_action
         
         video_menu.addSeparator()
         
         snapshot_action = QAction('保存快照(&P)', self)
         snapshot_action.triggered.connect(self._save_video_snapshot)
         video_menu.addAction(snapshot_action)
+        self.video_actions["snapshot"] = snapshot_action
         
         # 控制菜单
         control_menu = menubar.addMenu('控制(&O)')
         
-        keyboard_action = QAction('键盘控制(&K)', self)
-        keyboard_action.triggered.connect(lambda: self._switch_controller('keyboard'))
+        self.controller_action_group = QActionGroup(self)
+        self.controller_action_group.setExclusive(True)
+        self.controller_actions = {}
+        keyboard_action = QAction('键盘控制(&K)', self, checkable=True)
+        keyboard_action.triggered.connect(
+            lambda checked: checked and self._request_controller("keyboard"))
+        self.controller_action_group.addAction(keyboard_action)
+        self.controller_actions["keyboard"] = keyboard_action
         control_menu.addAction(keyboard_action)
+        if self.variant == "dual":
+            depth_action = QAction('深度控制', self, checkable=True)
+            depth_action.triggered.connect(
+                lambda checked: checked and self._request_controller("depth"))
+            self.controller_action_group.addAction(depth_action)
+            self.controller_actions["depth"] = depth_action
+            control_menu.addAction(depth_action)
         
         # 数据菜单
         data_menu = menubar.addMenu('数据(&D)')
@@ -395,8 +426,6 @@ class MainWindow(QMainWindow):
         self.controller_combo.addItem("键盘控制", "keyboard")
         if self.variant == "dual":
             self.controller_combo.addItem("深度控制", "depth")
-        self.controller_combo.addItem("Xbox控制器", "xbox")  # 预留
-        self.controller_combo.addItem("自主控制", "autonomous")  # 预留
         self.controller_combo.currentIndexChanged.connect(self._on_controller_changed)
         
         control_layout.addWidget(QLabel("选择控制方式:"))
@@ -464,27 +493,40 @@ class MainWindow(QMainWindow):
         
         # 连接状态变化信号（线程安全）
         self.connection_changed_signal.connect(self._handle_connection_changed, Qt.QueuedConnection)
+        if self.variant == "dual":
+            self.video_widget.state_changed.connect(self._sync_video_actions)
+            self.video_widget.set_fish_connection_available(False)
+            self.depth_panel.set_parent_connection_available(False)
+        self._sync_video_actions()
     
     def _switch_controller(self, controller_name: str):
-        """切换控制器"""
+        """在未启用控制时切换控制器；重复选择保持幂等。"""
         if controller_name not in self.controllers:
             self._log_message(f"未知控制器: {controller_name}")
-            return
-            
+            self._sync_controller_selection()
+            return False
+        if self._control_armed:
+            self._log_message("控制已启用，请先关闭控制再切换控制方式")
+            self._sync_controller_selection()
+            return False
+        if controller_name == self._current_controller_name:
+            self._sync_controller_selection()
+            return True
+
         # 停用当前控制器
-        if self.current_controller:
+        if self.current_controller and self.current_controller.active:
             self.current_controller.deactivate()
             
         # 切换到新控制器
         self.current_controller = self.controllers[controller_name]
+        self._current_controller_name = controller_name
         
         # 更新控制器界面
         self._update_controller_widget()
         
-        # 激活新控制器
-        self.current_controller.activate()
-        
+        self._sync_controller_selection()
         self._log_message(f"已切换到{controller_name}控制器")
+        return True
     
     def _update_controller_widget(self):
         """更新控制器界面"""
@@ -500,7 +542,25 @@ class MainWindow(QMainWindow):
     def _on_controller_changed(self, index):
         """控制器选择改变事件"""
         controller_name = self.controller_combo.itemData(index)
-        self._switch_controller(controller_name)
+        self._request_controller(controller_name)
+
+    def _request_controller(self, controller_name):
+        """统一处理下拉框与菜单发起的控制器选择。"""
+        return self._switch_controller(controller_name)
+
+    def _sync_controller_selection(self):
+        """使下拉框、菜单和真实控制器永远指向同一项。"""
+        if not self._current_controller_name:
+            return
+        index = self.controller_combo.findData(self._current_controller_name)
+        if index >= 0 and self.controller_combo.currentIndex() != index:
+            self.controller_combo.blockSignals(True)
+            self.controller_combo.setCurrentIndex(index)
+            self.controller_combo.blockSignals(False)
+        for name, action in self.controller_actions.items():
+            action.blockSignals(True)
+            action.setChecked(name == self._current_controller_name)
+            action.blockSignals(False)
     
     def _refresh_saved_combo(self):
         """用连接档案刷新下拉框（首项为占位提示）。"""
@@ -553,15 +613,167 @@ class MainWindow(QMainWindow):
         self._refresh_saved_combo()
         self._log_message("已删除连接档案")
 
+    def _restore_splitter_sizes(self):
+        """恢复当前鱼体变体的侧栏宽度，无记录时使用宽松默认值。"""
+        total = max(self.main_splitter.width(), self.width() - 30, 900)
+        default_left, default_right = 360, 280
+        raw = self._settings.value(f"layout/main_splitter/{self.variant}")
+        saved = []
+        if isinstance(raw, (list, tuple)):
+            saved = raw
+        elif isinstance(raw, str):
+            saved = raw.split(",")
+        try:
+            left = int(saved[0]) if len(saved) == 3 else default_left
+            right = int(saved[2]) if len(saved) == 3 else default_right
+        except (TypeError, ValueError):
+            left, right = default_left, default_right
+        left = max(320, min(left, max(320, total - 640)))
+        right = max(220, min(right, max(220, total - left - 420)))
+        center = max(420, total - left - right)
+        self.main_splitter.setSizes([left, center, right])
+
+    def _save_splitter_sizes(self):
+        """分变体保存主分割器宽度。"""
+        sizes = self.main_splitter.sizes()
+        if len(sizes) == 3:
+            self._settings.setValue(
+                f"layout/main_splitter/{self.variant}",
+                ",".join(str(int(value)) for value in sizes))
+
+    def _sync_video_actions(self):
+        """使视频菜单与双目页面的真实状态保持一致。"""
+        if not getattr(self, "video_actions", None):
+            return
+        if self.variant != "dual" or not hasattr(self, "video_widget"):
+            return
+        states = self.video_widget.get_action_states()
+        for name, action in self.video_actions.items():
+            action.setEnabled(bool(states.get(name, False)))
+        camera_action = self.video_actions.get("camera_toggle")
+        if camera_action is not None:
+            camera_action.setText(states.get("camera_text", "开启摄像头"))
+
+    def _active_legacy_video_widget(self):
+        """返回单尾鱼视频页当前标签的实际组件。"""
+        tabs = getattr(self.video_widget, "tabs", None)
+        return tabs.currentWidget() if tabs is not None else self.video_widget
+
+    def _start_legacy_camera(self):
+        """安全转发单尾鱼当前视频页的启动操作。"""
+        widget = self._active_legacy_video_widget()
+        if hasattr(widget, "_start_camera"):
+            widget._start_camera()
+        elif hasattr(widget, "_toggle_connection"):
+            widget._toggle_connection()
+
+    def _stop_legacy_camera(self):
+        """安全转发单尾鱼当前视频页的停止操作。"""
+        widget = self._active_legacy_video_widget()
+        if hasattr(widget, "_stop_camera"):
+            widget._stop_camera()
+        elif hasattr(widget, "_disconnect"):
+            widget._disconnect()
+
+    def _start_video_recording(self):
+        """按鱼体变体启动录制，不调用不存在的组件方法。"""
+        widget = self.video_widget if self.variant == "dual" \
+            else self._active_legacy_video_widget()
+        if self.variant == "dual" and not widget.recording:
+            widget._toggle_recording()
+        elif hasattr(widget, "_start_recording"):
+            widget._start_recording()
+        elif hasattr(widget, "_toggle_recording"):
+            widget._toggle_recording()
+
+    def _stop_video_recording(self):
+        """按鱼体变体停止录制，重复操作保持幂等。"""
+        widget = self.video_widget if self.variant == "dual" \
+            else self._active_legacy_video_widget()
+        if self.variant == "dual":
+            if widget.recording:
+                widget._stop_recording()
+        elif hasattr(widget, "_stop_recording"):
+            widget._stop_recording()
+
+    def _apply_main_ui_state(self):
+        """根据主连接与总控制状态集中刷新主界面可操作性。"""
+        state = self._fish_connection_state
+        connected = state == "connected"
+        idle = state == "disconnected"
+        busy = state in ("connecting", "disconnecting")
+
+        self.connection_button.setEnabled(not busy)
+        self.connection_button.setText(
+            "断开" if connected else
+            "连接中..." if state == "connecting" else
+            "断开中..." if state == "disconnecting" else "连接")
+        self.connect_action.setEnabled(not busy)
+        self.connect_action.setText(
+            "断开连接(&D)" if connected else "连接机器鱼(&C)")
+        for widget in (self.ip_input, self.port_input):
+            widget.setEnabled(idle)
+        for widget in (self.saved_combo, self.remark_input,
+                       getattr(self, "save_conn_button", None),
+                       getattr(self, "del_conn_button", None)):
+            if widget is not None:
+                widget.setEnabled(idle)
+
+        self.enable_control_checkbox.setEnabled(connected)
+        self.controller_combo.setEnabled(not self._control_armed)
+        for action in self.controller_actions.values():
+            action.setEnabled(not self._control_armed)
+        self._sync_controller_selection()
+        self._sync_video_actions()
+
+    def _set_control_checkbox(self, checked):
+        """不触发回调地同步总控制复选框。"""
+        self.enable_control_checkbox.blockSignals(True)
+        self.enable_control_checkbox.setChecked(bool(checked))
+        self.enable_control_checkbox.blockSignals(False)
+
+    def _set_control_armed(self, armed, send_stop=True):
+        """幂等地启用/停用当前控制器，停用前优先发安全停止帧。"""
+        armed = bool(armed)
+        if armed == self._control_armed:
+            self._set_control_checkbox(armed)
+            self._apply_main_ui_state()
+            return True
+        if armed and self._fish_connection_state != "connected":
+            self._set_control_checkbox(False)
+            self._log_message("未连接机器鱼，不能启用控制")
+            self._apply_main_ui_state()
+            return False
+        if armed:
+            self._control_armed = True
+            self.current_controller.activate()
+            if isinstance(self.current_controller, KeyboardController):
+                self.current_controller.stop_motion()
+            self._set_control_checkbox(True)
+        else:
+            if send_stop:
+                self._send_stop_command()
+            # 先撤销主窗口发送权，再让控制器清理内部状态。
+            # 深度控制器关 PID 时会产生回中命令，此顺序可防止
+            # 回中命令携带旧的尾鳍运动状态再次发出。
+            self._control_armed = False
+            if self.current_controller and self.current_controller.active:
+                self.current_controller.deactivate()
+            self._set_control_checkbox(False)
+        self._apply_main_ui_state()
+        return True
+
     def _toggle_connection(self):
         """切换连接状态"""
-        if self.communication is None or not self.communication.connected:
+        if self._fish_connection_state == "disconnected":
             self._connect_to_fish()
-        else:
+        elif self._fish_connection_state == "connected":
             self._disconnect_from_fish()
     
     def _connect_to_fish(self):
         """连接到机器鱼"""
+        if self._fish_connection_state != "disconnected":
+            return
         try:
             # 获取用户输入的IP地址和端口
             ip_address = self.ip_input.text().strip()
@@ -575,102 +787,95 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "输入错误", "请输入有效的端口号")
                 return
             
-            self.communication = SocketCommunication(ip_address=ip_address, port=port)
+            self._fish_connection_state = "connecting"
+            self._apply_main_ui_state()
+            self.status_bar.showMessage("正在连接机器鱼...")
+
+            communication = SocketCommunication(
+                ip_address=ip_address, port=port)
+            self.communication = communication
 
             # 设置数据回调，实时更新UI
-            self.communication.set_data_callback(self._on_sensor_data_received)
-            self.communication.set_connection_callback(self._on_connection_changed)
-            self.communication.set_state_callback(self._on_board_state)
+            communication.set_data_callback(self._on_sensor_data_received)
+            communication.set_connection_callback(
+                lambda connected, source=communication:
+                self._on_connection_changed(source, connected))
+            communication.set_state_callback(self._on_board_state)
             # 心跳呼吸灯：心跳线程真实发出一拍 → 信号排队回 UI 线程点亮
-            self.communication.set_heartbeat_callback(
+            communication.set_heartbeat_callback(
                 self.heartbeat_pulse_signal.emit)
-            
-            self.connection_button.setEnabled(False)
-            self.ip_input.setEnabled(False)
-            self.port_input.setEnabled(False)
-            self.connection_button.setText("连接中...")
-            self.status_bar.showMessage("正在连接机器鱼...")
-            
-            if self.communication.connect():
-                self.connection_status_label.setText("已连接")
-                self.connection_button.setText("断开")
-                self.connection_button.setEnabled(True)
-                self.connect_action.setText("断开连接(&D)")
-                self.status_bar.showMessage(f"机器鱼连接成功 ({ip_address}:{port})")
-
-                # 双尾鱼：主连接成功后自动连接视频流（9998），一键全连
-                if self.variant == "dual" and hasattr(self.video_widget, "_toggle_connection"):
-                    if not self.video_widget.stream_client.running:
-                        self.video_widget._toggle_connection()
-
-                # 双尾鱼：深度面板跟随本次连接的 IP 并自动连上深度数据流
-                if self.variant == "dual" and hasattr(self, "depth_panel"):
-                    self.depth_panel.set_host(ip_address)
-                    if not self.depth_panel.client.running:
-                        self.depth_panel._toggle_connection()
-                
-                # Socket通信不需要定时器轮询，数据通过回调实时更新
-                # 但保留定时器用于UI刷新和数据记录
-                self.data_timer.start(50)  # 20Hz
-                self.telemetry_timer.start()  # 1Hz 刷新底栏遥测显示
-                
-                # 记录连接开始时间
-                self.connection_start_time = time.time()
-                
-                self._log_message(f"机器鱼连接成功 (Socket: {ip_address}:{port})")
-                
-                # 设置焦点以确保键盘事件能够被接收
-                self.setFocus()
+            if communication.connect():
+                self._finish_fish_connection(ip_address, port)
             else:
+                communication.set_connection_callback(None)
+                communication.disconnect()
+                if self.communication is communication:
+                    self.communication = None
+                self._fish_connection_state = "disconnected"
                 self.connection_status_label.setText("连接失败")
-                self.connection_button.setText("连接")
-                self.connection_button.setEnabled(True)
-                self.ip_input.setEnabled(True)
-                self.port_input.setEnabled(True)
                 self.status_bar.showMessage("机器鱼连接失败")
                 self._log_message(f"机器鱼连接失败 ({ip_address}:{port})")
-                
+                self._apply_main_ui_state()
         except Exception as e:
-            self.connection_button.setEnabled(True)
-            self.connection_button.setText("连接")
-            self.ip_input.setEnabled(True)
-            self.port_input.setEnabled(True)
+            self._fish_connection_state = "disconnected"
+            self.communication = None
+            self._apply_main_ui_state()
             self._log_message(f"连接异常: {e}")
             QMessageBox.critical(self, "连接错误", f"连接失败: {e}")
+
+    def _finish_fish_connection(self, ip_address, port):
+        """幂等地完成主连接，再放行从属视频和深度连接。"""
+        if self._fish_connection_state == "connected":
+            return
+        self._fish_connection_state = "connected"
+        self.connection_status_label.setText("已连接")
+        self.status_bar.showMessage(f"机器鱼连接成功 ({ip_address}:{port})")
+        if self.variant == "dual":
+            self.video_widget.set_fish_connection_available(True)
+            self.video_widget.connect_stream()
+            self.depth_panel.set_parent_connection_available(
+                True, host=ip_address, auto_connect=True)
+        self.data_timer.start(50)
+        self.telemetry_timer.start()
+        self.connection_start_time = time.time()
+        self._apply_main_ui_state()
+        self._log_message(f"机器鱼连接成功 (Socket: {ip_address}:{port})")
+        self.setFocus()
     
     def _disconnect_from_fish(self):
         """断开机器鱼连接"""
+        if self._fish_connection_state not in ("connecting", "connected"):
+            return
         try:
+            was_armed = self._control_armed
+            self._set_control_armed(False, send_stop=True)
+            if not was_armed:
+                # 即使当前未启用控制，主动断链前仍发送一次安全停止帧。
+                self._send_stop_command()
+            self._fish_connection_state = "disconnecting"
+            self._apply_main_ui_state()
             # 停止数据定时器
             self.data_timer.stop()
             self.telemetry_timer.stop()
             self.telemetry_label.setText("控制板: --")
             
-            # 断开前发送停止命令，确保机器鱼停止运动
-            self._send_stop_command()
-            time.sleep(0.2)  # 等待命令发送
-            
             # 双尾鱼：同步断开视频流与深度面板
             if self.variant == "dual":
-                if hasattr(self.video_widget, "stream_client"):
-                    if self.video_widget.stream_client.running:
-                        self.video_widget._disconnect()
-                if hasattr(self, "depth_panel") and self.depth_panel.client.running:
-                    self.depth_panel._disconnect()
-            
-            if self.communication:
-                self.communication.disconnect()
-            self.communication = None
+                self.video_widget.set_fish_connection_available(False)
+                self.depth_panel.set_parent_connection_available(False)
+
+            communication = self.communication
+            if communication:
+                communication.disconnect()
+            if self.communication is communication:
+                self.communication = None
+            self._fish_connection_state = "disconnected"
             # 清除连接时间
             self.connection_start_time = None
                 
             self.connection_status_label.setText("未连接")
-            self.connection_button.setText("连接")
-            self.ip_input.setEnabled(True)
-            self.port_input.setEnabled(True)
-            self.connect_action.setText("连接机器鱼(&C)")
             self.status_bar.showMessage("已断开连接")
-            
+            self._apply_main_ui_state()
             self._log_message("已断开机器鱼连接")
             
         except Exception as e:
@@ -756,26 +961,34 @@ class MainWindow(QMainWindow):
         self.telemetry_label.setText(
             f"控制板  CPU {cpu_txt} | {temp_txt} | 内存 {mem_txt} | 大核 {freq_txt}")
     
-    def _on_connection_changed(self, connected: bool):
+    def _on_connection_changed(self, source, connected: bool):
         """连接状态变化回调（在socket工作线程中调用）"""
         # 只发射信号，不直接操作UI
-        self.connection_changed_signal.emit(connected)
+        self.connection_changed_signal.emit(source, connected)
     
-    @pyqtSlot(bool)
-    def _handle_connection_changed(self, connected: bool):
+    @pyqtSlot(object, bool)
+    def _handle_connection_changed(self, source, connected: bool):
         """处理连接状态变化（在主线程中执行）"""
         try:
+            if source is not self.communication:
+                return
             self.heartbeat_light.set_connected(connected)  # 呼吸灯随连接状态亮/灰
-            if not connected:
+            if connected:
+                self._finish_fish_connection(source.fish_ip, source.port)
+            else:
                 # 连接断开，重置UI状态
+                self.communication = None
+                self._set_control_armed(False, send_stop=False)
+                self._fish_connection_state = "disconnected"
                 self.data_timer.stop()
+                self.telemetry_timer.stop()
                 self.connection_start_time = None
+                if self.variant == "dual":
+                    self.video_widget.set_fish_connection_available(False)
+                    self.depth_panel.set_parent_connection_available(False)
                 self.connection_status_label.setText("连接断开")
-                self.connection_button.setText("连接")
-                self.connection_button.setEnabled(True)
-                self.ip_input.setEnabled(True)
-                self.port_input.setEnabled(True)
                 self.status_bar.showMessage("连接已断开")
+                self._apply_main_ui_state()
                 self._log_message("机器鱼连接已断开")
         except Exception as e:
             print(f"处理连接状态变化异常: {e}")
@@ -797,21 +1010,23 @@ class MainWindow(QMainWindow):
 
     def _on_enable_control_toggled(self, checked: bool):
         """启用控制开关切换"""
-        if checked:
-            self._log_message("控制已启用，键盘控制生效")
+        if not self._set_control_armed(checked, send_stop=True):
+            return
+        if self._control_armed:
+            self._log_message(
+                f"控制已启用，{self._current_controller_name}控制器生效")
             self.status_bar.showMessage("控制已启用")
         else:
             self._log_message("控制已禁用")
             self.status_bar.showMessage("控制已禁用")
-            # 取消勾选时立即发送停止命令，防止机器鱼继续运动
-            self._send_stop_command()
 
     def _on_control_command(self, command: ControlCommand):
         """处理控制命令"""
         # 安全开关：未勾选"启用控制"时不发送任何控制命令
-        if not self.enable_control_checkbox.isChecked():
+        if not self._control_armed:
             return
-        if self.communication and self.communication.connected:
+        if (self._fish_connection_state == "connected" and
+                self.communication and self.communication.connected):
             try:
                 # 添加胸鳍角度到命令
                 if hasattr(self.current_controller, '_pec_angle'):
@@ -855,7 +1070,10 @@ class MainWindow(QMainWindow):
     def _save_video_snapshot(self):
         """保存视频快照"""
         try:
-            filename = self.video_widget.save_snapshot()
+            widget = self.video_widget if self.variant == "dual" \
+                else self._active_legacy_video_widget()
+            filename = widget.save_snapshot() \
+                if hasattr(widget, "save_snapshot") else None
             if filename:
                 self._log_message(f"视频快照已保存: {filename}")
                 QMessageBox.information(self, "快照保存", f"快照已保存到: {filename}")
@@ -904,7 +1122,8 @@ class MainWindow(QMainWindow):
 
     def keyPressEvent(self, event):
         """键盘按下事件"""
-        if isinstance(self.current_controller, KeyboardController):
+        if (self._control_armed and
+                isinstance(self.current_controller, KeyboardController)):
             key_text = self._normalize_key(event)
 
             if key_text:
@@ -919,7 +1138,8 @@ class MainWindow(QMainWindow):
 
     def keyReleaseEvent(self, event):
         """键盘释放事件"""
-        if isinstance(self.current_controller, KeyboardController):
+        if (self._control_armed and
+                isinstance(self.current_controller, KeyboardController)):
             key_text = self._normalize_key(event)
 
             if key_text:
@@ -932,8 +1152,10 @@ class MainWindow(QMainWindow):
     
     def closeEvent(self, event):
         """窗口关闭事件"""
+        self._save_splitter_sizes()
+        self._set_control_armed(False, send_stop=True)
         # 停用控制器
-        if self.current_controller:
+        if self.current_controller and self.current_controller.active:
             self.current_controller.deactivate()
 
         # 停止图像增强页的 Mock 与后台增强线程
@@ -941,8 +1163,8 @@ class MainWindow(QMainWindow):
             self.enhancement_widget.shutdown()
 
         # 断开连接
-        if self.communication and self.communication.connected:
-            self.communication.disconnect()
+        if self._fish_connection_state in ("connecting", "connected"):
+            self._disconnect_from_fish()
         
         # VideoMonitorWidget没有_stop_camera方法，不需要调用
             

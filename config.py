@@ -109,7 +109,9 @@ KEYBOARD_MAPPING = {
 # 数据更新频率 (Hz)
 DATA_UPDATE_RATE = 50
 PLOT_UPDATE_RATE = 10
-PLOT_HISTORY_LENGTH = 500
+
+# 双目测距当前保持关闭：纯显示模式已验证，测距待后续单独恢复。
+STEREO_RANGING_UI_ENABLED = False
 
 # UI配置
 UI_CONFIG = {

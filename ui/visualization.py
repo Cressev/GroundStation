@@ -9,38 +9,40 @@ import numpy as np
 import pyqtgraph as pg
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
                              QLabel, QGroupBox, QGridLayout, QSizePolicy,
-                             QPushButton, QCheckBox, QSpinBox)
+                             QPushButton, QRadioButton, QButtonGroup, QSpinBox)
 from PyQt5.QtCore import QTimer, pyqtSignal, Qt
 from PyQt5.QtGui import QFont
 import time
-from collections import deque
 
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from communication.base import FishState
-from config import PLOT_UPDATE_RATE, PLOT_HISTORY_LENGTH, UI_CONFIG
+from config import PLOT_UPDATE_RATE, UI_CONFIG
 
 class DataVisualizationWidget(QWidget):
     """数据可视化主组件"""
     
     def __init__(self):
+        """初始化完整历史缓存、绘图组件和刷新定时器。"""
         super().__init__()
         self.data_history = {
-            'time': deque(maxlen=PLOT_HISTORY_LENGTH),
-            'x': deque(maxlen=PLOT_HISTORY_LENGTH),
-            'y': deque(maxlen=PLOT_HISTORY_LENGTH),
-            'z': deque(maxlen=PLOT_HISTORY_LENGTH),
-            'roll': deque(maxlen=PLOT_HISTORY_LENGTH),
-            'pitch': deque(maxlen=PLOT_HISTORY_LENGTH),
-            'yaw': deque(maxlen=PLOT_HISTORY_LENGTH),
+            # 全局模式必须保留从上次清除到现在的完整时域。
+            # 滑动窗口只筛选显示范围，不得截断底层历史。
+            'time': [],
+            'x': [],
+            'y': [],
+            'z': [],
+            'roll': [],
+            'pitch': [],
+            'yaw': [],
             # 双目鱼深度五路序列（米；d_cal 为扣零点后的标定值）
-            'd_raw1': deque(maxlen=PLOT_HISTORY_LENGTH),
-            'd_raw2': deque(maxlen=PLOT_HISTORY_LENGTH),
-            'd_filt1': deque(maxlen=PLOT_HISTORY_LENGTH),
-            'd_filt2': deque(maxlen=PLOT_HISTORY_LENGTH),
-            'd_cal': deque(maxlen=PLOT_HISTORY_LENGTH),
+            'd_raw1': [],
+            'd_raw2': [],
+            'd_filt1': [],
+            'd_filt2': [],
+            'd_cal': [],
         }
         
         self.start_time = time.time()
@@ -126,9 +128,13 @@ class DataVisualizationWidget(QWidget):
 
         # 时间轴模式、窗口大小、清除和重置放在同一行。
         mode_row = QHBoxLayout()
-        self.global_time_cb = QCheckBox("全局时间序列")
+        self.global_time_cb = QRadioButton("全局时间序列")
         self.global_time_cb.setChecked(True)
-        self.sliding_time_cb = QCheckBox("滑动窗口")
+        self.sliding_time_cb = QRadioButton("滑动窗口")
+        self.time_mode_group = QButtonGroup(self)
+        self.time_mode_group.setExclusive(True)
+        self.time_mode_group.addButton(self.global_time_cb)
+        self.time_mode_group.addButton(self.sliding_time_cb)
         self.global_time_cb.toggled.connect(self._on_time_mode_toggled)
         self.sliding_time_cb.toggled.connect(self._on_time_mode_toggled)
         self.sliding_window_input = QSpinBox()
@@ -172,8 +178,6 @@ class DataVisualizationWidget(QWidget):
             'd_filt2': self.z_plot.plot(pen=pg.mkPen(color='#2ca02c', width=2), name='滤波2'),
             'd_cal': self.z_plot.plot(pen=pg.mkPen(color='#d62728', width=2), name='标定后'),
         }
-        
-        layout.addWidget(self.z_plot)
         
         # 底部状态栏显示当前深度
         self.z_status_label = QLabel("当前深度: Z: 0.000 m")
@@ -704,24 +708,12 @@ class DataVisualizationWidget(QWidget):
             print(f"姿态更新异常: {e}")
     
     def _on_time_mode_toggled(self, checked):
-        """时间轴模式切换：全局 / 滑动窗口两个勾选框互斥，且不允许同时取消。"""
-        cb = self.sender()
-        other = self.sliding_time_cb if cb is self.global_time_cb \
-            else self.global_time_cb
-        if checked:
-            self.sliding_time = (cb is self.sliding_time_cb)
-            if other.isChecked():
-                other.blockSignals(True)
-                other.setChecked(False)
-                other.blockSignals(False)
-        else:
-            # 不允许两个都不选：把被取消的重新勾上
-            if not other.isChecked():
-                cb.blockSignals(True)
-                cb.setChecked(True)
-                cb.blockSignals(False)
-            self.sliding_time = (cb is self.sliding_time_cb)
+        """切换全局/滑动模式，并让视图立即回到所选模式。"""
+        if not checked:
+            return
+        self.sliding_time = (self.sender() is self.sliding_time_cb)
         self.sliding_window_input.setEnabled(self.sliding_time)
+        self.follow_latest = True
         self._update_plots()
 
     def _on_sliding_window_changed(self, value):

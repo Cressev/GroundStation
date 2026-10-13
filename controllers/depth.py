@@ -156,6 +156,7 @@ class DepthController(KeyboardController):
         pid_layout = QVBoxLayout(pid_group)
         switch_layout = QHBoxLayout()
         self._pid_enable_checkbox = QCheckBox("启用深度 PID")
+        self._pid_enable_checkbox.setEnabled(self._active)
         self._parameter_unlock_checkbox = QCheckBox("解锁参数调节")
         self._pid_enable_checkbox.toggled.connect(self.set_pid_enabled)
         self._parameter_unlock_checkbox.toggled.connect(
@@ -308,6 +309,13 @@ class DepthController(KeyboardController):
         if self._active:
             self._update_control()
 
+    def activate(self):
+        """激活深度控制器，但不自动打开 PID 闭环。"""
+        result = super().activate()
+        if hasattr(self, "_pid_enable_checkbox"):
+            self._pid_enable_checkbox.setEnabled(bool(result))
+        return result
+
     def update_depth(self, depth_cm, sample_id=None):
         """接收一帧标定后融合深度；重复 sample_id 不重复推进 PID。"""
         try:
@@ -400,4 +408,7 @@ class DepthController(KeyboardController):
         """切走深度控制器时关闭 PID，并在停用前生成回中命令。"""
         if self._pid_enabled:
             self.set_pid_enabled(False)
-        return super().deactivate()
+        result = super().deactivate()
+        if hasattr(self, "_pid_enable_checkbox"):
+            self._pid_enable_checkbox.setEnabled(False)
+        return result

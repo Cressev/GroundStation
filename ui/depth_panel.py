@@ -50,17 +50,31 @@ class DepthTcpClient(QThread):
         self.host = host
         self.port = port
         self.running = False
+        self.connected = False
         self.socket = None
+        self._stop_requested = False
+
+    def prepare_start(self):
+        """清除上一次停止标记，为新的连接尝试做准备。"""
+        self._stop_requested = False
 
     def run(self):
         """接收主循环：按行切分 JSON 并发射信号。"""
+        if self._stop_requested:
+            self.connection_status.emit(False, "连接已取消")
+            return
         self.running = True
+        disconnect_message = "连接已断开"
         try:
             self.socket = socket.create_connection((self.host, self.port), timeout=5)
+            if self._stop_requested:
+                disconnect_message = "连接已取消"
+                return
             self.socket.settimeout(1.0)
+            self.connected = True
             self.connection_status.emit(True, f"已连接 {self.host}:{self.port}")
             buf = b""
-            while self.running:
+            while self.running and not self._stop_requested:
                 try:
                     data = self.socket.recv(65536)
                 except socket.timeout:
@@ -79,14 +93,21 @@ class DepthTcpClient(QThread):
                         except ValueError:
                             pass
         except OSError as exc:
-            self.connection_status.emit(False, f"连接失败: {exc}")
+            disconnect_message = f"连接失败: {exc}"
         finally:
             if self.socket:
-                self.socket.close()
-            self.connection_status.emit(False, "连接已断开")
+                try:
+                    self.socket.close()
+                except OSError:
+                    pass
+            self.socket = None
+            self.connected = False
+            self.running = False
+            self.connection_status.emit(False, disconnect_message)
 
     def stop(self):
         """停止接收线程。"""
+        self._stop_requested = True
         self.running = False
         if self.socket:
             try:
@@ -103,6 +124,8 @@ class DepthPanel(QWidget):
         super().__init__(parent)
         self.host = host
         self.client = DepthTcpClient(host)
+        self._parent_connection_available = False
+        self._connection_state = "locked"
         self.recording = False
         self.records = []
         self._zero_meta = {}
@@ -111,6 +134,7 @@ class DepthPanel(QWidget):
         self._calib_samples = []
         self._init_ui()
         self._init_connections()
+        self._apply_ui_state()
         # 侧栏窄面板：说明文字允许换行，避免压缩时被裁断
         for lbl in (self.conn_status_label, self.calib_status_label,
                     self.record_status_label):
@@ -118,11 +142,54 @@ class DepthPanel(QWidget):
 
     def set_host(self, host):
         """切换数据源地址（断开当前连接，下次连接生效）。"""
-        if self.client.running:
+        if self._connection_state in ("connecting", "connected"):
             self._disconnect()
         self.host = host
         self.client.host = host
         self.conn_status_label.setText("状态: 未连接")
+
+    def set_parent_connection_available(self, available, host=None,
+                                        auto_connect=False):
+        """设置主控连接门闩，并可在连通后自动连接深度流。"""
+        if host:
+            self.set_host(host)
+        self._parent_connection_available = bool(available)
+        if not available:
+            self._disconnect(prompt_for_recording=False)
+            self._connection_state = "locked"
+        elif self._connection_state == "locked":
+            self._connection_state = "disconnected"
+        self._apply_ui_state()
+        if available and auto_connect:
+            self.connect_stream()
+
+    def _apply_ui_state(self):
+        """根据主连接与深度流状态集中刷新所有控件。"""
+        connected = self._connection_state == "connected"
+        self.connect_btn.setEnabled(
+            self._parent_connection_available and
+            self._connection_state in ("disconnected", "error"))
+        self.disconnect_btn.setEnabled(
+            self._connection_state in ("connecting", "connected"))
+        self.record_btn.setEnabled(connected)
+        self.calib_btn.setEnabled(connected and not self._calibrating)
+        self.record_btn.setText("停止记录" if self.recording else "开始记录")
+
+    def connect_stream(self):
+        """连接深度数据流，重复调用保持幂等。"""
+        if (not self._parent_connection_available or
+                self._connection_state not in ("disconnected", "error")):
+            return False
+        if self.client.isRunning():
+            self._connection_state = "disconnecting"
+            self._apply_ui_state()
+            return False
+        self._connection_state = "connecting"
+        self.conn_status_label.setText("状态: 连接中…")
+        self._apply_ui_state()
+        self.client.prepare_start()
+        self.client.start()
+        return True
 
     def _init_ui(self):
         """构建界面：连接控制 + 实时数值 + 记录控制。"""
@@ -193,52 +260,55 @@ class DepthPanel(QWidget):
 
     def _toggle_connection(self):
         """连接/断开深度数据流。"""
-        if self.client.running:
-            self.client.stop()
-            self.client.wait()
-            self._calibrating = False
-            self.calib_btn.setEnabled(True)
-            self.connect_btn.setEnabled(True)
-            self.disconnect_btn.setEnabled(False)
-            self.record_btn.setEnabled(False)
-            self._refresh_calib_status()
+        if self._connection_state in ("connecting", "connected"):
+            self._disconnect()
         else:
-            self.client.start()
-            self.connect_btn.setEnabled(False)
-            self.disconnect_btn.setEnabled(True)
-            self.record_btn.setEnabled(True)
+            self.connect_stream()
 
-    def _disconnect(self):
+    def _disconnect(self, prompt_for_recording=True):
         """断开深度数据流。"""
+        if self.recording:
+            self._stop_recording(prompt_for_path=prompt_for_recording)
+        if self._connection_state in ("locked", "disconnected"):
+            self._apply_ui_state()
+            return False
+        self._connection_state = "disconnecting"
+        self._apply_ui_state()
         self.client.stop()
-        self.client.wait()
+        if self.client.isRunning():
+            self.client.wait(2000)
         self._calibrating = False
-        self.calib_btn.setEnabled(True)
-        self.connect_btn.setEnabled(True)
-        self.disconnect_btn.setEnabled(False)
-        self.record_btn.setEnabled(False)
+        if self.client.isRunning():
+            self._connection_state = "disconnecting"
+        else:
+            self._connection_state = (
+                "disconnected" if self._parent_connection_available else "locked")
         self._refresh_calib_status()
+        self._apply_ui_state()
+        return True
 
     def _toggle_recording(self):
         """开始/停止 CSV 记录。停止后弹出保存对话框。"""
-        if not self.client.running:
+        if self._connection_state != "connected":
             return
         if not self.recording:
             self.records = []
             self.recording = True
-            self.record_btn.setText("停止记录")
             self.record_status_label.setText("记录状态: 记录中…")
+            self._apply_ui_state()
         else:
             self._stop_recording()
 
-    def _stop_recording(self):
+    def _stop_recording(self, prompt_for_path=True):
         """停止 CSV 记录并弹出保存对话框。"""
         self.recording = False
-        self.record_btn.setText("开始记录")
+        self._apply_ui_state()
         rows = getattr(self, "records", [])
         default_name = f"depth_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "保存深度记录", default_name, "CSV 数据 (*.csv)")
+        path = ""
+        if prompt_for_path:
+            path, _ = QFileDialog.getSaveFileName(
+                self, "保存深度记录", default_name, "CSV 数据 (*.csv)")
         if not path:
             path = os.path.join("records", default_name)
         if not path.lower().endswith(".csv"):
@@ -250,8 +320,9 @@ class DepthPanel(QWidget):
                              f"标定后深度(m) 零点={self.zero_offset:.4f}"])
             writer.writerows(rows)
         self.record_status_label.setText(f"记录状态: 已保存 {os.path.basename(path)}")
-        QMessageBox.information(self, "深度记录已保存",
-                                f"共 {len(rows)} 条记录\n已保存到:\n{path}")
+        if prompt_for_path:
+            QMessageBox.information(self, "深度记录已保存",
+                                    f"共 {len(rows)} 条记录\n已保存到:\n{path}")
 
     # ---------- 深度零点标定 ----------
 
@@ -289,13 +360,13 @@ class DepthPanel(QWidget):
         """开始 10 秒零点采集：期间在 _on_line 里累积融合值样本。"""
         if self._calibrating:
             return
-        if not self.client.running:
+        if self._connection_state != "connected":
             QMessageBox.warning(self, "无法标定", "请先连接深度数据源")
             return
         self._calibrating = True
         self._calib_samples = []
-        self.calib_btn.setEnabled(False)
         self._refresh_calib_status()
+        self._apply_ui_state()
         QTimer.singleShot(int(CALIB_DURATION_S * 1000), self._finish_calibration)
 
     def _finish_calibration(self):
@@ -303,11 +374,11 @@ class DepthPanel(QWidget):
         if not self._calibrating:
             return
         self._calibrating = False
-        self.calib_btn.setEnabled(True)
         samples = self._calib_samples
         if len(samples) < CALIB_MIN_SAMPLES:
             self._calib_samples = []
             self._refresh_calib_status()
+            self._apply_ui_state()
             QMessageBox.warning(
                 self, "标定失败",
                 f"10 秒内仅采集到 {len(samples)} 个样本（需 ≥{CALIB_MIN_SAMPLES}），"
@@ -320,6 +391,7 @@ class DepthPanel(QWidget):
                            "timestamp": datetime.datetime.now().strftime(
                                "%Y-%m-%d %H:%M:%S")}
         self._refresh_calib_status()
+        self._apply_ui_state()
         QMessageBox.information(
             self, "标定完成",
             f"10 秒均值 {self.zero_offset:+.4f} m 已设为深度 0 点\n"
@@ -328,7 +400,6 @@ class DepthPanel(QWidget):
     def _clear_calibration(self):
         """清除零点：显示回到原始值，并删除持久化文件。"""
         self._calibrating = False
-        self.calib_btn.setEnabled(True)
         self.zero_offset = 0.0
         self._zero_meta = {}
         try:
@@ -336,6 +407,7 @@ class DepthPanel(QWidget):
         except OSError:
             pass
         self._refresh_calib_status()
+        self._apply_ui_state()
 
     def _on_line(self, info):
         """处理一行 JSON（深度/状态），含标定采样与零点扣减显示。"""
@@ -365,12 +437,18 @@ class DepthPanel(QWidget):
 
     def _on_connection_status(self, connected, message):
         """更新连接状态标签（只显示状态本身，不附带原因）。"""
+        if connected and not self._parent_connection_available:
+            self.client.stop()
+            return
+        self._connection_state = (
+            "connected" if connected else
+            "locked" if not self._parent_connection_available else
+            "error" if message.startswith("连接失败") else "disconnected")
         self.conn_status_label.setText(
             f"状态: {'已连接' if connected else '未连接'}")
+        self._apply_ui_state()
 
     def closeEvent(self, event):
         """组件销毁时停止数据接收线程。"""
-        if self.client.running:
-            self.client.stop()
-            self.client.wait()
+        self.set_parent_connection_available(False)
         event.accept()

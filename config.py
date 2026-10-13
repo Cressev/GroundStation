@@ -64,11 +64,12 @@ KEYBOARD_CONTROL_DEFAULTS = {
 }
 
 # 地面站深度闭环默认参数。深度单位为 cm，脉宽单位为 μs。
-# 深度以水面为 0，水下为负数；direction=+1 使“目标更负”时减小胸鳍脉宽。
+# 深度以水面为 0，水下为正数且越深越大；误差=目标-当前。
+# 胸鳍脉宽减小会下潜，因此正增益配 direction=-1。
 # 首次闭环验证前保留窄限幅。
 DEPTH_CONTROL_DEFAULTS = {
-    "coordinate_convention": "negative_down_v1",
-    "target_depth": -15.0,
+    "coordinate_convention": "positive_down_v2",
+    "target_depth": 15.0,
     "kp": 20.0,
     "ki": 0.0,
     "kd": 0.0,
@@ -77,7 +78,7 @@ DEPTH_CONTROL_DEFAULTS = {
     "minimum_pwm": 1300,
     "maximum_pwm": 1700,
     "sensor_timeout": 0.5,
-    "direction": 1,
+    "direction": -1,
 }
 
 # 传感器数据配置

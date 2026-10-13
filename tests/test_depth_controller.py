@@ -90,7 +90,7 @@ def test_pid_math_exposes_all_three_terms():
 
 
 def test_parameter_lock_and_middle_position_controls():
-    """参数锁关闭时全部置灰，解锁后中位和安全边界均可调。"""
+    """参数锁关闭时全部置灰，解锁后负增益、中位和边界均可调。"""
     ensure_app()
     clock = FakeClock()
     with tempfile.TemporaryDirectory() as directory:
@@ -98,36 +98,51 @@ def test_parameter_lock_and_middle_position_controls():
         assert all(not widget.isEnabled()
                    for widget in controller._pid_parameter_widgets)
         assert not controller._apply_pid_button.isEnabled()
+        assert controller._target_depth_input.minimum() == 0.0
+        assert controller._direction_input.currentData() == -1
+        assert controller._direction_input.currentText() == "目标更深时减小脉宽"
 
         unlock_and_set(
             controller,
+            kp=-2.5,
+            ki=-0.125,
+            kd=-0.75,
             neutral_pwm=1520,
             minimum_pwm=1320,
             maximum_pwm=1680,
             sensor_timeout=0.8)
         assert controller._depth_params["neutral_pwm"] == 1520
+        assert controller._depth_params["kp"] == -2.5
+        assert controller._depth_params["ki"] == -0.125
+        assert controller._depth_params["kd"] == -0.75
+        assert controller._kp_input.minimum() == -1000.0
         assert controller._depth_params["minimum_pwm"] == 1320
         assert controller._depth_params["maximum_pwm"] == 1680
         assert controller._depth_params["sensor_timeout"] == 0.8
-        assert (Path(directory) / "depth_pid_params.json").exists()
+        saved = json.loads(
+            (Path(directory) / "depth_pid_params.json").read_text(
+                encoding="utf-8"))
+        assert saved["coordinate_convention"] == "positive_down_v2"
+        assert saved["kp"] == -2.5
         controller.deactivate()
 
 
-def test_legacy_positive_depth_parameters_migrate_to_negative_down_defaults():
-    """旧坐标系参数必须重置目标和方向，其他整定值保留。"""
+def test_legacy_negative_down_parameters_migrate_to_positive_down_defaults():
+    """旧负向坐标参数必须重置目标和方向，其他整定值保留。"""
     ensure_app()
     clock = FakeClock()
     with tempfile.TemporaryDirectory() as directory:
         params_path = Path(directory) / "depth_pid_params.json"
         params_path.write_text(json.dumps({
-            "target_depth": 15.0,
+            "coordinate_convention": "negative_down_v1",
+            "target_depth": -15.0,
             "kp": 7.0,
-            "direction": -1,
+            "direction": 1,
         }), encoding="utf-8")
         controller = make_controller(clock, directory)
-        assert controller._depth_params["coordinate_convention"] == "negative_down_v1"
-        assert controller._depth_params["target_depth"] == -15.0
-        assert controller._depth_params["direction"] == 1
+        assert controller._depth_params["coordinate_convention"] == "positive_down_v2"
+        assert controller._depth_params["target_depth"] == 15.0
+        assert controller._depth_params["direction"] == -1
         assert controller._depth_params["kp"] == 7.0
         controller.deactivate()
 
@@ -140,18 +155,18 @@ def test_depth_pid_and_keyboard_motion_work_together():
         controller = make_controller(clock, directory)
         unlock_and_set(
             controller,
-            target_depth=-20.0,
+            target_depth=20.0,
             kp=20.0,
             ki=0.0,
             kd=0.0,
             neutral_pwm=1500,
             minimum_pwm=1300,
             maximum_pwm=1700,
-            direction=1)
+            direction=-1)
         commands = []
         controller.control_command_generated.connect(commands.append)
         controller.set_pid_enabled(True)
-        controller.update_depth(-10.0, sample_id=1)
+        controller.update_depth(10.0, sample_id=1)
         controller.handle_key_press("w")
         controller._update_control()
 
@@ -159,7 +174,7 @@ def test_depth_pid_and_keyboard_motion_work_together():
         assert command.pec_angle == 1300
         assert command.tail_frequency == controller._keyboard_params["slow_frequency"]
         assert command.tail_amplitude == controller._keyboard_params["slow_amplitude"]
-        assert controller._pid_terms == (-200.0, 0.0, 0.0)
+        assert controller._pid_terms == (200.0, 0.0, 0.0)
         controller.deactivate()
 
 
@@ -171,14 +186,14 @@ def test_pid_output_direction_can_be_reversed():
         controller = make_controller(clock, directory)
         unlock_and_set(
             controller,
-            target_depth=-20.0,
+            target_depth=20.0,
             kp=10.0,
             neutral_pwm=1500,
             minimum_pwm=1200,
             maximum_pwm=1800,
-            direction=-1)
+            direction=1)
         controller.set_pid_enabled(True)
-        controller.update_depth(-10.0, sample_id=1)
+        controller.update_depth(10.0, sample_id=1)
         controller._update_control()
         assert controller._pec_angle == 1600
         controller.deactivate()
@@ -192,15 +207,15 @@ def test_sensor_timeout_returns_pectoral_to_middle():
         controller = make_controller(clock, directory)
         unlock_and_set(
             controller,
-            target_depth=-20.0,
+            target_depth=20.0,
             kp=10.0,
             neutral_pwm=1500,
             minimum_pwm=1300,
             maximum_pwm=1700,
             sensor_timeout=0.5,
-            direction=1)
+            direction=-1)
         controller.set_pid_enabled(True)
-        controller.update_depth(-10.0, sample_id=1)
+        controller.update_depth(10.0, sample_id=1)
         controller._update_control()
         assert controller._pec_angle == 1400
 

@@ -109,10 +109,10 @@ class DepthController(KeyboardController):
             params["target_depth"] = DEPTH_CONTROL_DEFAULTS["target_depth"]
             params["direction"] = DEPTH_CONTROL_DEFAULTS["direction"]
         numeric_ranges = {
-            "target_depth": (-500.0, 500.0),
-            "kp": (0.0, 1000.0),
-            "ki": (0.0, 1000.0),
-            "kd": (0.0, 1000.0),
+            "target_depth": (0.0, 500.0),
+            "kp": (-1000.0, 1000.0),
+            "ki": (-1000.0, 1000.0),
+            "kd": (-1000.0, 1000.0),
             "integral_limit": (0.0, 10000.0),
             "neutral_pwm": (500.0, 2500.0),
             "minimum_pwm": (500.0, 2500.0),
@@ -166,10 +166,14 @@ class DepthController(KeyboardController):
         pid_layout.addLayout(switch_layout)
 
         form = QFormLayout()
-        self._target_depth_input = self._double_spin(-500.0, 500.0, 0.5, 1, " cm")
-        self._kp_input = self._double_spin(0.0, 1000.0, 1.0, 2, "")
-        self._ki_input = self._double_spin(0.0, 1000.0, 0.1, 3, "")
-        self._kd_input = self._double_spin(0.0, 1000.0, 0.1, 3, "")
+        self._target_depth_input = self._double_spin(0.0, 500.0, 0.5, 1, " cm")
+        self._kp_input = self._double_spin(-1000.0, 1000.0, 1.0, 2, "")
+        self._ki_input = self._double_spin(-1000.0, 1000.0, 0.1, 3, "")
+        self._kd_input = self._double_spin(-1000.0, 1000.0, 0.1, 3, "")
+        gain_tooltip = (
+            "允许输入负数。通常保持 Kp/Ki/Kd 为正，使用“输出方向”选择控制极性。")
+        for gain_input in (self._kp_input, self._ki_input, self._kd_input):
+            gain_input.setToolTip(gain_tooltip)
         self._integral_limit_input = self._double_spin(
             0.0, 10000.0, 10.0, 1, " cm·s")
         self._neutral_pwm_input = self._integer_spin(500, 2500, 10, " μs")
@@ -177,8 +181,8 @@ class DepthController(KeyboardController):
         self._maximum_pwm_input = self._integer_spin(500, 2500, 10, " μs")
         self._sensor_timeout_input = self._double_spin(0.2, 5.0, 0.1, 1, " s")
         self._direction_input = QComboBox()
-        self._direction_input.addItem("深度更负时减小脉宽", 1)
-        self._direction_input.addItem("深度更负时增大脉宽", -1)
+        self._direction_input.addItem("目标更深时减小脉宽", -1)
+        self._direction_input.addItem("目标更深时增大脉宽", 1)
 
         form.addRow("目标深度", self._target_depth_input)
         form.addRow("Kp", self._kp_input)

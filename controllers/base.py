@@ -400,27 +400,31 @@ class KeyboardController(ControllerBase):
     def handle_key_release(self, key: str):
         """处理按键释放"""
         self._key_states[key] = False
-    
-    def _update_control(self):
-        """更新控制命令"""
-        if not self._active:
-            return
-        
-        # Q/E 控制胸鳍脉宽（增量式，长按生效）。仅按键调节时才回写输入框，
-        # 避免 100 ms 控制定时器覆盖用户尚未提交的手动输入。
-        pec_adjusted_by_key = False
+
+    def _update_pectoral_control(self) -> bool:
+        """按 Q/E 更新胸鳍脉宽，返回本周期是否需要同步输入框。"""
         if self._key_states.get(KEYBOARD_MAPPING["increase_pec"], False):  # Q键
             self._pec_angle = min(
                 self._pec_angle + self._pec_angle_step,
                 CONTROL_LIMITS["pec_angle"]["max"]
             )
-            pec_adjusted_by_key = True
-        elif self._key_states.get(KEYBOARD_MAPPING["decrease_pec"], False):  # E键
+            return True
+        if self._key_states.get(KEYBOARD_MAPPING["decrease_pec"], False):  # E键
             self._pec_angle = max(
                 self._pec_angle - self._pec_angle_step,
                 CONTROL_LIMITS["pec_angle"]["min"]
             )
-            pec_adjusted_by_key = True
+            return True
+        return False
+
+    def _update_control(self):
+        """更新控制命令"""
+        if not self._active:
+            return
+
+        # Q/E 控制胸鳍脉宽（增量式，长按生效）。仅按键调节时才回写输入框，
+        # 避免 100 ms 控制定时器覆盖用户尚未提交的手动输入。
+        pec_adjusted_by_key = self._update_pectoral_control()
         
         # 基于运动状态设置参数
         p = self._keyboard_params

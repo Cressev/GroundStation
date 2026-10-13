@@ -29,6 +29,7 @@ from ui.depth_panel import DepthPanel
 from ui.connection_store import ConnectionStore
 from ui.heartbeat_light import HeartbeatLight
 from controllers.base import KeyboardController
+from controllers.depth import DepthController
 from communication.socket_client import SocketCommunication
 from communication.base import FishState, ControlCommand
 from config import (UI_CONFIG, KEYBOARD_MAPPING, FISH_IP, SOCKET_PORT,
@@ -392,6 +393,8 @@ class MainWindow(QMainWindow):
         
         self.controller_combo = QComboBox()
         self.controller_combo.addItem("键盘控制", "keyboard")
+        if self.variant == "dual":
+            self.controller_combo.addItem("深度控制", "depth")
         self.controller_combo.addItem("Xbox控制器", "xbox")  # 预留
         self.controller_combo.addItem("自主控制", "autonomous")  # 预留
         self.controller_combo.currentIndexChanged.connect(self._on_controller_changed)
@@ -440,6 +443,8 @@ class MainWindow(QMainWindow):
         """初始化控制器"""
         # 键盘控制器
         self.controllers['keyboard'] = KeyboardController()
+        if self.variant == "dual":
+            self.controllers['depth'] = DepthController()
         
         # 默认选择键盘控制器
         self._switch_controller('keyboard')
@@ -703,6 +708,11 @@ class MainWindow(QMainWindow):
                             if hasattr(self, "depth_panel") else 0.0
                         fish_state.depth["calibrated"] = \
                             fish_state.depth["fused"] - zero
+                        depth_controller = self.controllers.get("depth")
+                        if depth_controller is not None:
+                            depth_controller.update_depth(
+                                fish_state.depth["calibrated"],
+                                fish_state.timestamp)
                     self.visualization_widget.update_data(fish_state)
                     # 分传感器 CSV（IMU/深度）：记录进行中时随帧追加
                     self.data_recording_widget.add_sensor_points(fish_state)

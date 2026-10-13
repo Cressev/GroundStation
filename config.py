@@ -63,6 +63,21 @@ KEYBOARD_CONTROL_DEFAULTS = {
     "tail_phase_diff": 1.57,
 }
 
+# 地面站深度闭环默认参数。深度单位为 cm，脉宽单位为 μs。
+# direction=-1 表示目标更深时减小胸鳍脉宽；首次下水验证前保留窄限幅。
+DEPTH_CONTROL_DEFAULTS = {
+    "target_depth": 15.0,
+    "kp": 20.0,
+    "ki": 0.0,
+    "kd": 0.0,
+    "integral_limit": 1000.0,
+    "neutral_pwm": 1500,
+    "minimum_pwm": 1300,
+    "maximum_pwm": 1700,
+    "sensor_timeout": 0.5,
+    "direction": -1,
+}
+
 # 传感器数据配置
 SENSOR_CONFIG = {
     "position": {"x": 0.0, "y": 0.0, "z": 0.0},

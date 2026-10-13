@@ -28,11 +28,11 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
 | 文件 | 说明 |
 |---|---|
 | `main.py` | 入口：高 DPI 设置 → 版本选择对话框 → 按变体构造 MainWindow |
-| `config.py` | 全局配置：单尾鱼 IP/端口、`DUAL_FISH_CONFIG`（pico IP + 9999/9998 端口）、控制限幅（胸鳍 PWM 500–2500 μs）、键位映射、键盘默认参数 `KEYBOARD_CONTROL_DEFAULTS`（含相位差 1.57）、UI/视频/记录参数 |
+| `config.py` | 全局配置：单尾鱼 IP/端口、`DUAL_FISH_CONFIG`（pico IP + 9999/9998 端口）、控制限幅（胸鳍 PWM 500–2500 μs）、键位映射、键盘默认参数 `KEYBOARD_CONTROL_DEFAULTS`（含相位差 1.57）、深度闭环安全默认参数 `DEPTH_CONTROL_DEFAULTS`、UI/视频/记录参数 |
 | `ui/fish_variant_dialog.py` | **新增** 启动版本选择对话框（dual/single 卡片式选择） |
 | `ui/connection_store.py` | **新增** 连接档案持久化（本地 connections.json 记录 备注+IP+端口，双尾鱼页面下拉直选） |
 | `ui/heartbeat_light.py` | **新增** 心跳呼吸灯（状态栏左下角）：脉冲只由真实心跳发送事件驱动——通信层每成功发出一拍 ping 经 Qt 信号点亮、两拍间自然衰减，停发即沉暗，不做装饰性空闪；悬停显示累计拍数与最后时刻；断链转灰 |
-| `ui/main_window.py` | 主窗口：按 `variant` 加载视频页（dual=双目测距组件 / single=原视频监控）、图像增强对比页（仅 dual）与深度页（仅 dual）、连接默认值、菜单、键盘事件分发、安全启用开关；主连接成功后自动连视频流并同步深度面板数据源 IP；底栏常驻控制板遥测标签（CPU/温度/内存/频率，1Hz 刷新） |
+| `ui/main_window.py` | 主窗口：按 `variant` 加载视频页（dual=双目测距组件 / single=原视频监控）、图像增强对比页（仅 dual）与深度页（仅 dual）、连接默认值、菜单、键盘事件分发、安全启用开关；双尾鱼控制下拉菜单提供键盘控制和深度控制，主连接收到的标定后融合深度送入深度控制器；主连接成功后自动连视频流并同步深度面板数据源 IP；底栏常驻控制板遥测标签（CPU/温度/内存/频率，1Hz 刷新） |
 | `ui/stereo_camera_widget.py` | **新增** 双尾鱼视频+测距组件：`StereoVideoClient`（TCP 9998 客户端，协议兼容老版）+ `StereoFishCameraWidget`；纯显示快通路接收 2560x720 原始双目总图，在电脑端将每目 1280x720 顺时针转正、上下拼接成 720x2560，并做 Gamma 2.0 提亮，减轻 pico 负载；RANGE_ON/OFF 保留完整测距链和点击测点；另含相机开关、GET_STATE 状态同步和本地 MP4 保存 |
 | `ui/depth_panel.py` | **新增** 双尾鱼深度面板：`DepthTcpClient`（TCP 9999 客户端，接收 gs_bridge 的 10Hz `{"type":"depth",...}` 推送）、大字号实时深度显示、**深度零点标定**（"标定"按钮采集 10 秒融合值均值设为 0 点，零点持久化 `depth_zero.json`，可"清除标定"；CSV 含标定后深度列）、开始/停止 CSV 记录（停止弹对话框仅存 .csv）。**深度单位为 cm**（板上节点输出即 cm，零点标定与显示同单位，全程无换算）。**数据源 IP 跟随主连接**：主连接成功后自动切到本次输入的 IP 并连上深度流，也可用面板内按钮手动连/断 |
 | `ui/image_enhancement_widget.py` | 双尾鱼图像增强对比页：原图/增强图左右等宽显示，复用现有 9998 视频帧；一级选择传统方法/神经网络/不处理，传统方法下含综合增强、CLAHE、Gamma、白平衡；支持本地 Mock 视频、实时 FPS/延迟/丢帧统计、单画面放大、截图、左右对比 MP4 录像和参数导出 |
@@ -50,16 +50,36 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
 | `ui/keyboard_status.py` | 键盘按键状态面板与特殊功能键处理 |
 | `ui/data_recording.py` | 数据记录/CSV/Excel 导出控制面板；传感器数据保存目录组（IMU/深度各自目录，停止记录时按保存时刻在目录内生成 CSV） |
 | `controllers/base.py` | KeyboardController 等控制器：把键盘事件合成为 ControlCommand（频率/幅值/偏置/**相位差**/胸鳍脉宽）；参数栏含相位差旋钮（默认 1.57 rad，±6.282），并可直接输入 500–2500 μs 胸鳍脉宽后点击“设定”发送；输入期间不会被 100 ms 控制定时器回写，Q/E 增量调节继续保留 |
+| `controllers/depth.py` | 双尾鱼地面站深度闭环：使用标定后 `fused` 深度运行 PID，PID 接管胸鳍但保留 W/A/D/S 尾鳍键盘控制；含独立启停、参数解锁、Kp/Ki/Kd、目标深度、积分限幅、中位/最小/最大脉宽、数据超时和输出方向调节，显示 P/I/D 分量与最终 PWM；0.5 秒默认断流回中，参数保存到本地 `depth_pid_params.json` |
 | `communication/base.py` | 通信抽象基类（FishState/ControlCommand/FishCommunicationInterface） |
 | `communication/socket_client.py` | 双尾/单尾 TCP 控制客户端（9999，JSON 行协议）：state 回推走状态回调（遥测 + IMU 欧拉角并入 FishState.orientation 实时驱动姿态图），depth 推送装入 FishState.depth 供时间序列图，兼容旧版单尾鱼组合格式 |
 | `communication/ssh_ros.py` | SSH 执行 ROS 命令的辅助（旧链路备用） |
 | `data/recorder.py` | 传感器/控制数据记录器（CSV + metadata） |
 | `utils/graphics_exporter.py` | 可视化图形导出 |
 | `catkin_ws_in_fish/` | 单尾鱼（orangepi ROS1）机载脚本母本：`camera_stream_server.py`（9998 视频流+机上录制）、`socket_server.py`（9999 控制+传感器推送）、launch 与部署说明 |
-| `tests/` | 组件/键盘/视频等单元测试（pytest） |
+| `tests/` | 组件/键盘/视频等单元测试；`test_depth_controller.py` 覆盖 PID 数学、参数锁、中位与限幅、方向切换、键盘并行控制和断流回中 |
 | `docs/` | 功能说明文档（键盘、视频、舵机、传感器） |
 | `Change_log.md` / `TODO.md` | 变更记录与待办 |
 | `fps_compare/`、`records/`、`temp_scripts/`、`image.png` | 历史测试素材与一次性脚本（非运行依赖） |
+
+## 深度闭环控制
+
+深度闭环只在启动时选择“双尾双目鱼”后出现，不会启动双目测距。反馈量来自控制连接
+`9999` 已有的 WF5803 融合深度，并使用深度页面同一个零点：
+`控制深度 = fused - zero_offset`，单位始终为 cm。
+
+操作顺序：
+
+1. 先连接机器鱼，确认“深度”页面持续显示有效数值；需要相对水面控制时先完成零点标定。
+2. 控制方式选择“深度控制”。W/A/D/S、Shift+W/A/D 仍控制尾鳍推进和转向。
+3. 勾选“解锁参数调节”，填写目标深度、Kp/Ki/Kd、中位脉宽、最小/最大脉宽等，点击“应用并保存参数”。参数文件只保存在本机，不上传 Git。
+4. 取消“解锁参数调节”可防止误触；再勾选总安全开关“启用控制”。
+5. 最后勾选“启用深度 PID”。PID 开启期间胸鳍由闭环独占，Q/E 不生效；关闭 PID 后胸鳍回中，Q/E 恢复手动控制。
+
+首次下水默认按“目标更深时减小脉宽”输出，Kp=20，Ki=Kd=0，中位 1500 μs，
+输出限制 1300–1700 μs。若鱼体响应方向相反，先关闭 PID，再解锁参数，把“输出方向”改为
+“下潜时增大脉宽”。深度数据超过 0.5 秒未更新时，控制器清空 PID 状态并把胸鳍回到中位；
+地面站总安全开关关闭或通信断开时，原有停止链仍具有最高优先级。
 
 ## 双尾鱼 TCP 协议（pico 侧由 pico_stereo + gs_bridge 实现）
 

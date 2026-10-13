@@ -18,3 +18,5 @@ models/**/*.zip
 models/**/runtime/
 # 本地代码备份文件不入库（AGENTS.md 约束 #2：备份留在本地磁盘）
 *.backup_*
+# 深度 PID 参数由每台地面站本地调节，不提交个人标定值。
+depth_pid_params.json

@@ -5,7 +5,8 @@
 - **双尾双目鱼（dual，当前主攻）**：机载 pico RK3588S（ROS2 Humble）。视频/测距连
   pico 的 `pico_stereo depth_node` TCP 服务（9998，协议见下），控制命令发 pico 的
   `gs_bridge` TCP 服务（9999），gs_bridge 翻译成 `/fish/control/actuator_command`
-  交给串口桥发 STM32。**点击视频左上（左校正图）区域即可点击测距**。
+  交给串口桥发 STM32。当前地面站固定使用**纯显示模式**，测距入口保留但禁用，不会发送
+  `RANGE_ON`。
 - **单尾单目鱼（single，旧平台）**：机载 orangepi（ROS1）。视频连
   `camera_stream_server`（9998，机上录制），控制连 `socket_server`（9999，
   发布 /servo_info_*）。原功能不变。
@@ -40,13 +41,13 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
 | 文件 | 说明 |
 |---|---|
 | `main.py` | 入口：高 DPI 设置 → 版本选择对话框 → 按变体构造 MainWindow |
-| `config.py` | 全局配置：单尾鱼 IP/端口、`DUAL_FISH_CONFIG`（pico IP + 9999/9998 端口）、控制限幅（胸鳍 PWM 500–2500 μs）、键位映射、键盘默认参数 `KEYBOARD_CONTROL_DEFAULTS`（含相位差 1.57）、UI/视频/记录参数 |
+| `config.py` | 全局配置：单尾鱼 IP/端口、`DUAL_FISH_CONFIG`（pico IP + 9999/9998 端口）、控制限幅（胸鳍 PWM 500–2500 μs）、键位映射、键盘默认参数 `KEYBOARD_CONTROL_DEFAULTS`（含相位差 1.57）、深度闭环安全默认参数 `DEPTH_CONTROL_DEFAULTS`、UI/视频/记录参数；`STEREO_RANGING_UI_ENABLED=False` 保证当前版本只显示、不启动测距 |
 | `ui/fish_variant_dialog.py` | **新增** 启动版本选择对话框（dual/single 卡片式选择） |
 | `ui/connection_store.py` | **新增** 连接档案持久化（本地 connections.json 记录 备注+IP+端口，双尾鱼页面下拉直选） |
 | `ui/heartbeat_light.py` | **新增** 心跳呼吸灯（状态栏左下角）：脉冲只由真实心跳发送事件驱动——通信层每成功发出一拍 ping 经 Qt 信号点亮、两拍间自然衰减，停发即沉暗，不做装饰性空闪；悬停显示累计拍数与最后时刻；断链转灰 |
-| `ui/main_window.py` | 主窗口：按 `variant` 加载视频页（dual=双目测距组件 / single=原视频监控）、图像增强对比页（仅 dual）与深度页（仅 dual）、连接默认值、菜单、键盘事件分发、安全启用开关；主连接成功后自动连视频流并同步深度面板数据源 IP；底栏常驻控制板遥测标签（CPU/温度/内存/频率，1Hz 刷新） |
-| `ui/stereo_camera_widget.py` | **新增** 双尾鱼视频+测距组件：`StereoVideoClient`（TCP 9998 客户端，协议兼容老版）+ `StereoFishCameraWidget`；纯显示快通路接收 2560x720 原始双目总图，在电脑端将每目 1280x720 顺时针转正、上下拼接成 720x2560，并做 Gamma 2.0 提亮，减轻 pico 负载；RANGE_ON/OFF 保留完整测距链和点击测点；另含相机开关、GET_STATE 状态同步和本地 MP4 保存 |
-| `ui/depth_panel.py` | **新增** 双尾鱼深度面板：`DepthTcpClient`（TCP 9999 客户端，接收 gs_bridge 的 10Hz `{"type":"depth",...}` 推送）、大字号实时深度显示、**深度零点标定**（"标定"按钮采集 10 秒融合值均值设为 0 点，零点持久化 `depth_zero.json`，可"清除标定"；CSV 含标定后深度列）、开始/停止 CSV 记录（停止弹对话框仅存 .csv）。**深度单位为 cm**（板上节点输出即 cm，零点标定与显示同单位，全程无换算）。**数据源 IP 跟随主连接**：主连接成功后自动切到本次输入的 IP 并连上深度流，也可用面板内按钮手动连/断 |
+| `ui/main_window.py` | 主窗口：按 `variant` 加载视频页、图像增强页与深度页；主连接采用 `disconnected/connecting/connected/disconnecting` 状态机，视频和深度连接严格受主连接门闩控制；控制总开关打开后锁定控制方式下拉框及菜单，断链先撤销发送权并安全停机；左/右侧栏首次默认 360/280 px，用户拖动宽度按鱼体版本保存并在下次启动恢复；底栏常驻控制板遥测标签 |
+| `ui/stereo_camera_widget.py` | 双尾鱼纯显示组件：`StereoVideoClient`（TCP 9998）+ `StereoFishCameraWidget`；接收 2560x720 原始双目总图，在电脑端逐目转正、上下拼接并做 Gamma 2.0 提亮；区分“线程启动”“TCP 已连接”“相机已确认开启”，按钮只由集中状态机刷新，快速重复点击和迟到回执不会反转状态；相机开关等待板端确认，含 GET_STATE、本地 MP4 和快照；测距按钮由配置固定禁用，不发送 `RANGE_ON` |
+| `ui/depth_panel.py` | 双尾鱼深度面板：`DepthTcpClient`（TCP 9999，接收 gs_bridge 深度推送）、实时深度、10 秒零点标定、CSV 记录；连接严格依赖主连接，区分连接中/已连接/断开中/错误，快速断开可取消未完成连接；主链断开时自动结束记录并保存到 `records/`。深度单位为 cm，数据源 IP 跟随本次主连接 |
 | `ui/image_enhancement_widget.py` | 双尾鱼图像增强对比页：原图/增强图左右等宽显示，复用现有 9998 视频帧；一级选择传统方法/神经网络/不处理，传统方法下含综合增强、CLAHE、Gamma、白平衡；支持本地 Mock 视频、实时 FPS/延迟/丢帧统计、单画面放大、截图、左右对比 MP4 录像和参数导出 |
 | `enhancers/__init__.py` | 神经网络增强器工厂：按选项延迟导入对应适配器，避免启动界面时立即占用 GPU |
 | `enhancers/base.py` | 神经网络统一接口，以及单目/双目拆分、等比例补边和原尺寸恢复工具 |
@@ -58,20 +59,56 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
 | `models/README.md` | 大模型本地路径、SHA256、Ucolor 转换/解压步骤和数值对齐结果；实际权重由 `.gitignore` 排除 |
 | `ui/fish_camera_widget.py` | 单尾鱼机载相机组件（TCP 9998 客户端 + 机上录制控制），仅 single 变体使用 |
 | `ui/video_display.py` | 笔记本外接 USB 相机监控（VideoDisplayWidget + VideoMonitorWidget 容器），仅 single 变体使用 |
-| `ui/visualization.py` | pyqtgraph 数据可视化（XY 轨迹/深度/姿态/实时朝向）；时间序列的深度-时间图含双目鱼五路曲线：原始1/原始2/滤波1/滤波2/标定后；时间轴模式可切全局/滑动窗口，滑动窗口支持用户填写 1–3600 秒；清除曲线与重置画布位于同一控制行，页面文案不再显示括号说明 |
+| `ui/visualization.py` | pyqtgraph 数据可视化（XY 轨迹/深度/姿态/实时朝向）；全局时间序列保留从最近一次“清除曲线”以来的完整数据，滑动窗口只筛选显示范围、不再截断底层历史；全局/滑动改为真正互斥的单选项，窗口支持用户填写 1–3600 秒；清除曲线与重置画布位于同一控制行 |
 | `ui/keyboard_status.py` | 键盘按键状态面板与特殊功能键处理 |
 | `ui/data_recording.py` | 数据记录/CSV/Excel 导出控制面板；传感器数据保存目录组（IMU/深度各自目录，停止记录时按保存时刻在目录内生成 CSV） |
 | `controllers/base.py` | KeyboardController 等控制器：把键盘事件合成为 ControlCommand（频率/幅值/偏置/**相位差**/胸鳍脉宽）；参数栏含相位差旋钮（默认 1.57 rad，±6.282），并可直接输入 500–2500 μs 胸鳍脉宽后点击“设定”发送；输入期间不会被 100 ms 控制定时器回写，Q/E 增量调节继续保留 |
+| `controllers/depth.py` | 双尾鱼地面站深度闭环：使用标定后 `fused` 深度运行 PID，PID 接管胸鳍但保留 W/A/D/S 尾鳍键盘控制；含独立启停、参数解锁、Kp/Ki/Kd、目标深度、积分限幅、中位/最小/最大脉宽、数据超时和输出方向调节；只有总控制已启用时 PID 开关才可操作，切走控制器或断链会关闭 PID 并回中 |
 | `communication/base.py` | 通信抽象基类（FishState/ControlCommand/FishCommunicationInterface） |
 | `communication/socket_client.py` | 双尾/单尾 TCP 控制客户端（9999，JSON 行协议）：state 回推走状态回调（遥测 + IMU 欧拉角并入 FishState.orientation 实时驱动姿态图），depth 推送装入 FishState.depth 供时间序列图，兼容旧版单尾鱼组合格式 |
 | `communication/ssh_ros.py` | SSH 执行 ROS 命令的辅助（旧链路备用） |
 | `data/recorder.py` | 传感器/控制数据记录器（CSV + metadata） |
 | `utils/graphics_exporter.py` | 可视化图形导出 |
 | `catkin_ws_in_fish/` | 单尾鱼（orangepi ROS1）机载脚本母本：`camera_stream_server.py`（9998 视频流+机上录制）、`socket_server.py`（9999 控制+传感器推送）、launch 与部署说明 |
-| `tests/` | 组件/键盘/视频等单元测试（pytest） |
-| `docs/` | 功能说明文档（键盘、视频、舵机、传感器） |
+| `tests/test_ui_state_machine.py` | 主连接、控制锁定、视频确认状态、失败重试、侧栏默认值与持久化的离线回归测试 |
+| `tests/test_visualization_time_modes.py` | 全局历史不受滑动窗口截断、时间模式重复切换幂等的离线回归测试 |
+| `tests/test_depth_controller.py` | PID 数学、参数锁、中位与限幅、方向切换、键盘并行控制和断流回中测试 |
+| `docs/2026-10-13-ui-state-machine-design.md` | 本次 UI 状态机的状态、门闩、幂等规则和验证边界 |
+| `docs/README.md` | docs 文档目录逐文件索引 |
 | `Change_log.md` / `TODO.md` | 变更记录与待办 |
 | `fps_compare/`、`records/`、`temp_scripts/`、`image.png` | 历史测试素材与一次性脚本（非运行依赖） |
+
+## UI 状态机与安全交互
+
+双尾鱼页面采用严格依赖关系：`主控制连接 → 视频/深度服务连接 → 摄像头确认开启 → 录制`。
+下一级只能在上一级真实就绪后操作；主连接断开会自动撤销控制、锁定视频和深度页，并停止相关
+记录。TCP 工作线程的 `running` 只表示线程生命周期，不再冒充“已经连接”。连接中再次点击断开
+会设置取消标记；旧线程没有退出前不会启动第二次连接。
+
+控制方式只有在总控制关闭时才能切换。总控制打开后，下拉框和控制菜单同时锁定；无论通过菜单
+还是下拉框选择，界面与实际控制器都保持一致。重复连接、断开、启用、停用或选择同一控制器均
+保持幂等。详细状态表见 `docs/2026-10-13-ui-state-machine-design.md`。
+
+## 深度闭环控制
+
+深度闭环只在启动时选择“双尾双目鱼”后出现，不会启动双目测距。反馈量来自控制连接
+`9999` 已有的 WF5803 融合深度，并使用深度页面同一个零点：
+`控制深度 = fused - zero_offset`，单位始终为 cm。**水面为 0，水下为负数，越深数值越负**；
+例如目标深度 20 cm 应填写 `-20 cm`。
+
+操作顺序：
+
+1. 先连接机器鱼，确认“深度”页面持续显示有效数值；需要相对水面控制时先完成零点标定。
+2. 控制方式选择“深度控制”。W/A/D/S、Shift+W/A/D 仍控制尾鳍推进和转向。
+3. 勾选“解锁参数调节”，填写目标深度、Kp/Ki/Kd、中位脉宽、最小/最大脉宽等，点击“应用并保存参数”。参数文件只保存在本机，不上传 Git。
+4. 取消“解锁参数调节”可防止误触；再勾选总安全开关“启用控制”。
+5. 最后勾选“启用深度 PID”。PID 开启期间胸鳍由闭环独占，Q/E 不生效；关闭 PID 后胸鳍回中，Q/E 恢复手动控制。
+
+首次下水默认按“深度更负时减小脉宽”输出，目标 -15 cm，Kp=20，Ki=Kd=0，中位 1500 μs，
+输出限制 1300–1700 μs。若鱼体响应方向相反，先关闭 PID，再解锁参数，把“输出方向”改为
+“深度更负时增大脉宽”。深度数据超过 0.5 秒未更新时，控制器清空 PID 状态并把胸鳍回到中位；
+地面站总安全开关关闭或通信断开时，原有停止链仍具有最高优先级。
+旧版未记录坐标约定的 `depth_pid_params.json` 会在加载时安全迁移：保留 PID 增益与脉宽范围，但将目标恢复为 -15 cm、输出方向恢复为“深度更负时减小脉宽”，防止旧的反向参数被继续使用。
 
 ## 双尾鱼 TCP 协议（pico 侧由 pico_stereo + gs_bridge 实现）
 

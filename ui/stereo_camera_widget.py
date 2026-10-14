@@ -36,7 +36,8 @@ from PyQt5.QtCore import QThread, QTimer, pyqtSignal, Qt, pyqtSlot
 from PyQt5.QtGui import QImage, QPixmap, QFont
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import DUAL_FISH_CONFIG, STEREO_RANGING_UI_ENABLED
+from config import (DUAL_FISH_CONFIG, STEREO_PREVIEW_LAYOUT,
+                    STEREO_RANGING_UI_ENABLED)
 
 # 画布布局常量（与 pico_stereo.stereo_lib 保持一致）
 CANVAS_W, CANVAS_H = 1280, 960
@@ -48,16 +49,17 @@ FAST_PREVIEW_LUT = np.array([
 ], dtype=np.uint8)
 
 
-def prepare_stereo_display_frame(frame):
-    """把板端原始左右拼接帧转正、上下排布并提亮；处理后画布原样返回。"""
+def prepare_stereo_display_frame(frame, layout=STEREO_PREVIEW_LAYOUT):
+    """把板端原始单目帧转正提亮；旧双目横拼流只取第一目。"""
     height, width = frame.shape[:2]
-    if width < height * 2 or width % 2:
+    if layout == "processed":
         return frame
-    middle = width // 2
-    left = cv2.rotate(frame[:, :middle], cv2.ROTATE_90_CLOCKWISE)
-    right = cv2.rotate(frame[:, middle:], cv2.ROTATE_90_CLOCKWISE)
-    canvas = cv2.vconcat([left, right])
-    return cv2.LUT(canvas, FAST_PREVIEW_LUT)
+    if layout == "raw_sbs" or (
+            layout not in ("raw_single", "processed") and
+            width >= height * 2 and width % 2 == 0):
+        frame = frame[:, :width // 2]
+    single = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    return cv2.LUT(single, FAST_PREVIEW_LUT)
 
 
 class StereoVideoClient(QThread):
@@ -81,12 +83,14 @@ class StereoVideoClient(QThread):
         self.socket = None
         self.host = None
         self.port = DUAL_FISH_CONFIG["video_port"]
+        self.preview_layout = STEREO_PREVIEW_LAYOUT
         self._stop_requested = False
 
     def set_connection(self, host, port):
         """设置服务器地址与端口。"""
         self.host = host
         self.port = port
+        self.preview_layout = STEREO_PREVIEW_LAYOUT
         self._stop_requested = False
 
     def _recv_all(self, size):
@@ -141,9 +145,19 @@ class StereoVideoClient(QThread):
                             np.frombuffer(body, np.uint8), cv2.IMREAD_COLOR)
                         if frame is not None:
                             self.frame_received.emit(
-                                prepare_stereo_display_frame(frame))
+                                prepare_stereo_display_frame(
+                                    frame, self.preview_layout))
                     elif msg_type == 0xFE:
-                        self.message_received.emit(body.decode('utf-8', 'ignore'))
+                        text = body.decode('utf-8', 'ignore')
+                        try:
+                            info = json.loads(text)
+                            layout = info.get("layout") or info.get(
+                                "preview_layout")
+                            if layout in ("raw_single", "raw_sbs", "processed"):
+                                self.preview_layout = layout
+                        except (TypeError, ValueError):
+                            pass
+                        self.message_received.emit(text)
                 except socket.timeout:
                     continue
                 except Exception as exc:
@@ -210,7 +224,7 @@ class StereoFishCameraWidget(QWidget):
         content = QWidget()
         layout = QVBoxLayout(content)
 
-        title = QLabel("双目视频（纯显示高清快通路；开启测距后可点击左校正图）")
+        title = QLabel("单目视频（机器鱼端原生单目采集；电脑端转正并提亮）")
         title.setAlignment(Qt.AlignCenter)
         title.setFont(QFont("Arial", 14, QFont.Bold))
         layout.addWidget(title)
@@ -227,7 +241,7 @@ class StereoFishCameraWidget(QWidget):
         self.record_btn = QPushButton("保存视频")
         self.record_btn.setEnabled(False)
         self.record_btn.setToolTip(
-            "录制当前双目画面(两路上下排布)；停止后弹出对话框选择 mp4 保存位置")
+            "录制当前单目画面；停止后弹出对话框选择 mp4 保存位置")
         self.record_btn.clicked.connect(self._toggle_recording)
         control_layout.addWidget(self.record_btn)
         self.cam_btn = QPushButton("开启摄像头")
@@ -262,7 +276,7 @@ class StereoFishCameraWidget(QWidget):
         range_layout.addStretch()
         layout.addWidget(range_group)
 
-        video_group = QGroupBox("双目画面（左上:左校正 | 右上:右校正 | 下:视差伪彩）")
+        video_group = QGroupBox("单目实时画面")
         video_layout = QVBoxLayout(video_group)
         self.video_label = QLabel()
         self.video_label.setAlignment(Qt.AlignCenter)
@@ -277,7 +291,7 @@ class StereoFishCameraWidget(QWidget):
                 border-radius: 5px;
             }
         """)
-        self.video_label.setText("未连接到双目鱼\n点击'连接视频'开始实时画面")
+        self.video_label.setText("未连接到机器鱼相机\n点击'连接视频'开始单目实时画面")
         self.video_label.mousePressEvent = self._on_video_click
         video_layout.addWidget(self.video_label)
         layout.addWidget(video_group)
@@ -662,6 +676,9 @@ class StereoFishCameraWidget(QWidget):
             self._apply_ui_state()
         elif msg_type == "node_state":
             # 板上真实状态（GET_STATE 应答）：UI 按实际情况显示而非固定假设
+            layout = info.get("preview_layout")
+            if layout in ("raw_single", "raw_sbs", "processed"):
+                self.stream_client.preview_layout = layout
             enabled = bool(info.get("camera_enabled", False))
             self._camera_request_id += 1
             self.camera_on = enabled
@@ -685,11 +702,14 @@ class StereoFishCameraWidget(QWidget):
 
     def _update_measurement(self, info):
         """刷新测距结果标签。"""
-        if info.get("layout") == "raw_sbs":
+        if info.get("layout") in ("raw_single", "raw_sbs"):
             source_w = info.get("source_width", "--")
             source_h = info.get("source_height", "--")
+            source_name = (
+                "原生单目" if info.get("layout") == "raw_single"
+                else "兼容双目流取第一目")
             self.mode_label.setText(
-                f"模式: 纯显示快通路（原始双目 {source_w}x{source_h}，电脑端提亮）")
+                f"模式: 纯显示快通路（{source_name} {source_w}x{source_h}，电脑端提亮）")
             return
         if info.get("D") is not None:
             self.distance_label.setText(f"距离 D: {info['D']:.2f} cm")
@@ -774,7 +794,7 @@ class StereoFishCameraWidget(QWidget):
             self._apply_ui_state()
 
     def save_snapshot(self, filename=None):
-        """保存当前双目画面；无画面时返回 None。"""
+        """保存当前单目画面；无画面时返回 None。"""
         if self.current_frame is None:
             return None
         if filename is None:

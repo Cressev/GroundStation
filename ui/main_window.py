@@ -149,10 +149,10 @@ class MainWindow(QMainWindow):
         self.visualization_widget = DataVisualizationWidget()
         center_tabs.addTab(self.visualization_widget, "数据可视化")
         
-        # 视频页按变体: dual=双目测距组件, single=原视频监控（外部+机载相机）
+        # 视频页按变体: dual=机载单目流, single=原视频监控（外部+机载相机）
         if self.variant == "dual":
             self.video_widget = StereoFishCameraWidget()
-            center_tabs.addTab(self.video_widget, "双目测距")
+            center_tabs.addTab(self.video_widget, "单目视频")
             mock_video_path = os.environ.get("GROUNDSTATION_MOCK_VIDEO", "")
             self.enhancement_widget = ImageEnhancementWidget(
                 mock_video_path=mock_video_path or None)

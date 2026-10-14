@@ -16,8 +16,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from PyQt5.QtCore import QSettings
 from PyQt5.QtWidgets import QApplication
 
+from ui.image_enhancement_widget import EnhancementWorker
 from ui.main_window import MainWindow
-from ui.stereo_camera_widget import StereoFishCameraWidget, StereoVideoClient
+from ui.stereo_camera_widget import (StereoFishCameraWidget, StereoVideoClient,
+                                     prepare_stereo_display_frame)
 
 
 _APP = None
@@ -148,8 +150,11 @@ def test_stereo_camera_waits_for_confirmed_state_and_recovers_after_failure():
     widget._on_connection_status(True, "connected")
     assert widget._camera_state == "querying"
     assert not widget.cam_btn.isEnabled()
-    widget._on_message('{"type":"node_state","camera_enabled":false,"ranging":false}')
+    widget._on_message(
+        '{"type":"node_state","camera_enabled":false,"ranging":false,'
+        '"preview_layout":"raw_single"}')
     assert widget._camera_state == "off"
+    assert widget.stream_client.preview_layout == "raw_single"
     assert widget.cam_btn.isEnabled()
 
     widget._toggle_camera()
@@ -170,6 +175,28 @@ def test_stereo_camera_waits_for_confirmed_state_and_recovers_after_failure():
     assert not widget.connect_btn.isEnabled()
     assert not widget.cam_btn.isEnabled()
     widget.close()
+
+
+def test_single_camera_preview_rotates_one_eye_and_enhances_full_frame():
+    """原生单目和旧双目兼容流都只输出一目，实时增强处理整张单目帧。"""
+    single = np.zeros((4, 6, 3), dtype=np.uint8)
+    single[:, :, 1] = 64
+    prepared_single = prepare_stereo_display_frame(single, "raw_single")
+    assert prepared_single.shape == (6, 4, 3)
+
+    legacy_dual = np.zeros((4, 12, 3), dtype=np.uint8)
+    legacy_dual[:, :6, 1] = 64
+    legacy_dual[:, 6:, 2] = 255
+    prepared_legacy = prepare_stereo_display_frame(legacy_dual, "raw_sbs")
+    assert prepared_legacy.shape == (6, 4, 3)
+    assert np.array_equal(prepared_single, prepared_legacy)
+
+    processed = np.zeros((960, 1280, 3), dtype=np.uint8)
+    assert prepare_stereo_display_frame(processed, "processed") is processed
+    assert EnhancementWorker._region_height(
+        prepared_single, {"region": "auto", "source_mode": "live"}) == 6
+    assert EnhancementWorker._region_height(
+        processed, {"region": "auto", "source_mode": "mock"}) == 480
 
 
 def test_video_client_failure_resets_running_flag_once():

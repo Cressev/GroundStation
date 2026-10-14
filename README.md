@@ -6,7 +6,8 @@
   pico 的 `pico_stereo depth_node` TCP 服务（9998，协议见下），控制命令发 pico 的
   `gs_bridge` TCP 服务（9999），gs_bridge 翻译成 `/fish/control/actuator_command`
   交给串口桥发 STM32。当前地面站固定使用**纯显示模式**，测距入口保留但禁用，不会发送
-  `RANGE_ON`。
+  `RANGE_ON`。纯显示时机器鱼端使用 UVC 原生 `1280×720` 单目档位，只采集、编码和发送
+  一路摄像头；双目测距代码保留，今后需要时仍可切回标定尺寸。
 - **单尾单目鱼（single，旧平台）**：机载 orangepi（ROS1）。视频连
   `camera_stream_server`（9998，机上录制），控制连 `socket_server`（9999，
   发布 /servo_info_*）。原功能不变。
@@ -29,14 +30,14 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
 | 文件 | 说明 |
 |---|---|
 | `main.py` | 入口：高 DPI 设置 → 版本选择对话框 → 按变体构造 MainWindow |
-| `config.py` | 全局配置：单尾鱼 IP/端口、`DUAL_FISH_CONFIG`（pico IP + 9999/9998 端口）、控制限幅（胸鳍 PWM 500–2500 μs）、键位映射、键盘默认参数 `KEYBOARD_CONTROL_DEFAULTS`（含相位差 1.57）、深度闭环安全默认参数 `DEPTH_CONTROL_DEFAULTS`、UI/视频/记录参数；`STEREO_RANGING_UI_ENABLED=False` 保证当前版本只显示、不启动测距 |
+| `config.py` | 全局配置：单尾鱼 IP/端口、`DUAL_FISH_CONFIG`（pico IP + 9999/9998 端口）、控制限幅（胸鳍 PWM 500–2500 μs）、键位映射、键盘默认参数 `KEYBOARD_CONTROL_DEFAULTS`（含相位差 1.57）、深度闭环安全默认参数 `DEPTH_CONTROL_DEFAULTS`、UI/视频/记录参数；`STEREO_RANGING_UI_ENABLED=False` 保证当前版本只显示、不启动测距，`STEREO_PREVIEW_LAYOUT="raw_single"` 标记原生单目流 |
 | `ui/fish_variant_dialog.py` | **新增** 启动版本选择对话框（dual/single 卡片式选择） |
 | `ui/connection_store.py` | **新增** 连接档案持久化（本地 connections.json 记录 备注+IP+端口，双尾鱼页面下拉直选） |
 | `ui/heartbeat_light.py` | **新增** 心跳呼吸灯（状态栏左下角）：脉冲只由真实心跳发送事件驱动——通信层每成功发出一拍 ping 经 Qt 信号点亮、两拍间自然衰减，停发即沉暗，不做装饰性空闪；悬停显示累计拍数与最后时刻；断链转灰 |
-| `ui/main_window.py` | 主窗口：按 `variant` 加载视频页、图像增强页与深度页；主连接采用 `disconnected/connecting/connected/disconnecting` 状态机，视频和深度连接严格受主连接门闩控制；控制总开关打开后锁定控制方式下拉框及菜单，断链先撤销发送权并安全停机；左/右侧栏首次默认 360/280 px，用户拖动宽度按鱼体版本保存并在下次启动恢复；底栏常驻控制板遥测标签 |
-| `ui/stereo_camera_widget.py` | 双尾鱼纯显示组件：`StereoVideoClient`（TCP 9998）+ `StereoFishCameraWidget`；接收 2560x720 原始双目总图，在电脑端逐目转正、上下拼接并做 Gamma 2.0 提亮；区分“线程启动”“TCP 已连接”“相机已确认开启”，按钮只由集中状态机刷新，快速重复点击和迟到回执不会反转状态；相机开关等待板端确认，含 GET_STATE、本地 MP4 和快照；测距按钮由配置固定禁用，不发送 `RANGE_ON` |
+| `ui/main_window.py` | 主窗口：按 `variant` 加载“单目视频”、图像增强页与深度页；主连接采用 `disconnected/connecting/connected/disconnecting` 状态机，视频和深度连接严格受主连接门闩控制；控制总开关打开后锁定控制方式下拉框及菜单，断链先撤销发送权并安全停机；左/右侧栏首次默认 360/280 px，用户拖动宽度按鱼体版本保存并在下次启动恢复；底栏常驻控制板遥测标签 |
+| `ui/stereo_camera_widget.py` | 双尾鱼纯显示组件：`StereoVideoClient`（TCP 9998）+ `StereoFishCameraWidget`；接收 `1280×720` 原生单目 JPEG，在电脑端顺时针转正并做 Gamma 2.0 提亮；兼容旧 `raw_sbs` 双目流但只显示第一目；区分“线程启动”“TCP 已连接”“相机已确认开启”，按钮只由集中状态机刷新，快速重复点击和迟到回执不会反转状态；相机开关等待板端确认，含 GET_STATE、本地 MP4 和快照；测距按钮固定禁用，不发送 `RANGE_ON` |
 | `ui/depth_panel.py` | 双尾鱼深度面板：`DepthTcpClient`（TCP 9999，接收 gs_bridge 深度推送）、实时深度、10 秒零点标定、CSV 记录；连接严格依赖主连接，区分连接中/已连接/断开中/错误，快速断开可取消未完成连接；主链断开时自动结束记录并保存到 `records/`。深度单位为 cm，数据源 IP 跟随本次主连接 |
-| `ui/image_enhancement_widget.py` | 双尾鱼图像增强对比页：原图/增强图左右等宽显示，复用现有 9998 视频帧；一级选择传统方法/神经网络/不处理，传统方法下含综合增强、CLAHE、Gamma、白平衡；支持本地 Mock 视频、实时 FPS/延迟/丢帧统计、单画面放大、截图、左右对比 MP4 录像和参数导出 |
+| `ui/image_enhancement_widget.py` | 双尾鱼图像增强对比页：原图/增强图左右等宽显示，复用同一路 9998 单目视频帧且默认对整帧增强；一级选择传统方法/神经网络/不处理，传统方法下含综合增强、CLAHE、Gamma、白平衡；支持本地 Mock 视频、实时 FPS/延迟/丢帧统计、单画面放大、截图、左右对比 MP4 录像和参数导出 |
 | `enhancers/__init__.py` | 神经网络增强器工厂：按选项延迟导入对应适配器，避免启动界面时立即占用 GPU |
 | `enhancers/base.py` | 神经网络统一接口，以及单目/双目拆分、等比例补边和原尺寸恢复工具 |
 | `enhancers/model_paths.py` | UIEC²-Net、U-shape 外部源码/权重和 Ucolor 本地 ONNX 路径检查；支持 `GROUNDSTATION_BASELINE_ROOT` 覆盖默认 baseline 目录 |
@@ -105,8 +106,9 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
 
 ```
 服务端->地面站: [4字节大端长度][1字节类型][数据]
-  0xFF = JPEG 画布（1280x960：上行左|右校正图，下行视差伪彩，左图叠加测点与 D 读数）
-  0xFE = UTF-8 JSON（{"type":"measurement","D":..,"Z":..,"X":..,"Y":..,"disp":..,"valid":..,"fps":..}
+  0xFF = JPEG：当前纯显示为 1280x720 原生单目帧；保留的测距模式为 1280x960 处理画布
+  0xFE = UTF-8 JSON（{"type":"measurement","layout":"raw_single",...,"fps":..}
+                     / {"type":"measurement","D":..,"Z":..,"X":..,"Y":..,"disp":..,"valid":..,"fps":..}
                      / {"type":"point_set","u":..,"v":..} / {"type":"pong"} / {"type":"error"}）
 地面站->服务端: 文本行
   SET_POINT u v   点击测距（u,v 为左校正图像素坐标）
@@ -145,7 +147,7 @@ records/ 下按时间戳命名）。板上相机曝光/增益需在 v4l2-ctl 预
 - 参数：增强强度是所有已实现方法外层的原图混合比例；Gamma、对比度、饱和度和
   CLAHE 只属于传统方法。浑浊水体、清水、偏蓝绿色、低照度均明确标为“示例预设”，
   仅在水下综合增强中显示，尚未使用课题组真实水下数据完成标定。
-- 处理区域：整张画面，或仅处理双目测距画布上半部。
+- 处理区域：实时单目流默认处理整张画面；“仅旧双目画布上半部”只用于兼容历史 1280×960 素材。
 - 输出：单画面放大/截图、左右对比截图、左右对比 MP4 录像、增强参数 JSON，以及
   输入/输出 FPS、处理耗时、丢弃旧帧数等实时指标。
 
@@ -163,7 +165,7 @@ Remove-Item Env:GROUNDSTATION_MOCK_VIDEO
 ```
 
 启动后选择“双尾双目鱼”。Mock 播放期间暂不显示 Pico 实时帧，点击“停止 Mock”后自动恢复
-使用现有 Pico 视频流。`仅双目图区域（上半部）`用于 1280×960 双目测距画布，只增强上半部
+使用现有 Pico 单目视频流。`仅旧双目画布上半部（兼容）`用于 1280×960 历史测距画布，只增强上半部
 左右校正图，保留下半部视差伪彩与测距叠加的原始含义。
 
 ### 三个开源网络的本机部署

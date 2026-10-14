@@ -193,9 +193,8 @@ class EnhancementWorker(QThread):
         if region_mode == "stereo_top":
             return frame.shape[0] // 2
         if region_mode == "auto":
-            source_mode = parameters.get("source_mode", "none")
             known_canvas = frame.shape[:2] == (960, 1280)
-            if source_mode == "live" or known_canvas:
+            if known_canvas:
                 return frame.shape[0] // 2
         return frame.shape[0]
 
@@ -653,11 +652,11 @@ class ImageEnhancementWidget(QWidget):
         self.method_combo.addItem("传统图像增强", "traditional")
         model_options = (
             ("UIEC²-Net", "uiec2", True,
-             "CUDA实时模式，内部按 320×240/目推理"),
+             "CUDA实时模式，单目画面按 320×240 推理"),
             ("U-shape Transformer", "ushape", True,
-             "CUDA实时模式，固定 256×256/目；已知可能出现网格伪影"),
+             "CUDA实时模式，单目画面固定 256×256；已知可能出现网格伪影"),
             ("Ucolor", "ucolor", True,
-             "ONNX Runtime CUDA 模式，固定 256×256/目；双目逐目推理"),
+             "ONNX Runtime CUDA 模式，单目画面固定 256×256 推理"),
             ("LightUcolorRetinex（待接入）", "light_ucolor_retinex", False,
              "等待算法和最终权重确定"),
         )
@@ -721,9 +720,9 @@ class ImageEnhancementWidget(QWidget):
         self.saturation_spin = self._make_spin(0.00, 2.50, 1.12, 0.05)
         self.clip_spin = self._make_spin(0.10, 8.00, 2.00, 0.10)
         self.region_combo = QComboBox()
-        self.region_combo.addItem("自动（实时双目仅上半部）", "auto")
+        self.region_combo.addItem("自动（单目实时流处理整帧）", "auto")
         self.region_combo.addItem("整张画面", "full")
-        self.region_combo.addItem("仅双目图区域（上半部）", "stereo_top")
+        self.region_combo.addItem("仅旧双目画布上半部（兼容）", "stereo_top")
         for spin in (self.gamma_spin, self.contrast_spin,
                      self.saturation_spin, self.clip_spin):
             spin.valueChanged.connect(self._mark_custom_and_refresh)

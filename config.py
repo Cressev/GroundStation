@@ -113,6 +113,8 @@ PLOT_UPDATE_RATE = 10
 
 # 双目测距当前保持关闭：纯显示模式已验证，测距待后续单独恢复。
 STEREO_RANGING_UI_ENABLED = False
+# pico 当前发送 UVC 原生单目帧；旧板端双目横拼流仍可由协议标记兼容。
+STEREO_PREVIEW_LAYOUT = "raw_single"
 
 # UI配置
 UI_CONFIG = {

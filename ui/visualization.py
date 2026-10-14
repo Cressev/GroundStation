@@ -5,11 +5,16 @@
 Data Visualization Components
 """
 
+import csv
+import datetime
+from pathlib import Path
+
 import numpy as np
 import pyqtgraph as pg
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
                              QLabel, QGroupBox, QGridLayout, QSizePolicy,
-                             QPushButton, QRadioButton, QButtonGroup, QSpinBox)
+                             QPushButton, QRadioButton, QButtonGroup, QSpinBox,
+                             QFileDialog, QMessageBox)
 from PyQt5.QtCore import QTimer, pyqtSignal, Qt
 from PyQt5.QtGui import QFont
 import time
@@ -50,6 +55,7 @@ class DataVisualizationWidget(QWidget):
         self.sliding_time = False  # 时间轴模式：False=全局，True=滑动窗口
         self.sliding_window_seconds = 10.0
         self.follow_latest = True  # 视图跟随最新数据；用户缩放/拖动后转自由视察
+        self._syncing_time_axes = False
         self._init_ui()
         
         # 更新定时器
@@ -126,8 +132,9 @@ class DataVisualizationWidget(QWidget):
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        # 时间轴模式、窗口大小、清除和重置放在同一行。
+        # 时间轴参数单独一行，操作按钮另一行，避免中央画布较窄时挤压。
         mode_row = QHBoxLayout()
+        action_row = QHBoxLayout()
         self.global_time_cb = QRadioButton("全局时间序列")
         self.global_time_cb.setChecked(True)
         self.sliding_time_cb = QRadioButton("滑动窗口")
@@ -150,14 +157,26 @@ class DataVisualizationWidget(QWidget):
         reset_view_btn = QPushButton("重置画布")
         reset_view_btn.setToolTip("取消缩放/拖动，恢复自适应窗口")
         reset_view_btn.clicked.connect(self._reset_time_series_view)
+        self.save_time_data_btn = QPushButton("保存数据")
+        self.save_time_data_btn.setToolTip(
+            "仅保存当前画布可见时间范围内的深度和姿态角，可选 CSV 或 Excel")
+        self.save_time_data_btn.clicked.connect(self._save_visible_time_data)
+        self.save_time_image_btn = QPushButton("保存图像")
+        self.save_time_image_btn.setToolTip(
+            "把当前时间范围内的深度/姿态角画布保存为 PNG")
+        self.save_time_image_btn.clicked.connect(self._save_time_series_image)
         mode_row.addWidget(self.global_time_cb)
         mode_row.addWidget(self.sliding_time_cb)
         mode_row.addWidget(QLabel("窗口大小"))
         mode_row.addWidget(self.sliding_window_input)
-        mode_row.addWidget(clear_btn)
-        mode_row.addWidget(reset_view_btn)
         mode_row.addStretch()
         layout.addLayout(mode_row)
+        action_row.addWidget(clear_btn)
+        action_row.addWidget(reset_view_btn)
+        action_row.addWidget(self.save_time_data_btn)
+        action_row.addWidget(self.save_time_image_btn)
+        action_row.addStretch()
+        layout.addLayout(action_row)
 
         # Z-t图
         self.z_plot = pg.PlotWidget(title="深度-时间图")
@@ -182,8 +201,6 @@ class DataVisualizationWidget(QWidget):
         # 底部状态栏显示当前深度
         self.z_status_label = QLabel("当前深度: Z: 0.000 m")
         self.z_status_label.setStyleSheet("font-size: 11pt; padding: 5px; background-color: #f0f0f0;")
-        layout.addWidget(self.z_status_label)
-        
         # RPY-t图
         self.rpy_plot = pg.PlotWidget(title="姿态角-时间图")
         self.rpy_plot.setLabel('left', '角度')
@@ -197,15 +214,28 @@ class DataVisualizationWidget(QWidget):
         self.pitch_curve = self.rpy_plot.plot(pen=pg.mkPen(color=UI_CONFIG["plot_colors"]["pitch"], width=2), name='Pitch')
         self.yaw_curve = self.rpy_plot.plot(pen=pg.mkPen(color=UI_CONFIG["plot_colors"]["yaw"], width=2), name='Yaw')
         
-        layout.addWidget(self.z_plot)
-        layout.addWidget(self.rpy_plot)
-        
         # 底部状态栏显示当前姿态角
         self.rpy_status_label = QLabel("当前姿态: Roll: 0.000, Pitch: 0.000, Yaw: 0.000")
         self.rpy_status_label.setStyleSheet("font-size: 11pt; padding: 5px; background-color: #f0f0f0;")
-        layout.addWidget(self.rpy_status_label)
 
-        # 用户手动缩放/拖动任一图 -> 停止跟随，视窗交还给用户自由视察
+        # 可导出画布：只包含当前显示的两张时间序列图与数值标签，
+        # 不把上方功能按钮一起截入 PNG。
+        self.time_series_canvas = QWidget()
+        self.time_series_canvas.setObjectName("timeSeriesCanvas")
+        canvas_layout = QVBoxLayout(self.time_series_canvas)
+        canvas_layout.setContentsMargins(0, 0, 0, 0)
+        canvas_layout.addWidget(self.z_plot)
+        canvas_layout.addWidget(self.z_status_label)
+        canvas_layout.addWidget(self.rpy_plot)
+        canvas_layout.addWidget(self.rpy_status_label)
+        layout.addWidget(self.time_series_canvas)
+
+        # 两张图的时间轴始终同步；用户在任一图上缩放/拖动后，
+        # “保存数据”就能使用唯一、明确的当前时间范围。
+        self.z_plot.getViewBox().sigXRangeChanged.connect(
+            self._sync_time_series_x_range)
+        self.rpy_plot.getViewBox().sigXRangeChanged.connect(
+            self._sync_time_series_x_range)
         for plot in (self.z_plot, self.rpy_plot):
             plot.getViewBox().sigRangeChangedManually.connect(
                 self._on_manual_view_change)
@@ -727,6 +757,19 @@ class DataVisualizationWidget(QWidget):
         """用户缩放/拖动曲线（pyqtgraph 手动改范围信号）：停止跟随最新数据。"""
         self.follow_latest = False
 
+    def _sync_time_series_x_range(self, source_view, x_range):
+        """同步深度图与姿态角图的 X 轴，保证导出时间范围唯一。"""
+        if self._syncing_time_axes:
+            return
+        z_view = self.z_plot.getViewBox()
+        rpy_view = self.rpy_plot.getViewBox()
+        target = rpy_view if source_view is z_view else z_view
+        self._syncing_time_axes = True
+        try:
+            target.setXRange(float(x_range[0]), float(x_range[1]), padding=0)
+        finally:
+            self._syncing_time_axes = False
+
     def _reset_time_series_view(self):
         """重置画布：恢复"跟随最新数据"模式（视窗随曲线滚动）。
 
@@ -745,6 +788,145 @@ class DataVisualizationWidget(QWidget):
         if getattr(self, "sliding_time", False):
             return max(0.0, times[-1] - self.sliding_window_seconds)
         return times[0]
+
+    def current_visible_time_range(self):
+        """返回当前画布真正可见的时间范围，无数据时返回 None。"""
+        times = list(self.data_history["time"])
+        if not times:
+            return None
+        if self.follow_latest:
+            return self._time_window_min(times), times[-1]
+        view_min, view_max = self.z_plot.getViewBox().viewRange()[0]
+        start = max(times[0], float(min(view_min, view_max)))
+        end = min(times[-1], float(max(view_min, view_max)))
+        if start > end:
+            return None
+        return start, end
+
+    def current_visible_time_series_rows(self):
+        """按当前画布时间范围组装深度与姿态角导出行。"""
+        visible_range = self.current_visible_time_range()
+        if visible_range is None:
+            return []
+        start, end = visible_range
+        sources = (
+            ("time_s", "time"),
+            ("depth_z_m", "z"),
+            ("depth_raw_1_cm", "d_raw1"),
+            ("depth_raw_2_cm", "d_raw2"),
+            ("depth_filtered_1_cm", "d_filt1"),
+            ("depth_filtered_2_cm", "d_filt2"),
+            ("depth_calibrated_cm", "d_cal"),
+            ("roll_rad", "roll"),
+            ("pitch_rad", "pitch"),
+            ("yaw_rad", "yaw"),
+        )
+        rows = []
+        for index, timestamp in enumerate(self.data_history["time"]):
+            if not start <= timestamp <= end:
+                continue
+            row = {}
+            for header, key in sources:
+                values = self.data_history[key]
+                row[header] = values[index] if index < len(values) else None
+            rows.append(row)
+        return rows
+
+    @staticmethod
+    def _normalize_data_export_path(filepath, selected_filter=""):
+        """根据文件对话框类型补齐 CSV/XLSX 后缀。"""
+        path = Path(filepath)
+        suffix = path.suffix.lower()
+        if suffix not in (".csv", ".xlsx"):
+            suffix = ".xlsx" if "Excel" in selected_filter else ".csv"
+            path = path.with_suffix(suffix)
+        return str(path)
+
+    def export_visible_time_series(self, filepath):
+        """把当前可见时间范围的深度/姿态角写入 CSV 或 XLSX。"""
+        rows = self.current_visible_time_series_rows()
+        if not rows:
+            raise ValueError("当前画布时间范围内没有可保存的数据")
+        headers = list(rows[0])
+        path = Path(filepath)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.suffix.lower() == ".csv":
+            with path.open("w", newline="", encoding="utf-8-sig") as stream:
+                writer = csv.DictWriter(stream, fieldnames=headers)
+                writer.writeheader()
+                writer.writerows(rows)
+        elif path.suffix.lower() == ".xlsx":
+            import xlsxwriter
+
+            workbook = xlsxwriter.Workbook(str(path))
+            try:
+                sheet = workbook.add_worksheet("时间序列")
+                header_format = workbook.add_format({"bold": True})
+                for column, header in enumerate(headers):
+                    sheet.write(0, column, header, header_format)
+                for row_index, row in enumerate(rows, start=1):
+                    for column, header in enumerate(headers):
+                        value = row[header]
+                        if value is not None:
+                            sheet.write(row_index, column, value)
+                sheet.freeze_panes(1, 1)
+                sheet.autofilter(0, 0, len(rows), len(headers) - 1)
+                sheet.set_column(0, len(headers) - 1, 22)
+            finally:
+                workbook.close()
+        else:
+            raise ValueError("仅支持 CSV 或 Excel (.xlsx) 格式")
+        return str(path), len(rows), rows[0]["time_s"], rows[-1]["time_s"]
+
+    def _save_visible_time_data(self):
+        """弹出资源管理器，选择路径和 CSV/Excel 格式后保存可见数据。"""
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_path = str(Path.cwd() / f"时间序列_{timestamp}.csv")
+        filepath, selected_filter = QFileDialog.getSaveFileName(
+            self, "保存当前时间范围数据", default_path,
+            "CSV 文件 (*.csv);;Excel 工作簿 (*.xlsx)")
+        if not filepath:
+            return
+        filepath = self._normalize_data_export_path(filepath, selected_filter)
+        try:
+            saved_path, count, start, end = self.export_visible_time_series(filepath)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "保存失败", str(exc))
+            return
+        QMessageBox.information(
+            self, "保存成功",
+            f"已保存 {count} 条数据\n时间范围: {start:.3f} - {end:.3f} s\n{saved_path}")
+
+    @staticmethod
+    def _normalize_png_path(filepath):
+        """为画布图片路径补齐 PNG 后缀。"""
+        path = Path(filepath)
+        return str(path if path.suffix.lower() == ".png"
+                   else path.with_suffix(".png"))
+
+    def export_time_series_png(self, filepath):
+        """把当前时间序列画布按屏幕所见内容保存为 PNG。"""
+        path = Path(self._normalize_png_path(filepath))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pixmap = self.time_series_canvas.grab()
+        if pixmap.isNull() or not pixmap.save(str(path), "PNG"):
+            raise OSError("画布 PNG 写入失败")
+        return str(path)
+
+    def _save_time_series_image(self):
+        """弹出资源管理器，把当前可见画布保存为 PNG。"""
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_path = str(Path.cwd() / f"时间序列画布_{timestamp}.png")
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "保存当前时序画布", default_path, "PNG 图像 (*.png)")
+        if not filepath:
+            return
+        try:
+            saved_path = self.export_time_series_png(filepath)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "保存失败", str(exc))
+            return
+        QMessageBox.information(self, "保存成功", f"画布已保存为:\n{saved_path}")
 
     def clear_data(self):
         """清空数据"""

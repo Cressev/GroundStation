@@ -247,3 +247,16 @@ def test_splitter_uses_wide_defaults_and_persists_per_variant():
         assert abs(restored_sizes[0] - saved_sizes[0]) <= 2
         assert abs(restored_sizes[2] - saved_sizes[2]) <= 2
         window.close()
+
+
+def test_recording_panel_is_replaced_by_time_series_export_buttons():
+    """右侧不再显示数据记录页，导出功能位于时间序列页。"""
+    ensure_app()
+    window = MainWindow(variant="dual")
+    tab_names = [window.right_tabs.tabText(index)
+                 for index in range(window.right_tabs.count())]
+    assert "数据记录" not in tab_names
+    assert not hasattr(window, "data_recording_widget")
+    assert window.visualization_widget.save_time_data_btn.text() == "保存数据"
+    assert window.visualization_widget.save_time_image_btn.text() == "保存图像"
+    window.close()

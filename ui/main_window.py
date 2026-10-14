@@ -22,7 +22,6 @@ from PyQt5.QtGui import QFont, QKeySequence, QIcon
 from ui.visualization import DataVisualizationWidget
 from ui.keyboard_status import KeyboardStatusWidget
 from ui.video_display import VideoMonitorWidget
-from ui.data_recording import DataRecordingWidget
 from ui.stereo_camera_widget import StereoFishCameraWidget
 from ui.image_enhancement_widget import ImageEnhancementWidget
 from ui.depth_panel import DepthPanel
@@ -58,7 +57,6 @@ class MainWindow(QMainWindow):
         self.current_controller = None
         self._current_controller_name = None
         self.controllers = {}
-        self._last_control_command = None  # 最后的控制命令，用于数据记录
         self.connection_start_time = None  # 连接开始时间
         self._settings = QSettings("FishRobot", "GroundStation")
         
@@ -172,7 +170,7 @@ class MainWindow(QMainWindow):
         center_layout.addWidget(center_tabs)
         self.main_splitter.addWidget(center_widget)
         
-        # 右侧面板 - 包含按键状态和数据记录控制
+        # 右侧面板 - 仅保留运行时状态；数据保存已移入时间序列页
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(2, 2, 2, 2)
@@ -180,24 +178,20 @@ class MainWindow(QMainWindow):
         control_panel.setMinimumWidth(170)
         
         # 创建右侧标签页
-        right_tabs = QTabWidget()
+        self.right_tabs = QTabWidget()
 
         # 深度标签页（双尾鱼变体专属）
         if self.variant == "dual":
             self.depth_panel = DepthPanel(DUAL_FISH_CONFIG["fish_ip"])
-            right_tabs.addTab(self.depth_panel, "深度")
+            self.right_tabs.addTab(self.depth_panel, "深度")
 
         # 按键状态标签页
         self.keyboard_status_widget = KeyboardStatusWidget()
-        right_tabs.addTab(self.keyboard_status_widget, "按键状态")
+        self.right_tabs.addTab(self.keyboard_status_widget, "按键状态")
         
-        # 数据记录控制标签页
-        self.data_recording_widget = DataRecordingWidget()
-        right_tabs.addTab(self.data_recording_widget, "数据记录")
-        
-        right_layout.addWidget(right_tabs)
+        right_layout.addWidget(self.right_tabs)
         # 拖窄时内容自适应面板宽度，而不是被 sizeHint 顶住
-        right_tabs.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.right_tabs.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.main_splitter.addWidget(right_panel)
 
         # 设置分割器比例 (控制面板:中央区域:右侧栏 = 2:8:2)
@@ -296,48 +290,6 @@ class MainWindow(QMainWindow):
             self.controller_action_group.addAction(depth_action)
             self.controller_actions["depth"] = depth_action
             control_menu.addAction(depth_action)
-        
-        # 数据菜单
-        data_menu = menubar.addMenu('数据(&D)')
-        
-        # 记录控制子菜单
-        record_submenu = data_menu.addMenu('记录控制(&R)')
-        
-        start_record_action = QAction('开始记录(&S)', self)
-        start_record_action.triggered.connect(lambda: self.data_recording_widget._start_recording())
-        record_submenu.addAction(start_record_action)
-        
-        pause_record_action = QAction('暂停记录(&P)', self)
-        pause_record_action.triggered.connect(lambda: self.data_recording_widget._pause_recording())
-        record_submenu.addAction(pause_record_action)
-        
-        stop_record_action = QAction('停止记录(&T)', self)
-        stop_record_action.triggered.connect(lambda: self.data_recording_widget._stop_recording())
-        record_submenu.addAction(stop_record_action)
-        
-        data_menu.addSeparator()
-        
-        # 数据导出子菜单
-        export_submenu = data_menu.addMenu('数据导出(&E)')
-        
-        save_csv_action = QAction('导出CSV(&C)', self)
-        save_csv_action.triggered.connect(lambda: self.data_recording_widget._save_csv())
-        export_submenu.addAction(save_csv_action)
-        
-        save_excel_action = QAction('导出Excel(&X)', self)
-        save_excel_action.triggered.connect(lambda: self.data_recording_widget._save_excel())
-        export_submenu.addAction(save_excel_action)
-        
-        data_menu.addSeparator()
-        
-        # 图形导出
-        export_graphics_action = QAction('导出图形(&G)', self)
-        export_graphics_action.triggered.connect(self._on_export_graphics_requested)
-        data_menu.addAction(export_graphics_action)
-        
-        clear_data_action = QAction('清空数据(&L)', self)
-        clear_data_action.triggered.connect(lambda: self.data_recording_widget._clear_data())
-        data_menu.addAction(clear_data_action)
         
         # 帮助菜单
         help_menu = menubar.addMenu('帮助(&H)')
@@ -487,9 +439,6 @@ class MainWindow(QMainWindow):
         
         # 键盘状态组件信号连接  
         self.keyboard_status_widget.plot_cleared.connect(self._on_plot_cleared)
-        
-        # 数据记录组件信号连接
-        self.data_recording_widget.export_graphics_requested.connect(self._on_export_graphics_requested)
         
         # 连接状态变化信号（线程安全）
         self.connection_changed_signal.connect(self._handle_connection_changed, Qt.QueuedConnection)
@@ -919,13 +868,6 @@ class MainWindow(QMainWindow):
                                 fish_state.depth["calibrated"],
                                 fish_state.timestamp)
                     self.visualization_widget.update_data(fish_state)
-                    # 分传感器 CSV（IMU/深度）：记录进行中时随帧追加
-                    self.data_recording_widget.add_sensor_points(fish_state)
-                    
-                    # 添加到数据记录器（如果有控制命令的话，使用最后的控制命令）
-                    last_command = getattr(self, '_last_control_command', None)
-                    self.data_recording_widget.add_data_point(fish_state, last_command)
-                    
             except Exception as e:
                 # 降低错误日志频率避免刷屏
                 import time
@@ -1035,10 +977,7 @@ class MainWindow(QMainWindow):
                     command.pec_angle = 1500  # 默认值
                 
                 success = self.communication.send_control_command(command)
-                if success:
-                    # 记录最后的控制命令，用于数据记录
-                    self._last_control_command = command
-                else:
+                if not success:
                     self._log_message("控制命令发送失败")
             except Exception as e:
                 self._log_message(f"控制命令发送异常: {e}")
@@ -1057,15 +996,6 @@ class MainWindow(QMainWindow):
         """清空绘图数据事件"""
         self.visualization_widget.clear_data()
         self._log_message("绘图数据已清空")
-    
-    def _on_export_graphics_requested(self):
-        """处理图形导出请求"""
-        try:
-            self.data_recording_widget.export_graphics(self.visualization_widget)
-            self._log_message("图形导出完成")
-        except Exception as e:
-            self._log_message(f"图形导出失败: {e}")
-            QMessageBox.critical(self, "导出错误", f"图形导出失败: {e}")
     
     def _save_video_snapshot(self):
         """保存视频快照"""

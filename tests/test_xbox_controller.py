@@ -1,5 +1,6 @@
 """Xbox 连续控制模型、紧急停止和 UI 参数的回归测试。"""
 
+import ctypes
 import os
 import sys
 
@@ -15,10 +16,39 @@ from controllers.xbox import (
     XINPUT_GAMEPAD_B,
     XINPUT_GAMEPAD_X,
     XINPUT_GAMEPAD_Y,
+    _XInputGamepad,
+    XInputBackend,
     XboxController,
     XboxControlModel,
     XboxInputState,
 )
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    ((0, 0.0), (127, 127.0 / 255.0), (128, 128.0 / 255.0), (255, 1.0)),
+)
+def test_xinput_triggers_use_unsigned_bytes_across_the_full_range(
+        raw_value, expected):
+    """LT/RT 原始值跨过 127 后仍须从 0 连续增加到 1，不能跳成负数。"""
+    backend = XInputBackend.__new__(XInputBackend)
+    backend.dll_name = "fake_xinput.dll"
+    backend._set_state = None
+
+    def get_state(index, state_pointer):
+        """向 XInput 状态指针写入指定的无符号扳机测试值。"""
+        if index != 0:
+            return 1167
+        state_pointer._obj.Gamepad.bLeftTrigger = raw_value
+        state_pointer._obj.Gamepad.bRightTrigger = raw_value
+        return 0
+
+    backend._get_state = get_state
+    state = backend.poll()
+
+    assert state.left_trigger == pytest.approx(expected)
+    assert state.right_trigger == pytest.approx(expected)
+    assert ctypes.sizeof(_XInputGamepad) == 12
 
 
 def make_parameters():
@@ -171,12 +201,20 @@ class FakeBackend:
         """保存采样序列，耗尽后持续返回最后一帧。"""
         self.states = list(states)
         self.last = self.states[-1]
+        self.vibration_calls = []
 
     def poll(self):
         """弹出下一帧测试状态。"""
         if self.states:
             self.last = self.states.pop(0)
         return self.last
+
+    def set_vibration(self, controller_index, left_motor, right_motor):
+        """记录震动调用，模拟 XInputSetState 成功。"""
+        self.vibration_calls.append(
+            (controller_index, float(left_motor), float(right_motor))
+        )
+        return True
 
 
 def ensure_app():
@@ -188,8 +226,9 @@ def ensure_app():
     "button_mask",
     (XINPUT_GAMEPAD_X, XINPUT_GAMEPAD_B),
 )
-def test_x_or_b_emits_immediate_zero_tail_then_requests_disarm(button_mask):
-    """X/B 紧停必须先发零摆幅命令，再通知主界面撤销控制权。"""
+def test_x_or_b_emits_immediate_zero_tail_vibrates_then_requests_disarm(
+        button_mask):
+    """X/B 紧停须先发零摆幅、启动短震，再通知主界面撤销控制权。"""
     ensure_app()
     connected = XboxInputState(connected=True, controller_index=0, left_y=1.0)
     emergency = XboxInputState(
@@ -214,7 +253,12 @@ def test_x_or_b_emits_immediate_zero_tail_then_requests_disarm(button_mask):
     assert commands[0].tail_frequency == pytest.approx(0.0)
     assert commands[0].tail_amplitude == pytest.approx(0.0)
     assert commands[0].pec_angle == 1500
-    assert events == ["X/B 紧急停止：尾鳍已立即停止"]
+    assert backend.vibration_calls == [(0, 0.75, 1.0)]
+    assert controller._vibration_timer.isActive()
+    assert events == ["X/B 紧急停止：尾鳍已立即停止，手柄短震提示"]
+
+    controller._stop_vibration()
+    assert backend.vibration_calls[-1] == (0, 0.0, 0.0)
 
     controller._poll_controller()
     assert len(commands) == 1

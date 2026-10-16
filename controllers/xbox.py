@@ -47,8 +47,10 @@ class _XInputGamepad(ctypes.Structure):
 
     _fields_ = [
         ("wButtons", wintypes.WORD),
-        ("bLeftTrigger", wintypes.BYTE),
-        ("bRightTrigger", wintypes.BYTE),
+        # ctypes.wintypes.BYTE 在当前 Python 环境中是有符号 c_byte，
+        # 128～255 会被读成 -128～-1。XInput 规范中的扳机是无符号 BYTE。
+        ("bLeftTrigger", ctypes.c_ubyte),
+        ("bRightTrigger", ctypes.c_ubyte),
         ("sThumbLX", ctypes.c_short),
         ("sThumbLY", ctypes.c_short),
         ("sThumbRX", ctypes.c_short),
@@ -62,6 +64,15 @@ class _XInputState(ctypes.Structure):
     _fields_ = [
         ("dwPacketNumber", wintypes.DWORD),
         ("Gamepad", _XInputGamepad),
+    ]
+
+
+class _XInputVibration(ctypes.Structure):
+    """与 Windows XINPUT_VIBRATION 二进制布局一致的结构体。"""
+
+    _fields_ = [
+        ("wLeftMotorSpeed", wintypes.WORD),
+        ("wRightMotorSpeed", wintypes.WORD),
     ]
 
 
@@ -103,6 +114,7 @@ class XInputBackend:
     def __init__(self):
         """按系统推荐顺序加载可用的 XInput DLL。"""
         self._get_state = None
+        self._set_state = None
         self.dll_name = ""
         if sys.platform != "win32" or not hasattr(ctypes, "WinDLL"):
             return
@@ -113,6 +125,16 @@ class XInputBackend:
                 get_state.argtypes = [wintypes.DWORD, ctypes.POINTER(_XInputState)]
                 get_state.restype = wintypes.DWORD
                 self._get_state = get_state
+                try:
+                    set_state = library.XInputSetState
+                    set_state.argtypes = [
+                        wintypes.DWORD,
+                        ctypes.POINTER(_XInputVibration),
+                    ]
+                    set_state.restype = wintypes.DWORD
+                    self._set_state = set_state
+                except AttributeError:
+                    self._set_state = None
                 self.dll_name = dll_name
                 break
             except (OSError, AttributeError):
@@ -147,6 +169,20 @@ class XInputBackend:
                     buttons=int(gamepad.wButtons),
                 )
         return XboxInputState()
+
+    def set_vibration(self, controller_index, left_motor, right_motor):
+        """设置两只震动电机的 0～1 强度，调用失败时安全返回 False。"""
+        if self._set_state is None or controller_index < 0:
+            return False
+        left_motor = max(0.0, min(float(left_motor), 1.0))
+        right_motor = max(0.0, min(float(right_motor), 1.0))
+        vibration = _XInputVibration(
+            int(round(left_motor * 65535.0)),
+            int(round(right_motor * 65535.0)),
+        )
+        return self._set_state(
+            controller_index, ctypes.byref(vibration)
+        ) == 0
 
 
 class XboxControlModel:
@@ -432,6 +468,11 @@ class XboxController(ControllerBase):
         self._poll_timer.setInterval(20)
         self._poll_timer.timeout.connect(self._poll_controller)
         self._poll_timer.start()
+        self._vibration_controller_index = -1
+        self._vibration_timer = QTimer(self)
+        self._vibration_timer.setSingleShot(True)
+        self._vibration_timer.setInterval(250)
+        self._vibration_timer.timeout.connect(self._stop_vibration)
 
     def activate(self):
         """仅在检测到 Xbox 手柄时激活控制器。"""
@@ -567,7 +608,7 @@ class XboxController(ControllerBase):
             ("LT", "连续加速"),
             ("Y / A", "胸鳍上升 / 下降"),
             ("Y/A + RT", "胸鳍快速调节"),
-            ("X / B", "尾鳍立即停止"),
+            ("X / B", "尾鳍立即停止 + 手柄短震"),
         ]
         for row, (button, action) in enumerate(mappings):
             mapping_layout.addWidget(QLabel(button), row, 0)
@@ -705,6 +746,25 @@ class XboxController(ControllerBase):
             else:
                 self.status_changed.emit("Xbox 手柄已断开")
 
+    def _pulse_emergency_vibration(self, controller_index):
+        """让触发紧停的手柄双电机短震 250 ms，不阻塞控制循环。"""
+        set_vibration = getattr(self._backend, "set_vibration", None)
+        if not callable(set_vibration):
+            return False
+        if not set_vibration(controller_index, 0.75, 1.0):
+            return False
+        self._vibration_controller_index = controller_index
+        self._vibration_timer.start()
+        return True
+
+    def _stop_vibration(self):
+        """停止最近一次紧停提示震动。"""
+        controller_index = self._vibration_controller_index
+        self._vibration_controller_index = -1
+        set_vibration = getattr(self._backend, "set_vibration", None)
+        if controller_index >= 0 and callable(set_vibration):
+            set_vibration(controller_index, 0.0, 0.0)
+
     def _poll_controller(self):
         """以 50 Hz 轮询手柄并在激活时推进控制模型。"""
         now = self._time_source()
@@ -738,7 +798,10 @@ class XboxController(ControllerBase):
             self._emergency_latched = True
             output = self._model.immediate_stop()
             self._emit_output(output, force=True)
-            self.emergency_stop_requested.emit("X/B 紧急停止：尾鳍已立即停止")
+            self._pulse_emergency_vibration(state.controller_index)
+            self.emergency_stop_requested.emit(
+                "X/B 紧急停止：尾鳍已立即停止，手柄短震提示"
+            )
             self._refresh_status_labels(state, output)
             return
 

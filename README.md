@@ -53,7 +53,7 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
 | `ui/data_recording.py` | 历史持续记录控制面板源码，为保留旧功能未删除；当前主界面不再挂载，实际导出由时间序列页的按钮完成 |
 | `controllers/base.py` | KeyboardController 等控制器：把键盘事件合成为 ControlCommand（频率/幅值/偏置/**相位差**/胸鳍脉宽）；参数栏含相位差旋钮（默认 1.57 rad，±6.282），并可直接输入 500–2500 μs 胸鳍脉宽后点击“设定”发送；输入期间不会被 100 ms 控制定时器回写，Q/E 增量调节继续保留 |
 | `controllers/depth.py` | 双尾鱼地面站深度闭环：使用标定后 `fused` 深度运行 PID，PID 接管胸鳍但保留 W/A/D/S 尾鳍键盘控制；含独立启停、参数解锁、允许正负值的 Kp/Ki/Kd、正向目标深度、积分限幅、中位/最小/最大脉宽、数据超时和输出方向调节；只有总控制已启用时 PID 开关才可操作，切走控制器或断链会关闭 PID 并回中 |
-| `controllers/xbox.py` | 双尾鱼 Xbox 控制器：直接调用 Windows XInput（不依赖 pygame），50 Hz 轮询；左摇杆前半圆连续控制方向，进入后半圆保持进入前的尾鳍状态，重新进入前半圆时偏置按两个尾摆周期过渡；LT 连续加速，启停与加速同样按两个周期平滑；Y/A 匀速调胸鳍、RT 提速，X/B 或手柄断开立即停止尾鳍并锁定关闭总控制；页面显示输入、尾鳍参数、胸鳍 PWM 与估算角度 |
+| `controllers/xbox.py` | 双尾鱼 Xbox 控制器：直接调用 Windows XInput（不依赖 pygame），50 Hz 轮询；LT/RT 以无符号 8 位值连续映射 0～100%；左摇杆前半圆连续控制方向，进入后半圆保持进入前的尾鳍状态，重新进入前半圆时偏置按两个尾摆周期过渡；LT 连续加速，启停与加速同样按两个周期平滑；Y/A 匀速调胸鳍、RT 提速，X/B 立即停尾并让手柄短震 250 ms，断连立即停尾但不震动；页面显示输入、尾鳍参数、胸鳍 PWM 与估算角度 |
 | `xbox_params.json` | Xbox 控制参数：LT 松开/全按时的频率和摆幅端点、最大转向量、基础偏置、相位差、摇杆/扳机死区、胸鳍范围与普通/RT 调节速度 |
 | `communication/base.py` | 通信抽象基类（FishState/ControlCommand/FishCommunicationInterface） |
 | `communication/socket_client.py` | 双尾/单尾 TCP 控制客户端（9999，JSON 行协议）：state 回推走状态回调（遥测 + IMU 欧拉角并入 FishState.orientation 实时驱动姿态图），depth 推送装入 FishState.depth 供时间序列图，兼容旧版单尾鱼组合格式 |
@@ -62,7 +62,7 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
 | `utils/graphics_exporter.py` | 历史全图导出器，当前时间序列 PNG 导出改由 `ui/visualization.py` 实现 |
 | `catkin_ws_in_fish/` | 单尾鱼（orangepi ROS1）机载脚本母本：`camera_stream_server.py`（9998 视频流+机上录制）、`socket_server.py`（9999 控制+传感器推送）、launch 与部署说明 |
 | `tests/test_ui_state_machine.py` | 主连接、控制锁定、Xbox 模式接入和无手柄拒绝启用、视频确认状态、失败重试、侧栏默认值与持久化的离线回归测试 |
-| `tests/test_xbox_controller.py` | Xbox 前半圆转向、后半圆保持及跨侧偏置过渡、两个周期启停、LT 连续加速、Y/A/RT 胸鳍调节、X/B 紧停和无手柄拒绝激活的离线回归测试 |
+| `tests/test_xbox_controller.py` | Xbox 前半圆转向、后半圆保持及跨侧偏置过渡、两个周期启停、LT/RT 全量程无符号读取、LT 连续加速、Y/A/RT 胸鳍调节、X/B 紧停短震和无手柄拒绝激活的离线回归测试 |
 | `tests/test_visualization_time_modes.py` | 全局历史不受滑动窗口截断、时间模式幂等、双图时间轴同步、可见范围筛选及 CSV/XLSX 文件输出的离线回归测试 |
 | `tests/test_depth_controller.py` | PID 数学、参数锁、中位与限幅、方向切换、键盘并行控制和断流回中测试 |
 | `docs/2026-10-13-ui-state-machine-design.md` | 本次 UI 状态机的状态、门闩、幂等规则和验证边界 |
@@ -91,8 +91,9 @@ Xbox 控制只在“双尾双目鱼”页面出现。电脑先通过蓝牙连接
 不会从左极限突变到右极限。只有摇杆进入中心死区才触发平滑停止。LT 从松开到全按在普通档和
 加速档参数间连续插值；启动、LT 加速和中心回中停止均使用两个尾摆周期的平滑过程。
 
-Y 增大胸鳍 PWM，A 减小胸鳍 PWM；按住 RT 时在普通速度与快速速度之间连续插值。X 或 B 会绕过
-平滑过程，立即发送零尾鳍摆幅、保持当时胸鳍指令并关闭总控制；手柄断开执行同一路径。紧停后
+Y 增大胸鳍 PWM，A 减小胸鳍 PWM；按住 RT 时在普通速度与快速速度之间连续插值。LT/RT 的完整
+物理行程都线性显示为 0～100%。X 或 B 会绕过平滑过程，立即发送零尾鳍摆幅、保持当时胸鳍指令，
+让当前手柄双电机短震 250 ms，并关闭总控制；手柄断开执行停尾路径但不震动。紧停后
 必须确认摇杆回中，并在 UI 中重新勾选“启用控制”。页面显示的胸鳍角度由 500–2500 μs 线性
 换算为 0–180°，是指令估算值，不是位置传感器反馈。完整操作见 `docs/XBOX_CONTROL_GUIDE.md`。
 

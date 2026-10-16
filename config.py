@@ -63,6 +63,25 @@ KEYBOARD_CONTROL_DEFAULTS = {
     "tail_phase_diff": 1.57,
 }
 
+# Xbox 开环控制默认参数。前半圆负责方向、后半圆保持进入前状态，LT 在普通档与加速档之间连续插值。
+XBOX_CONTROL_DEFAULTS = {
+    "stick_deadzone": 0.15,
+    "trigger_deadzone": 0.05,
+    "normal_frequency": 1.5,
+    "normal_amplitude": 0.2,
+    "boost_frequency": 4.0,
+    "boost_amplitude": 0.5,
+    "maximum_turn_bias": 0.5,
+    "base_bias": 0.0,
+    "tail_phase_diff": 1.57,
+    "ramp_cycles": 2.0,
+    "pec_minimum_pwm": 500,
+    "pec_neutral_pwm": 1500,
+    "pec_maximum_pwm": 2500,
+    "pec_normal_rate": 100.0,
+    "pec_fast_rate": 400.0,
+}
+
 # 地面站深度闭环默认参数。深度单位为 cm，脉宽单位为 μs。
 # 深度以水面为 0，水下为正数且越深越大；误差=目标-当前。
 # 胸鳍脉宽减小会下潜，因此正增益配 direction=-1。

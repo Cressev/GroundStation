@@ -3,6 +3,7 @@
 | 文件 | 内容 |
 |---|---|
 | `2026-10-13-ui-state-machine-design.md` | 主连接、视频、摄像头、深度流和控制器状态机设计，以及离线验证边界 |
+| `XBOX_CONTROL_GUIDE.md` | Xbox 蓝牙手柄控制映射、UI 参数、安全联调与预期状态 |
 | `KEYBOARD_DISPLAY_GUIDE.md` | 键盘状态显示页面的结构、按键映射和使用方法 |
 | `VIDEO_GUIDE.md` | 视频监控、相机选择、录像和快照功能说明 |
 | `修复说明.md` | 早期界面与视频问题的修复记录 |

@@ -29,6 +29,7 @@ from ui.connection_store import ConnectionStore
 from ui.heartbeat_light import HeartbeatLight
 from controllers.base import KeyboardController
 from controllers.depth import DepthController
+from controllers.xbox import XboxController
 from communication.socket_client import SocketCommunication
 from communication.base import FishState, ControlCommand
 from config import (UI_CONFIG, KEYBOARD_MAPPING, FISH_IP, SOCKET_PORT,
@@ -290,6 +291,12 @@ class MainWindow(QMainWindow):
             self.controller_action_group.addAction(depth_action)
             self.controller_actions["depth"] = depth_action
             control_menu.addAction(depth_action)
+            xbox_action = QAction('Xbox 控制', self, checkable=True)
+            xbox_action.triggered.connect(
+                lambda checked: checked and self._request_controller("xbox"))
+            self.controller_action_group.addAction(xbox_action)
+            self.controller_actions["xbox"] = xbox_action
+            control_menu.addAction(xbox_action)
         
         # 帮助菜单
         help_menu = menubar.addMenu('帮助(&H)')
@@ -378,6 +385,7 @@ class MainWindow(QMainWindow):
         self.controller_combo.addItem("键盘控制", "keyboard")
         if self.variant == "dual":
             self.controller_combo.addItem("深度控制", "depth")
+            self.controller_combo.addItem("Xbox 控制", "xbox")
         self.controller_combo.currentIndexChanged.connect(self._on_controller_changed)
         
         control_layout.addWidget(QLabel("选择控制方式:"))
@@ -426,6 +434,7 @@ class MainWindow(QMainWindow):
         self.controllers['keyboard'] = KeyboardController()
         if self.variant == "dual":
             self.controllers['depth'] = DepthController()
+            self.controllers['xbox'] = XboxController()
         
         # 默认选择键盘控制器
         self._switch_controller('keyboard')
@@ -436,6 +445,10 @@ class MainWindow(QMainWindow):
         for controller in self.controllers.values():
             controller.control_command_generated.connect(self._on_control_command)
             controller.status_changed.connect(self._on_controller_status_changed)
+        xbox_controller = self.controllers.get("xbox")
+        if xbox_controller is not None:
+            xbox_controller.emergency_stop_requested.connect(
+                self._on_xbox_emergency_stop)
         
         # 键盘状态组件信号连接  
         self.keyboard_status_widget.plot_cleared.connect(self._on_plot_cleared)
@@ -694,8 +707,12 @@ class MainWindow(QMainWindow):
             self._apply_main_ui_state()
             return False
         if armed:
+            if not self.current_controller.activate():
+                self._control_armed = False
+                self._set_control_checkbox(False)
+                self._apply_main_ui_state()
+                return False
             self._control_armed = True
-            self.current_controller.activate()
             if isinstance(self.current_controller, KeyboardController):
                 self.current_controller.stop_motion()
             self._set_control_checkbox(True)
@@ -939,7 +956,8 @@ class MainWindow(QMainWindow):
         """发送停止命令，确保机器鱼停止运动"""
         if self.communication and self.communication.connected:
             stop_offset = 0.0
-            if isinstance(self.current_controller, KeyboardController):
+            if (self.current_controller is not None and
+                    hasattr(self.current_controller, "get_base_bias")):
                 stop_offset = self.current_controller.get_base_bias()
             stop_cmd = ControlCommand()
             stop_cmd.tail_frequency = 0.0
@@ -985,6 +1003,16 @@ class MainWindow(QMainWindow):
     def _on_controller_status_changed(self, message: str):
         """控制器状态改变事件"""
         self._log_message(message)
+
+    def _on_xbox_emergency_stop(self, message: str):
+        """接收 Xbox 紧急停止/断连事件，并锁定为未启用状态。"""
+        if self._current_controller_name != "xbox" or not self._control_armed:
+            return
+        # Xbox 控制器先发送保持当前胸鳍位置的零摆幅帧，再请求主界面撤销发送权；
+        # 此处禁止再次发送通用回中帧，避免紧急停止时胸鳍突然跳回中位。
+        self._set_control_armed(False, send_stop=False)
+        self._log_message(message)
+        self.status_bar.showMessage(message)
     
     def _on_plot_toggled(self, enabled: bool):
         """绘图开关切换事件"""

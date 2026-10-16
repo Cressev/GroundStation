@@ -20,6 +20,7 @@ from ui.image_enhancement_widget import EnhancementWorker
 from ui.main_window import MainWindow
 from ui.stereo_camera_widget import (StereoFishCameraWidget, StereoVideoClient,
                                      prepare_stereo_display_frame)
+from controllers.xbox import XboxInputState
 
 
 _APP = None
@@ -109,6 +110,36 @@ def test_controller_selection_stays_synchronized_and_depth_pid_needs_global_arm(
     window.enable_control_checkbox.setChecked(False)
     assert not depth._pid_enable_checkbox.isEnabled()
     assert not depth._pid_enabled
+    window._fish_connection_state = "disconnected"
+    window.communication = None
+    window.close()
+
+
+def test_xbox_mode_is_integrated_and_unconnected_gamepad_cannot_arm_control():
+    """Xbox 必须同时出现在菜单/下拉框中，且无手柄时不能误进入已启用状态。"""
+    window, communication = make_connected_window()
+    assert window.controller_combo.findData("xbox") >= 0
+    assert "xbox" in window.controller_actions
+    assert "xbox" in window.controllers
+    assert window._request_controller("xbox")
+    assert window._current_controller_name == "xbox"
+    assert window.controller_actions["xbox"].isChecked()
+
+    xbox = window.controllers["xbox"]
+    xbox._poll_timer.stop()
+    xbox._backend = Mock(available=True)
+    xbox._backend.poll.return_value = XboxInputState()
+    panel = xbox.get_control_widget()
+    assert panel is not None
+    assert "normal_frequency" in xbox._parameter_inputs
+    assert "pec_fast_rate" in xbox._parameter_inputs
+
+    assert not window._set_control_armed(True)
+    assert not window._control_armed
+    assert not window.enable_control_checkbox.isChecked()
+    assert window.controller_combo.isEnabled()
+    assert communication.commands == []
+
     window._fish_connection_state = "disconnected"
     window.communication = None
     window.close()

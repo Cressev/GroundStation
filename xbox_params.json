@@ -1,0 +1,17 @@
+{
+  "stick_deadzone": 0.15,
+  "trigger_deadzone": 0.05,
+  "normal_frequency": 1.5,
+  "normal_amplitude": 0.2,
+  "boost_frequency": 2.0,
+  "boost_amplitude": 0.35,
+  "maximum_turn_bias": 0.3,
+  "base_bias": 0.0,
+  "tail_phase_diff": 1.57,
+  "ramp_cycles": 2.0,
+  "pec_minimum_pwm": 1000,
+  "pec_neutral_pwm": 1500,
+  "pec_maximum_pwm": 2000,
+  "pec_normal_rate": 50.0,
+  "pec_fast_rate": 100.0
+}

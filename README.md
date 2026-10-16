@@ -30,11 +30,11 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
 | 文件 | 说明 |
 |---|---|
 | `main.py` | 入口：高 DPI 设置 → 版本选择对话框 → 按变体构造 MainWindow |
-| `config.py` | 全局配置：单尾鱼 IP/端口、`DUAL_FISH_CONFIG`（pico IP + 9999/9998 端口）、控制限幅（胸鳍 PWM 500–2500 μs）、键位映射、键盘默认参数 `KEYBOARD_CONTROL_DEFAULTS`（含相位差 1.57）、深度闭环安全默认参数 `DEPTH_CONTROL_DEFAULTS`、UI/视频/记录参数；`STEREO_RANGING_UI_ENABLED=False` 保证当前版本只显示、不启动测距，`STEREO_PREVIEW_LAYOUT="raw_single"` 标记原生单目流 |
+| `config.py` | 全局配置：单尾鱼 IP/端口、`DUAL_FISH_CONFIG`（pico IP + 9999/9998 端口）、控制限幅（胸鳍 PWM 500–2500 μs）、键位映射、键盘默认参数 `KEYBOARD_CONTROL_DEFAULTS`、Xbox 默认参数 `XBOX_CONTROL_DEFAULTS`、深度闭环安全默认参数 `DEPTH_CONTROL_DEFAULTS`、UI/视频/记录参数；`STEREO_RANGING_UI_ENABLED=False` 保证当前版本只显示、不启动测距，`STEREO_PREVIEW_LAYOUT="raw_single"` 标记原生单目流 |
 | `ui/fish_variant_dialog.py` | **新增** 启动版本选择对话框（dual/single 卡片式选择） |
 | `ui/connection_store.py` | **新增** 连接档案持久化（本地 connections.json 记录 备注+IP+端口，双尾鱼页面下拉直选） |
 | `ui/heartbeat_light.py` | **新增** 心跳呼吸灯（状态栏左下角）：脉冲只由真实心跳发送事件驱动——通信层每成功发出一拍 ping 经 Qt 信号点亮、两拍间自然衰减，停发即沉暗，不做装饰性空闪；悬停显示累计拍数与最后时刻；断链转灰 |
-| `ui/main_window.py` | 主窗口：按 `variant` 加载“单目视频”、图像增强页与深度页；主连接采用 `disconnected/connecting/connected/disconnecting` 状态机，视频和深度连接严格受主连接门闩控制；右侧栏只保留深度与按键状态，不再挂载旧数据记录页；控制总开关打开后锁定控制方式下拉框及菜单，断链先撤销发送权并安全停机；左/右侧栏首次默认 360/280 px，用户拖动宽度按鱼体版本保存并在下次启动恢复 |
+| `ui/main_window.py` | 主窗口：按 `variant` 加载“单目视频”、图像增强页与深度页；主连接采用 `disconnected/connecting/connected/disconnecting` 状态机，视频和深度连接严格受主连接门闩控制；双尾鱼可选择键盘、深度或 Xbox 控制；控制总开关打开后锁定控制方式下拉框及菜单，Xbox 未连接时拒绝误启用，X/B 紧停或手柄断开后撤销控制权；左/右侧栏首次默认 360/280 px，用户拖动宽度按鱼体版本保存并在下次启动恢复 |
 | `ui/stereo_camera_widget.py` | 双尾鱼纯显示组件：`StereoVideoClient`（TCP 9998）+ `StereoFishCameraWidget`；接收 `1280×720` 原生单目 JPEG，在电脑端顺时针转正并做 Gamma 2.0 提亮；兼容旧 `raw_sbs` 双目流但只显示第一目；区分“线程启动”“TCP 已连接”“相机已确认开启”，按钮只由集中状态机刷新，快速重复点击和迟到回执不会反转状态；相机开关等待板端确认，含 GET_STATE、本地 MP4 和快照；测距按钮固定禁用，不发送 `RANGE_ON` |
 | `ui/depth_panel.py` | 双尾鱼深度面板：`DepthTcpClient`（TCP 9999，接收 gs_bridge 深度推送）、实时深度、10 秒零点标定、CSV 记录；连接严格依赖主连接，区分连接中/已连接/断开中/错误，快速断开可取消未完成连接；主链断开时自动结束记录并保存到 `records/`。深度单位为 cm，数据源 IP 跟随本次主连接 |
 | `ui/image_enhancement_widget.py` | 双尾鱼图像增强对比页：原图/增强图左右等宽显示，复用同一路 9998 单目视频帧且默认对整帧增强；一级选择传统方法/神经网络/不处理，传统方法下含综合增强、CLAHE、Gamma、白平衡；支持本地 Mock 视频、实时 FPS/延迟/丢帧统计、单画面放大、截图、左右对比 MP4 录像和参数导出 |
@@ -53,16 +53,20 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
 | `ui/data_recording.py` | 历史持续记录控制面板源码，为保留旧功能未删除；当前主界面不再挂载，实际导出由时间序列页的按钮完成 |
 | `controllers/base.py` | KeyboardController 等控制器：把键盘事件合成为 ControlCommand（频率/幅值/偏置/**相位差**/胸鳍脉宽）；参数栏含相位差旋钮（默认 1.57 rad，±6.282），并可直接输入 500–2500 μs 胸鳍脉宽后点击“设定”发送；输入期间不会被 100 ms 控制定时器回写，Q/E 增量调节继续保留 |
 | `controllers/depth.py` | 双尾鱼地面站深度闭环：使用标定后 `fused` 深度运行 PID，PID 接管胸鳍但保留 W/A/D/S 尾鳍键盘控制；含独立启停、参数解锁、允许正负值的 Kp/Ki/Kd、正向目标深度、积分限幅、中位/最小/最大脉宽、数据超时和输出方向调节；只有总控制已启用时 PID 开关才可操作，切走控制器或断链会关闭 PID 并回中 |
+| `controllers/xbox.py` | 双尾鱼 Xbox 控制器：直接调用 Windows XInput（不依赖 pygame），50 Hz 轮询；左摇杆前半圆连续控制方向，进入后半圆保持进入前的尾鳍状态，重新进入前半圆时偏置按两个尾摆周期过渡；LT 连续加速，启停与加速同样按两个周期平滑；Y/A 匀速调胸鳍、RT 提速，X/B 或手柄断开立即停止尾鳍并锁定关闭总控制；页面显示输入、尾鳍参数、胸鳍 PWM 与估算角度 |
+| `xbox_params.json` | Xbox 控制参数：LT 松开/全按时的频率和摆幅端点、最大转向量、基础偏置、相位差、摇杆/扳机死区、胸鳍范围与普通/RT 调节速度 |
 | `communication/base.py` | 通信抽象基类（FishState/ControlCommand/FishCommunicationInterface） |
 | `communication/socket_client.py` | 双尾/单尾 TCP 控制客户端（9999，JSON 行协议）：state 回推走状态回调（遥测 + IMU 欧拉角并入 FishState.orientation 实时驱动姿态图），depth 推送装入 FishState.depth 供时间序列图，兼容旧版单尾鱼组合格式 |
 | `communication/ssh_ros.py` | SSH 执行 ROS 命令的辅助（旧链路备用） |
 | `data/recorder.py` | 历史持续传感器/控制数据记录器（CSV + metadata），当前主界面不调用 |
 | `utils/graphics_exporter.py` | 历史全图导出器，当前时间序列 PNG 导出改由 `ui/visualization.py` 实现 |
 | `catkin_ws_in_fish/` | 单尾鱼（orangepi ROS1）机载脚本母本：`camera_stream_server.py`（9998 视频流+机上录制）、`socket_server.py`（9999 控制+传感器推送）、launch 与部署说明 |
-| `tests/test_ui_state_machine.py` | 主连接、控制锁定、视频确认状态、失败重试、侧栏默认值与持久化的离线回归测试 |
+| `tests/test_ui_state_machine.py` | 主连接、控制锁定、Xbox 模式接入和无手柄拒绝启用、视频确认状态、失败重试、侧栏默认值与持久化的离线回归测试 |
+| `tests/test_xbox_controller.py` | Xbox 前半圆转向、后半圆保持及跨侧偏置过渡、两个周期启停、LT 连续加速、Y/A/RT 胸鳍调节、X/B 紧停和无手柄拒绝激活的离线回归测试 |
 | `tests/test_visualization_time_modes.py` | 全局历史不受滑动窗口截断、时间模式幂等、双图时间轴同步、可见范围筛选及 CSV/XLSX 文件输出的离线回归测试 |
 | `tests/test_depth_controller.py` | PID 数学、参数锁、中位与限幅、方向切换、键盘并行控制和断流回中测试 |
 | `docs/2026-10-13-ui-state-machine-design.md` | 本次 UI 状态机的状态、门闩、幂等规则和验证边界 |
+| `docs/XBOX_CONTROL_GUIDE.md` | Xbox 蓝牙连接检查、按键映射、参数含义、安全操作顺序和首次水池联调步骤 |
 | `docs/README.md` | docs 文档目录逐文件索引 |
 | `Change_log.md` / `TODO.md` | 变更记录与待办 |
 | `fps_compare/`、`records/`、`temp_scripts/`、`image.png` | 历史测试素材与一次性脚本（非运行依赖） |
@@ -77,6 +81,20 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
 控制方式只有在总控制关闭时才能切换。总控制打开后，下拉框和控制菜单同时锁定；无论通过菜单
 还是下拉框选择，界面与实际控制器都保持一致。重复连接、断开、启用、停用或选择同一控制器均
 保持幂等。详细状态表见 `docs/2026-10-13-ui-state-machine-design.md`。
+
+## Xbox 控制
+
+Xbox 控制只在“双尾双目鱼”页面出现。电脑先通过蓝牙连接并唤醒手柄，再连接机器鱼；在“控制方式”
+中选择“Xbox 控制”，确认实时状态显示“手柄：已连接”后才能打开总安全开关。左摇杆前半圆的
+角度连续决定转向；进入后半圆不会倒退或停机，而是保持越过边界前一刻的尾鳍频率、摆幅和偏置。
+若沿后半圆从最左侧转到最右侧，重新进入前半圆时，尾鳍偏置会在两个当前摆动周期内连续过渡，
+不会从左极限突变到右极限。只有摇杆进入中心死区才触发平滑停止。LT 从松开到全按在普通档和
+加速档参数间连续插值；启动、LT 加速和中心回中停止均使用两个尾摆周期的平滑过程。
+
+Y 增大胸鳍 PWM，A 减小胸鳍 PWM；按住 RT 时在普通速度与快速速度之间连续插值。X 或 B 会绕过
+平滑过程，立即发送零尾鳍摆幅、保持当时胸鳍指令并关闭总控制；手柄断开执行同一路径。紧停后
+必须确认摇杆回中，并在 UI 中重新勾选“启用控制”。页面显示的胸鳍角度由 500–2500 μs 线性
+换算为 0–180°，是指令估算值，不是位置传感器反馈。完整操作见 `docs/XBOX_CONTROL_GUIDE.md`。
 
 ## 深度闭环控制
 

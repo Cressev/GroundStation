@@ -40,6 +40,8 @@ XINPUT_GAMEPAD_A = 0x1000
 XINPUT_GAMEPAD_B = 0x2000
 XINPUT_GAMEPAD_X = 0x4000
 XINPUT_GAMEPAD_Y = 0x8000
+ACTIVATION_VIBRATION_MS = 600
+EMERGENCY_VIBRATION_MS = 250
 
 
 class _XInputGamepad(ctypes.Structure):
@@ -471,7 +473,6 @@ class XboxController(ControllerBase):
         self._vibration_controller_index = -1
         self._vibration_timer = QTimer(self)
         self._vibration_timer.setSingleShot(True)
-        self._vibration_timer.setInterval(250)
         self._vibration_timer.timeout.connect(self._stop_vibration)
 
     def activate(self):
@@ -488,9 +489,16 @@ class XboxController(ControllerBase):
         self._previous_buttons = 0
         self._last_sent_command = None
         self._last_poll_time = self._time_source()
-        self.status_changed.emit(
-            f"Xbox 控制已激活（手柄 {state.controller_index + 1}）"
+        vibration_started = self._pulse_vibration(
+            state.controller_index,
+            duration_ms=ACTIVATION_VIBRATION_MS,
+            left_motor=0.55,
+            right_motor=0.75,
         )
+        message = f"Xbox 控制已激活（手柄 {state.controller_index + 1}）"
+        if vibration_started:
+            message += "，长震确认"
+        self.status_changed.emit(message)
         return True
 
     def deactivate(self):
@@ -603,6 +611,7 @@ class XboxController(ControllerBase):
         mapping_group = QGroupBox("控制映射")
         mapping_layout = QGridLayout(mapping_group)
         mappings = [
+            ("启用控制成功", "手柄长震确认"),
             ("左摇杆前半圆", "游动/连续转向"),
             ("左摇杆后半圆", "保持进入前的尾鳍状态"),
             ("LT", "连续加速"),
@@ -746,19 +755,29 @@ class XboxController(ControllerBase):
             else:
                 self.status_changed.emit("Xbox 手柄已断开")
 
-    def _pulse_emergency_vibration(self, controller_index):
-        """让触发紧停的手柄双电机短震 250 ms，不阻塞控制循环。"""
+    def _pulse_vibration(
+            self, controller_index, duration_ms, left_motor, right_motor):
+        """按给定强度和时长启动一次非阻塞双电机震动。"""
         set_vibration = getattr(self._backend, "set_vibration", None)
         if not callable(set_vibration):
             return False
-        if not set_vibration(controller_index, 0.75, 1.0):
+        if not set_vibration(controller_index, left_motor, right_motor):
             return False
         self._vibration_controller_index = controller_index
-        self._vibration_timer.start()
+        self._vibration_timer.start(max(1, int(duration_ms)))
         return True
 
+    def _pulse_emergency_vibration(self, controller_index):
+        """让触发紧停的手柄双电机短震 250 ms。"""
+        return self._pulse_vibration(
+            controller_index,
+            duration_ms=EMERGENCY_VIBRATION_MS,
+            left_motor=0.75,
+            right_motor=1.0,
+        )
+
     def _stop_vibration(self):
-        """停止最近一次紧停提示震动。"""
+        """停止最近一次启动确认或紧停提示震动。"""
         controller_index = self._vibration_controller_index
         self._vibration_controller_index = -1
         set_vibration = getattr(self._backend, "set_vibration", None)

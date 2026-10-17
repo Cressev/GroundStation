@@ -8,10 +8,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
+from PyQt5.QtCore import QEventLoop, QTimer
 from PyQt5.QtWidgets import QApplication
 
 from config import XBOX_CONTROL_DEFAULTS
 from controllers.xbox import (
+    ACTIVATION_VIBRATION_MS,
+    EMERGENCY_VIBRATION_MS,
     XINPUT_GAMEPAD_A,
     XINPUT_GAMEPAD_B,
     XINPUT_GAMEPAD_X,
@@ -222,6 +225,32 @@ def ensure_app():
     return QApplication.instance() or QApplication([])
 
 
+def test_successful_activation_uses_longer_confirmation_vibration():
+    """控制成功启用后应长震 600 ms，且明显长于紧停短震。"""
+    app = ensure_app()
+    connected = XboxInputState(connected=True, controller_index=0)
+    backend = FakeBackend([connected])
+    times = iter((0.0, 0.0))
+    controller = XboxController(backend=backend, time_source=lambda: next(times))
+    controller._poll_timer.stop()
+    messages = []
+    controller.status_changed.connect(messages.append)
+
+    assert controller.activate() is True
+    assert backend.vibration_calls == [(0, 0.55, 0.75)]
+    assert controller._vibration_timer.isActive()
+    assert controller._vibration_timer.interval() == ACTIVATION_VIBRATION_MS
+    assert ACTIVATION_VIBRATION_MS > EMERGENCY_VIBRATION_MS
+    assert messages[-1] == "Xbox 控制已激活（手柄 1），长震确认"
+
+    loop = QEventLoop()
+    QTimer.singleShot(ACTIVATION_VIBRATION_MS + 100, loop.quit)
+    loop.exec_()
+    assert app is QApplication.instance()
+    assert not controller._vibration_timer.isActive()
+    assert backend.vibration_calls[-1] == (0, 0.0, 0.0)
+
+
 @pytest.mark.parametrize(
     "button_mask",
     (XINPUT_GAMEPAD_X, XINPUT_GAMEPAD_B),
@@ -247,6 +276,8 @@ def test_x_or_b_emits_immediate_zero_tail_vibrates_then_requests_disarm(
     controller.emergency_stop_requested.connect(events.append)
 
     assert controller.activate() is True
+    controller._stop_vibration()
+    backend.vibration_calls.clear()
     controller._poll_controller()
 
     assert len(commands) == 1
@@ -255,6 +286,7 @@ def test_x_or_b_emits_immediate_zero_tail_vibrates_then_requests_disarm(
     assert commands[0].pec_angle == 1500
     assert backend.vibration_calls == [(0, 0.75, 1.0)]
     assert controller._vibration_timer.isActive()
+    assert controller._vibration_timer.interval() == EMERGENCY_VIBRATION_MS
     assert events == ["X/B 紧急停止：尾鳍已立即停止，手柄短震提示"]
 
     controller._stop_vibration()
@@ -300,3 +332,4 @@ def test_controller_refuses_activation_without_connected_gamepad():
 
     assert controller.activate() is False
     assert controller.active is False
+    assert backend.vibration_calls == []

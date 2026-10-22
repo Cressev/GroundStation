@@ -151,13 +151,13 @@ class MainWindow(QMainWindow):
         # 视频页按变体: dual=机载单目流, single=原视频监控（外部+机载相机）
         if self.variant == "dual":
             self.video_widget = StereoFishCameraWidget()
-            center_tabs.addTab(self.video_widget, "单目视频")
+            center_tabs.addTab(self.video_widget, "双目测距（本地）")
             mock_video_path = os.environ.get("GROUNDSTATION_MOCK_VIDEO", "")
             self.enhancement_widget = ImageEnhancementWidget(
                 mock_video_path=mock_video_path or None)
             center_tabs.addTab(self.enhancement_widget, "图像增强对比")
             # 复用现有 9998 视频连接，禁止为了增强页面再建立第二条视频流。
-            self.video_widget.stream_client.frame_received.connect(
+            self.video_widget.single_frame_ready.connect(
                 self.enhancement_widget.push_live_frame, Qt.QueuedConnection)
             self.video_widget.stream_client.connection_status.connect(
                 self.enhancement_widget.set_live_connection_status,
@@ -362,6 +362,8 @@ class MainWindow(QMainWindow):
             remark_row.addWidget(self.del_conn_button)
             connection_layout.addLayout(remark_row, 1, 0, 1, 2)
             self._refresh_saved_combo()
+        # 已保存档案的顺序不是最近连接顺序；成功连接记录必须最后恢复。
+        self._restore_last_connection()
         
         # 布局：IP和端口在同一行
         ip_layout = QHBoxLayout()
@@ -535,7 +537,7 @@ class MainWindow(QMainWindow):
             self.saved_combo.addItem(
                 f"{e.get('remark') or '未命名'}  [{e['ip']}:{e['port']}]", e)
         self.saved_combo.blockSignals(False)
-        # 自动选中最近一条（IP/端口直接预填）
+        # 档案默认首条不代表最后成功连接；启动时随后恢复独立的成功记录。
         if self.connection_store.entries:
             self.saved_combo.setCurrentIndex(1)
             self._on_saved_selected(1)
@@ -549,6 +551,42 @@ class MainWindow(QMainWindow):
             return
         self.ip_input.setText(entry["ip"])
         self.port_input.setText(str(entry["port"]))
+
+    def _restore_last_connection(self):
+        """恢复当前鱼体最后成功连接的地址；缺失/损坏时保留原默认或档案。"""
+        endpoint = self._settings.value(f"connection/last_successful/{self.variant}")
+        if not isinstance(endpoint, dict):
+            return
+        ip = endpoint.get('ip')
+        try:
+            port = int(endpoint.get('port'))
+        except (TypeError, ValueError):
+            return
+        if not isinstance(ip, str) or not ip.strip() or not 1 <= port <= 65535:
+            return
+        self.ip_input.setText(ip.strip())
+        self.port_input.setText(str(port))
+        if self.saved_combo is not None:
+            selected = 0
+            for index in range(1, self.saved_combo.count()):
+                entry = self.saved_combo.itemData(index)
+                if entry and entry.get('ip') == ip.strip() and entry.get('port') == port:
+                    selected = index
+                    break
+            self.saved_combo.blockSignals(True)
+            self.saved_combo.setCurrentIndex(selected)
+            self.saved_combo.blockSignals(False)
+
+    def _remember_last_connection(self, ip, port):
+        """成功连接时立即落盘，按鱼体隔离；保存失败不打断实际连接。"""
+        try:
+            self._settings.setValue(f"connection/last_successful/{self.variant}",
+                                    {'ip': str(ip).strip(), 'port': int(port)})
+            self._settings.sync()
+            if self._settings.status() != self._settings.NoError:
+                self._log_message('连接已成功，但保存上次连接地址失败')
+        except (TypeError, ValueError, OSError) as exc:
+            self._log_message(f'连接已成功，但保存上次连接地址失败: {exc}')
 
     def _save_current_connection(self):
         """把当前 IP/端口 连同备注写入本地连接档案。"""
@@ -793,6 +831,7 @@ class MainWindow(QMainWindow):
         """幂等地完成主连接，再放行从属视频和深度连接。"""
         if self._fish_connection_state == "connected":
             return
+        self._remember_last_connection(ip_address, port)
         self._fish_connection_state = "connected"
         self.connection_status_label.setText("已连接")
         self.status_bar.showMessage(f"机器鱼连接成功 ({ip_address}:{port})")
@@ -1123,6 +1162,8 @@ class MainWindow(QMainWindow):
         # 断开连接
         if self._fish_connection_state in ("connecting", "connected"):
             self._disconnect_from_fish()
+        if isinstance(self.video_widget, StereoFishCameraWidget):
+            self.video_widget.shutdown()
         
         # VideoMonitorWidget没有_stop_camera方法，不需要调用
             

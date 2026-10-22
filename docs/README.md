@@ -1,7 +1,10 @@
-# docs — 地面站使用与设计文档
+﻿# docs — 地面站使用与设计文档
 
 | 文件 | 内容 |
 |---|---|
+| `2026-10-21-npz-selection.md` | 本地测距最终NPZ选择、路径记忆与启动重新校验、当前文件显示、环境对应文件、安全切换与离线验证摘要（10月22日续更） |
+| `2026-10-21-npz-selection-plan.md` | 本地NPZ功能的职责边界、实现步骤和验证计划 |
+| `2026-10-21-last-connection.md` | 按鱼体恢复最后成功IP/端口、QSettings位置、失败回退及隔离验证 |
 | `2026-10-13-ui-state-machine-design.md` | 主连接、视频、摄像头、深度流和控制器状态机设计，以及离线验证边界 |
 | `XBOX_CONTROL_GUIDE.md` | Xbox 蓝牙手柄控制映射、UI 参数、安全联调与预期状态 |
 | `KEYBOARD_DISPLAY_GUIDE.md` | 键盘状态显示页面的结构、按键映射和使用方法 |

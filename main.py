@@ -10,6 +10,7 @@ Fish Robot Ground Station Control System
 
 import sys
 import os
+import stereo_runtime  # Select private contrib before any UI module imports cv2.
 from PyQt5.QtWidgets import QApplication, QDialog
 from PyQt5.QtCore import Qt
 

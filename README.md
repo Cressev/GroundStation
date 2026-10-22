@@ -1,23 +1,87 @@
-# 机器鱼地面站 GroundStation（PyQt5）
+﻿# 机器鱼地面站 GroundStation（PyQt5）
 
 双版本机器鱼地面站：启动时选择鱼体版本，按版本加载对应的视频、通信与控制页面。
 
-- **双尾双目鱼（dual，当前主攻）**：机载 pico RK3588S（ROS2 Humble）。视频/测距连
-  pico 的 `pico_stereo depth_node` TCP 服务（9998，协议见下），控制命令发 pico 的
-  `gs_bridge` TCP 服务（9999），gs_bridge 翻译成 `/fish/control/actuator_command`
-  交给串口桥发 STM32。当前地面站固定使用**纯显示模式**，测距入口保留但禁用，不会发送
-  `RANGE_ON`。纯显示时机器鱼端使用 UVC 原生 `1280×720` 单目档位，只采集、编码和发送
-  一路摄像头；双目测距代码保留，今后需要时仍可切回标定尺寸。
+- **双尾双目鱼（dual，当前主攻）**：Pico新节点`stereo_stream_node`经有线9998传同帧双目
+  （1280×480横拼，每目640×480）与原标定。电脑执行SGBM192/WLS/Q，仅显示左校正图，
+  点击标点及读当前帧距离；截图/录像只存这一目，不发送RANGE_ON。9999控制桥与舵机逻辑不变。
+  旧视频服务只兼容预览。原start_dual_fish.sh已默认新视频，保留日志监控及其他服务。
 - **单尾单目鱼（single，旧平台）**：机载 orangepi（ROS1）。视频连
   `camera_stream_server`（9998，机上录制），控制连 `socket_server`（9999，
   发布 /servo_info_*）。原功能不变。
 
 ## 快速启动
 
+2026-10-21本地测距的操作与逐文件说明优先见下节；后面的旧板端协议保留作回退说明。
+
+### 本地测距运行库与操作
+
+```powershell
+conda activate agentscope
+python ref/install_local_stereo_runtime.py
+python main.py
+```
+
+本机已将固定版本`opencv-contrib-python==4.11.0.86`安装到忽略目录`.runtime/opencv/`，
+安装器拒绝覆盖已有目录，不替换全局OpenCV；无需重复安装。入口在首次导入cv2前引导私有库。
+agentscope缺Qt时仅在当前进程复用相邻qt5环境已有GUI包；其他电脑需准备PyQt5/pyqtgraph等基础依赖。
+缺WLS会明确报错，不静默改变算法。原fish_ui_gpu/qt5启动方式继续保留。
+
+板上只启动新视频节点（确认9998和相机未被旧节点占用，不含运动控制）：
+
+```bash
+source /opt/ros/humble/setup.bash
+ros2 launch /root/catkin_ws/src/pico_stereo/launch/stereo_stream.launch.py
+```
+
+预期`relay_listen`且`depth_compute=false`，相机默认关闭。连接主控、连接视频、开启相机后，
+UI首次默认取板端NPZ；“加载本地NPZ”先检查格式、字段和数值，成功后记住文件路径，下次重开自动重新校验加载，
+页面独立显示当前文件名、完整路径与生效状态；文件丢失/损坏则明确报错且不静默回退。
+无需重新标定或上传到Pico。“使用板端NPZ”显式恢复默认并清除本地路径记忆。详见[NPZ选择说明](docs/2026-10-21-npz-selection.md)。
+只显示640×480左校正图，顺时针转为480×640后Gamma2.0提亮；
+算法输入不提亮。点击黑边忽略；绿十字/圆圈有效，红色无效并清除旧XYZ。
+D为三维距离，Z为光轴深度，单位cm，不是水面深度传感器数据；测点固定像素，不做物体跟踪。
+“保存图像”选PNG路径，“保存视频”停止后选MP4，只存带标记的这一目，板上录制入口禁用。
+“暂停/恢复本地测距”只控制电脑计算。旧服务不提供同步双目/标定时只能预览。
+
+| 新增/变更源文件 | 具体职责 |
+|---|---|
+| `main.py`、`stereo_runtime.py` | 主入口先选择私有contrib；缺Qt时复用相邻qt5已装GUI依赖，不改Conda环境文件 |
+| `stereo/__init__.py` | 本地双目包入口 |
+| `stereo/transport.py` | 与板端逐字节一致的有界封包、原子元数据、半包跨timeout保留 |
+| `stereo/calculation.py` | 所选NPZ与采集源SHA独立绑定，必需字段/尺寸/解压边界/数值及可选左右布尔值校验；原SGBM192/WLS工厂顺序/Q/9×9中值修正、旋转坐标反算 |
+| `stereo/worker.py` | 输入和输出各留最新项；关机/断链/换模型丢弃正在计算的旧帧，GUI不运行SGBM |
+| `ui/stereo_camera_widget.py` | 单目缩放/黑边、同帧点击、可见标记、PNG/MP4、校准错误提示；保留相机门闩，不发RANGE_ON/SET_POINT |
+| `ui/main_window.py` | 本地测距标签、增强页复用single_frame_ready单目帧，关闭窗口释放测距线程 |
+| `ref/install_local_stereo_runtime.py` | 固定版本私有运行库安装器，已有目录拒绝覆盖 |
+| `ref/verify_npz_selection.py` | 不联网的真Qt验证：临时INI隔离真实偏好，三份真实NPZ、历史双目、后台计算、鼠标标点、单目PNG、启动恢复与丢失文件阻断、切回默认，输出摘要和截图 |
+| `tests/test_host_stereo.py` | 半包/坏包/标定/失效generation、旋转点击、XYZ清理、可见标记和单目保存回归 |
+| `tests/conftest.py` | NPZ偏好测试统一使用临时INI，测试不得污染用户注册表中的选择 |
+| `tests/test_npz_selection.py` | 22项本地NPZ回归：来源绑定、重连、格式校验、安全切换、路径记忆、启动文件重新校验/丢失损坏阻断及独立进程恢复 |
+
+新协议外层仍`[4字节大端长度][1字节类型][数据]`，最多16MiB。0xFD双目、0xFC原NPZ，
+两者数据体为`[2字节JSON长度][JSON][二进制]`，JSON最多4096字节。帧绑定frame_id、
+camera_epoch、采集单调时钟、尺寸、标定SHA256。0xFE状态，0xFF仅旧预览。
+请求为GET_STATE、GET_CALIBRATION、CAM_ON/OFF、PING，新服务拒绝RANGE_ON/板上录制。
+可信有线LAN使用，不提供外网认证防护。总入口已切换，详见仓库`docs/local-stereo/README.md`。
+
+### 历史环境与旧节点说明
+
 ```bash
 conda activate fish_ui_gpu
 python main.py          # 先弹出版本选择对话框，选择后进入主窗口
 ```
+
+当前电脑没有 `fish_ui_gpu` 环境时，可使用已验证的 `qt5` 环境运行传统增强与全部基础功能：
+
+```powershell
+conda activate qt5
+python main.py
+```
+
+2026-10-15 新 Pico 已保存为连接档案“新板 ICS 固定 IP”，地址
+`192.168.137.3:9999`。启动时选“双尾双目鱼 (pico)”，进入主窗口后下拉选择该档案并点击
+“连接”；视频通道会自动连到 9998，再点击“开启摄像头”。
 
 `fish_ui_gpu` 是启用 UIEC²-Net、U-shape Transformer 和 Ucolor 的推荐环境；`qt5` 环境仍可
 运行传统增强和其余地面站功能，但无法运行三个 CUDA 模型。
@@ -30,12 +94,13 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
 | 文件 | 说明 |
 |---|---|
 | `main.py` | 入口：高 DPI 设置 → 版本选择对话框 → 按变体构造 MainWindow |
-| `config.py` | 全局配置：单尾鱼 IP/端口、`DUAL_FISH_CONFIG`（pico IP + 9999/9998 端口）、控制限幅（胸鳍 PWM 500–2500 μs）、键位映射、键盘默认参数 `KEYBOARD_CONTROL_DEFAULTS`、Xbox 默认参数 `XBOX_CONTROL_DEFAULTS`、深度闭环安全默认参数 `DEPTH_CONTROL_DEFAULTS`、UI/视频/记录参数；`STEREO_RANGING_UI_ENABLED=False` 保证当前版本只显示、不启动测距，`STEREO_PREVIEW_LAYOUT="raw_single"` 标记原生单目流 |
+| `config.py` | 单尾/双尾IP端口与控制限幅、键位、键盘/Xbox/PID默认参数及UI记录参数；STEREO_RANGING_UI_ENABLED是旧板端开关，不控制新本地测距；STEREO_PREVIEW_LAYOUT仅作旧流兼容 |
+| `connections.json` | 本地连接档案；新板 `192.168.137.3:9999` 已置顶，原板 `.2` 和历史直连地址继续保留 |
 | `ui/fish_variant_dialog.py` | **新增** 启动版本选择对话框（dual/single 卡片式选择） |
 | `ui/connection_store.py` | **新增** 连接档案持久化（本地 connections.json 记录 备注+IP+端口，双尾鱼页面下拉直选） |
 | `ui/heartbeat_light.py` | **新增** 心跳呼吸灯（状态栏左下角）：脉冲只由真实心跳发送事件驱动——通信层每成功发出一拍 ping 经 Qt 信号点亮、两拍间自然衰减，停发即沉暗，不做装饰性空闪；悬停显示累计拍数与最后时刻；断链转灰 |
 | `ui/main_window.py` | 主窗口：按 `variant` 加载“单目视频”、图像增强页与深度页；主连接采用 `disconnected/connecting/connected/disconnecting` 状态机，视频和深度连接严格受主连接门闩控制；双尾鱼可选择键盘、深度或 Xbox 控制；控制总开关打开后锁定控制方式下拉框及菜单，Xbox 未连接时拒绝误启用，X/B 紧停或手柄断开后撤销控制权；左/右侧栏首次默认 360/280 px，用户拖动宽度按鱼体版本保存并在下次启动恢复 |
-| `ui/stereo_camera_widget.py` | 双尾鱼纯显示组件：`StereoVideoClient`（TCP 9998）+ `StereoFishCameraWidget`；接收 `1280×720` 原生单目 JPEG，在电脑端顺时针转正并做 Gamma 2.0 提亮；兼容旧 `raw_sbs` 双目流但只显示第一目；区分“线程启动”“TCP 已连接”“相机已确认开启”，按钮只由集中状态机刷新，快速重复点击和迟到回执不会反转状态；相机开关等待板端确认，含 GET_STATE、本地 MP4 和快照；测距按钮固定禁用，不发送 `RANGE_ON` |
+| `ui/stereo_camera_widget.py` | 双尾鱼本地测距组件：TCP接收同帧双目，后台计算；加载本地最终NPZ或切回板端参数，显示路径/尺寸/生效状态，坏文件保留原参数，录像期间禁止切换；只显示左校正图，转正提亮、点击标点、单目PNG/MP4；状态集中派生，旧服务只预览 |
 | `ui/depth_panel.py` | 双尾鱼深度面板：`DepthTcpClient`（TCP 9999，接收 gs_bridge 深度推送）、实时深度、10 秒零点标定、CSV 记录；连接严格依赖主连接，区分连接中/已连接/断开中/错误，快速断开可取消未完成连接；主链断开时自动结束记录并保存到 `records/`。深度单位为 cm，数据源 IP 跟随本次主连接 |
 | `ui/image_enhancement_widget.py` | 双尾鱼图像增强对比页：原图/增强图左右等宽显示，复用同一路 9998 单目视频帧且默认对整帧增强；一级选择传统方法/神经网络/不处理，传统方法下含综合增强、CLAHE、Gamma、白平衡；支持本地 Mock 视频、实时 FPS/延迟/丢帧统计、单画面放大、截图、左右对比 MP4 录像和参数导出 |
 | `enhancers/__init__.py` | 神经网络增强器工厂：按选项延迟导入对应适配器，避免启动界面时立即占用 GPU |
@@ -62,16 +127,24 @@ python main.py          # 先弹出版本选择对话框，选择后进入主窗
 | `utils/graphics_exporter.py` | 历史全图导出器，当前时间序列 PNG 导出改由 `ui/visualization.py` 实现 |
 | `catkin_ws_in_fish/` | 单尾鱼（orangepi ROS1）机载脚本母本：`camera_stream_server.py`（9998 视频流+机上录制）、`socket_server.py`（9999 控制+传感器推送）、launch 与部署说明 |
 | `tests/test_ui_state_machine.py` | 主连接、控制锁定、Xbox 模式接入和无手柄拒绝启用、视频确认状态、失败重试、侧栏默认值与持久化的离线回归测试 |
+| `tests/test_last_connection.py` | 12项地址记忆隔离测试：重开/跨进程、双鱼体隔离、失败不覆盖、坏记录回退、档案同步，不接真实网络 |
 | `tests/test_xbox_controller.py` | Xbox 前半圆转向、后半圆保持及跨侧偏置过渡、两个周期启停、LT/RT 全量程无符号读取、LT 连续加速、Y/A/RT 胸鳍调节、启用成功长震、X/B 紧停短震和无手柄拒绝激活的离线回归测试 |
 | `tests/test_visualization_time_modes.py` | 全局历史不受滑动窗口截断、时间模式幂等、双图时间轴同步、可见范围筛选及 CSV/XLSX 文件输出的离线回归测试 |
 | `tests/test_depth_controller.py` | PID 数学、参数锁、中位与限幅、方向切换、键盘并行控制和断流回中测试 |
 | `docs/2026-10-13-ui-state-machine-design.md` | 本次 UI 状态机的状态、门闩、幂等规则和验证边界 |
+| `docs/2026-10-21-npz-selection-plan.md` | 本地最终NPZ选择、独立来源绑定和事务式切换的实现计划 |
+| `docs/2026-10-21-npz-selection.md` | 环境文件选择步骤、必需字段、尺寸限制、重连/重开规则及离线验证摘要 |
 | `docs/XBOX_CONTROL_GUIDE.md` | Xbox 蓝牙连接检查、按键映射、参数含义、安全操作顺序和首次水池联调步骤 |
 | `docs/README.md` | docs 文档目录逐文件索引 |
 | `Change_log.md` / `TODO.md` | 变更记录与待办 |
 | `fps_compare/`、`records/`、`temp_scripts/`、`image.png` | 历史测试素材与一次性脚本（非运行依赖） |
 
 ## UI 状态机与安全交互
+
+启动时按鱼体版本分别恢复最后一次成功连接的IP和端口，不自动连接或启用控制。
+连接成功立即保存；失败、只编辑或选档案不覆盖记录。缺失/坏记录回退原档案或默认值，
+不改connections.json顺序。旧版没有此记录，更新后先成功连接一次，之后启动即恢复。
+详见[地址记忆说明](docs/2026-10-21-last-connection.md)。
 
 双尾鱼页面采用严格依赖关系：`主控制连接 → 视频/深度服务连接 → 摄像头确认开启 → 录制`。
 下一级只能在上一级真实就绪后操作；主连接断开会自动撤销控制、锁定视频和深度页，并停止相关
@@ -122,7 +195,7 @@ Y 增大胸鳍 PWM，A 减小胸鳍 PWM；按住 RT 时在普通速度与快速�
 
 ## 双尾鱼 TCP 协议（pico 侧由 pico_stereo + gs_bridge 实现）
 
-视频/测距（9998，depth_node）：
+历史视频/测距（旧9998，depth_node；以下RANGE_ON不是新界面操作）：
 
 ```
 服务端->地面站: [4字节大端长度][1字节类型][数据]
@@ -153,7 +226,7 @@ records/ 下按时间戳命名）。板上相机曝光/增益需在 v4l2-ctl 预
 中进行，队列只保留最新帧；
 处理速度低于采集速度时主动丢弃旧帧，优先保证实时预览延迟不会持续累积。
 
-- 实时模式：复用 `StereoVideoClient.frame_received`，不会向 pico 再建立第二条 9998 连接。
+- 实时模式：复用 `StereoFishCameraWidget.single_frame_ready`的电脑端单目帧，不再建立第二条9998连接。
 - Mock 模式：页面内点击“加载 Mock 视频”，选择本地 mp4/avi/mov/mkv 并循环播放。
 - 布局约束：左右视频窗固定等宽，使用自定义绘制画布而不是 `QLabel.setPixmap()`；画布只在
   布局已经分配的矩形内等比例绘图，视频原始分辨率不会参与页面尺寸计算。较长的状态文字
@@ -245,12 +318,15 @@ gs_bridge 将 control 翻译为 `fish_interfaces/ActuatorCommand` 发布到
 
 ## 双尾鱼板上服务启动（pico，root，ros2 launch 方式）
 
+原路径现已默认新视频，保留监控、控制桥、深度传感器、串口桥和IMU。建议setsid nohup后台启动，
+UI总控制先关闭，服务重启后重新连接。重复启动不多开监控。
+
 ```bash
 /root/catkin_ws/src/pico_stereo/scripts/start_dual_fish.sh
 ```
 
 一键脚本 = 加载 ROS2 环境 + `ros2 launch`。launch 文件:
-`pico_stereo/launch/depth.launch.py`（双目测深）、`gs_bridge/launch/gs_bridge.launch.py`
+`pico_stereo/launch/stereo_stream.launch.py`（双目传输）、`gs_bridge/launch/gs_bridge.launch.py`
 （控制桥）、`pico_stereo/launch/dual_fish_bringup.launch.py`（一键总成，绝对路径引用，
 **从源码目录直跑**，不依赖 colcon install 产物）。Ctrl+C 停止全部节点。
 

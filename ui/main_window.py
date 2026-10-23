@@ -610,6 +610,7 @@ class MainWindow(QMainWindow):
         if widget.property('integrated_axis_prepared'):
             return
         widget.setProperty('integrated_axis_prepared', True)
+        compact = bool(widget.property('compact_parameter_view'))
         widget.setMinimumWidth(0)
         widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         for label in widget.findChildren(QLabel):
@@ -636,10 +637,11 @@ class MainWindow(QMainWindow):
                 label = item.widget() if item is not None else None
                 if isinstance(label, QLabel):
                     label.setWordWrap(False)
-                    label.setMinimumWidth(76)
+                    label.setMinimumWidth(0 if compact else 76)
                     label.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
         for spin in widget.findChildren(QAbstractSpinBox):
             spin.setProperty('adaptive_parameter_width', True)
+            spin.setProperty('compact_parameter_view', compact)
             spin.setMinimumWidth(0)
             spin.setMaximumWidth(16777215)
             spin.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
@@ -978,7 +980,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._fit_parallel_depth_view)
 
     def _fit_parallel_depth_view(self):
-        """Use available sidebar width for both columns without forcing them to stack."""
+        """Fit the compact two-column form without retaining an oversized old sidebar."""
         if self.depth_controller_combo.currentData() != 'parallel_pid':
             return
         widget = self.controllers['parallel_depth'].get_control_widget()
@@ -986,7 +988,7 @@ class MainWindow(QMainWindow):
         required = widget.minimumSizeHint().width() + 60
         total = sum(sizes)
         right = max(220, sizes[2])
-        left = max(sizes[0], min(required, max(320, total - right - 420)))
+        left = max(320, min(required, max(320, total - right - 420)))
         self.main_splitter.setSizes([left, max(320, total-left-right), right])
         self.axis_control_scroll.widget().layout().activate()
         position = self.depth_group.mapTo(self.axis_control_scroll.widget(), QPoint(0, 0))

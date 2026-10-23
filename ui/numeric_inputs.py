@@ -41,7 +41,7 @@ class _AdaptiveParameterWidth:
         """Reserve suffix/arrow padding only when the integrated sidebar opts in."""
         size = super().sizeHint()
         if self.property('adaptive_parameter_width'):
-            size.setWidth(size.width() + 12)
+            size.setWidth(size.width() + (0 if self.property('compact_parameter_view') else 12))
         return size
 
     def minimumSizeHint(self):

@@ -58,6 +58,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True)
     parser.add_argument('--font-size', type=int, default=11)
+    parser.add_argument('--sidebar-width', type=int, default=540)
     args = parser.parse_args()
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -96,6 +97,8 @@ def main():
                            depth=window.axis_coordinator.depth_enabled,
                            depth_type=window.depth_controller_combo.currentData(),
                            columns=[dict(x=g.x(), y=g.y(), width=g.width()) for g in (left, right)],
+                           sidebar_width=window.main_splitter.sizes()[0],
+                           parameter_font_pt=parallel.get_control_widget().font().pointSizeF(),
                            last_command=transport.commands[-1] if transport.commands else None))
 
     def click(checkbox):
@@ -127,7 +130,7 @@ def main():
         window.resize(1760, 1000)
         window.show()
         app.processEvents()
-        window.main_splitter.setSizes([760, 760, 240])
+        window.main_splitter.setSizes([args.sidebar_width, 1520-args.sidebar_width, 240])
         window.communication = transport
         window._fish_connection_state = 'connected'
         window._apply_main_ui_state()

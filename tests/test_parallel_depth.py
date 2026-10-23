@@ -230,6 +230,33 @@ def test_main_window_parallel_selection_layout_lock_and_stale_source(window):
     assert window.axis_coordinator.depth is window.controllers['depth']
 
 
+def test_parallel_view_compact_width_and_nonwrapping_labels(window):
+    """Shrink the legacy wide sidebar while keeping both PID columns and complete editors."""
+    from PyQt5.QtWidgets import QFormLayout
+    from PyQt5.QtGui import QFont
+    window.setFont(QFont('Microsoft YaHei', 18))
+    window.show()
+    window.main_splitter.setSizes([1000, 500, 240])
+    window.depth_controller_combo.setCurrentIndex(window.depth_controller_combo.findData('parallel_pid'))
+    ensure_app().processEvents()
+    ensure_app().processEvents()  # Let font propagation and the queued splitter fit both settle.
+    controller = window.controllers['parallel_depth']
+    widget = controller.get_control_widget()
+    assert widget.font().pointSizeF() == 9.
+    assert widget.minimumSizeHint().width() <= 580  # Native Qt styles have different arrow padding.
+    assert window.main_splitter.sizes()[0] <= 640
+    groups = list(controller._loop_groups.values())
+    assert groups[0].y() == groups[1].y()
+    for form in widget.findChildren(QFormLayout):
+        for row in range(form.rowCount()):
+            label = form.itemAt(row, QFormLayout.LabelRole).widget()
+            field = form.itemAt(row, QFormLayout.FieldRole).widget()
+            assert not label.wordWrap()
+            assert label.width() >= label.fontMetrics().horizontalAdvance(label.text())
+            assert field.width() >= field.minimumSizeHint().width()
+    assert all(not field.isEnabled() for field in controller._pid_parameter_widgets)
+
+
 @pytest.fixture
 def bridge():
     """Execute actual bridge methods without needing a Windows ROS2 installation."""

@@ -6,6 +6,7 @@ import math
 from pathlib import Path
 import time
 
+from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (QComboBox, QFormLayout, QGridLayout, QGroupBox,
                              QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget)
 
@@ -78,20 +79,31 @@ class ParallelDepthController(DepthAxisController):
     def _create_keyboard_widget(self):
         """Build two permanently adjacent parameter columns plus compact common settings."""
         widget = QWidget()
+        widget.setProperty('compact_parameter_view', True)
+        font = QFont(widget.font())
+        font.setPointSizeF(9.)
+        widget.setFont(font)
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
-        description = QLabel('并联叠加：中位 PWM + 深度修正 + 俯仰修正；俯仰单位为度，旧弧度增益不能直接照搬。')
+        layout.setSpacing(5)
+        description = QLabel('并联相加；俯仰单位为度，勿照搬弧度增益。')
+        description.setToolTip('输出 = 中位 PWM + 深度修正 + 俯仰修正；最终统一限幅。')
         description.setWordWrap(True)
         layout.addWidget(description)
         columns = QHBoxLayout()
-        columns.setSpacing(12)
+        columns.setSpacing(6)
         self._loop_inputs, self._loop_labels, self._loop_groups = {}, {}, {}
         self._pid_parameter_widgets = []
         for name, title, unit in (('depth', '深度 PID', ' cm'), ('pitch', '俯仰 PID', ' °')):
             group = QGroupBox(title)
             self._loop_groups[name] = group
             group_layout = QVBoxLayout(group)
+            group_layout.setContentsMargins(8, 6, 8, 6)
+            group_layout.setSpacing(4)
             form = QFormLayout()
+            form.setContentsMargins(0, 0, 0, 0)
+            form.setHorizontalSpacing(6)
+            form.setVerticalSpacing(4)
             fields = {}
             ranges = dict(target=(0., 500.) if name == 'depth' else (-60., 60.),
                           kp=(-1000., 1000.), ki=(-1000., 1000.), kd=(-1000., 1000.),
@@ -104,8 +116,9 @@ class ParallelDepthController(DepthAxisController):
                 fields[key] = spin
                 form.addRow(titles[key], spin)
             direction = NoWheelComboBox()
-            direction.addItem('正误差 → 减小PWM', -1)
-            direction.addItem('正误差 → 增大PWM', 1)
+            direction.addItem('正误差减PWM', -1)
+            direction.addItem('正误差增PWM', 1)
+            direction.setToolTip('误差 = 目标 − 反馈；选择正误差使PWM减小或增大。')
             direction.setCurrentIndex(direction.findData(self._parallel_params[name]['direction']))
             fields['direction'] = direction
             form.addRow('输出方向', direction)
@@ -120,6 +133,9 @@ class ParallelDepthController(DepthAxisController):
         layout.addLayout(columns)
         common = QGroupBox('公共输出设置')
         grid = QGridLayout(common)
+        grid.setContentsMargins(8, 6, 8, 6)
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(4)
         self._common_inputs = {}
         for index, (key, title) in enumerate((('neutral_pwm', '中位'), ('minimum_pwm', '最小'),
                                             ('maximum_pwm', '最大'), ('period_ms', '周期'))):

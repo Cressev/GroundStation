@@ -21,6 +21,7 @@ from PyQt5.QtGui import QFont, QKeySequence, QIcon
 from controllers.remote_depth import RemoteParallelDepthController as ParallelDepthController
 
 from ui.visualization import DataVisualizationWidget
+from ui.system_status import SystemStatusWidget
 from ui.keyboard_status import KeyboardStatusWidget
 from ui.video_display import VideoMonitorWidget
 from ui.stereo_camera_widget import StereoFishCameraWidget
@@ -44,6 +45,7 @@ class MainWindow(QMainWindow):
     
     # 定义信号用于线程安全的UI更新
     connection_changed_signal = pyqtSignal(object, bool)  # 携带连接实例，可忽略旧线程的迟到信号
+    board_state_signal = pyqtSignal(object, object, float)
     heartbeat_pulse_signal = pyqtSignal(int)      # 心跳拍信号（心跳线程→UI呼吸灯）
     
     def __init__(self, variant="single"):
@@ -153,10 +155,13 @@ class MainWindow(QMainWindow):
         
         # 创建中央标签页
         center_tabs = QTabWidget()
+        self.center_tabs = center_tabs
         
         # 数据可视化标签页
         self.visualization_widget = DataVisualizationWidget()
         center_tabs.addTab(self.visualization_widget, "数据可视化")
+        self.system_status_widget = SystemStatusWidget()
+        center_tabs.addTab(self.system_status_widget, '系统状态')
         
         # 视频页按变体: dual=机载单目流, single=原视频监控（外部+机载相机）
         if self.variant == "dual":
@@ -542,6 +547,7 @@ class MainWindow(QMainWindow):
         
         # 连接状态变化信号（线程安全）
         self.connection_changed_signal.connect(self._handle_connection_changed, Qt.QueuedConnection)
+        self.board_state_signal.connect(self._handle_board_state, Qt.QueuedConnection)
         if self.variant == "dual":
             self.video_widget.state_changed.connect(self._sync_video_actions)
             self.video_widget.set_fish_connection_available(False)
@@ -1066,7 +1072,8 @@ class MainWindow(QMainWindow):
             communication.set_connection_callback(
                 lambda connected, source=communication:
                 self._on_connection_changed(source, connected))
-            communication.set_state_callback(self._on_board_state)
+            communication.set_state_callback(
+                lambda state, source=communication: self._on_board_state(source, state))
             # 心跳呼吸灯：心跳线程真实发出一拍 → 信号排队回 UI 线程点亮
             communication.set_heartbeat_callback(
                 self.heartbeat_pulse_signal.emit)
@@ -1095,6 +1102,7 @@ class MainWindow(QMainWindow):
             return
         self._remember_last_connection(ip_address, port)
         self._fish_connection_state = "connected"
+        self.system_status_widget.set_connected(True)
         self.connection_status_label.setText("已连接")
         self.status_bar.showMessage(f"机器鱼连接成功 ({ip_address}:{port})")
         if self.variant == "dual":
@@ -1128,6 +1136,8 @@ class MainWindow(QMainWindow):
             self.data_timer.stop()
             self.telemetry_timer.stop()
             self.telemetry_label.setText("控制板: --")
+            self._last_telemetry = None
+            self.system_status_widget.set_connected(False)
             
             # 双尾鱼：同步断开视频流与深度面板
             if self.variant == "dual":
@@ -1228,9 +1238,19 @@ class MainWindow(QMainWindow):
         self._set_depth_control_armed(False)
         self._log_message(message)
 
-    def _on_board_state(self, state: dict):
-        """控制板状态回推（由Socket线程调用，仅存数据不改UI）"""
-        self._last_telemetry = state.get("telemetry")
+    def _on_board_state(self, source, state: dict):
+        """Queue immutable packet data with its true local receipt time from the socket thread."""
+        from copy import deepcopy
+        self.board_state_signal.emit(source, deepcopy(state), time.monotonic())
+
+    @pyqtSlot(object, object, float)
+    def _handle_board_state(self, source, state, received_at):
+        """Consume only the current connection's telemetry, exclusively on the GUI thread."""
+        if source is not self.communication or self._fish_connection_state != 'connected':
+            return
+        telemetry = state.get('telemetry')
+        self._last_telemetry = telemetry if isinstance(telemetry, dict) else None
+        self.system_status_widget.add_sample(telemetry, received_at, state.get('timestamp'))
 
     def _refresh_telemetry_label(self):
         """刷新底栏控制板遥测显示（1Hz，GUI 线程内执行）。"""
@@ -1271,6 +1291,9 @@ class MainWindow(QMainWindow):
                 self._fish_connection_state = "disconnected"
                 self.data_timer.stop()
                 self.telemetry_timer.stop()
+                self._last_telemetry = None
+                self.telemetry_label.setText('控制板: --')
+                self.system_status_widget.set_connected(False)
                 self.connection_start_time = None
                 if self.variant == "dual":
                     self.video_widget.set_fish_connection_available(False)
@@ -1470,6 +1493,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """窗口关闭事件"""
         self._save_splitter_sizes()
+        self.system_status_widget.status_timer.stop()
         self._stop_all_controls(send_stop=True)
         # 停用控制器
         if self.current_controller and self.current_controller.active:

@@ -11,6 +11,8 @@
 双环参数区采用9pt紧凑字号与较小间距，保持两列、完整参数名和单位；选择双环时按紧凑表单宽度调整侧栏，不沿用旧的过宽布局。
 [Pico并联双环使用说明](docs/2026-10-23-pico-parallel-pid.md)。
 
+中央新增“系统状态”页：Pico整机CPU%、CPU温度和内存%联动时序，支持全局/可填滑窗、可见范围CSV/Excel、PNG、实验标签及断线缺口；不改板端控制。[页面与散热实验说明](docs/2026-10-23-system-status.md)。
+
 - **双尾双目鱼（dual，当前主攻）**：Pico新节点`stereo_stream_node`经有线9998传同帧双目
   （1280×480横拼，每目640×480）与原标定。电脑执行SGBM192/WLS/Q，仅显示左校正图，
   点击标点及读当前帧距离；截图/录像只存这一目，不发送RANGE_ON。9999控制桥与舵机逻辑不变。
@@ -62,6 +64,11 @@ D为三维距离，Z为光轴深度，单位cm，不是水面深度传感器数�
 | `stereo/worker.py` | 输入和输出各留最新项；关机/断链/换模型丢弃正在计算的旧帧，GUI不运行SGBM |
 | `ui/stereo_camera_widget.py` | 单目缩放/黑边、同帧点击、可见标记、PNG/MP4、校准错误提示；保留相机门闩，不发RANGE_ON/SET_POINT |
 | `ui/main_window.py` | 本地测距与增强单目复用、独立航向/深度控制栏、单出口发送门闩、右下系统信息及关闭清理 |
+| `ui/system_status.py` | 控制板遥测独立时序页：三图联动、全局/滑动/自由视察、可见范围CSV/XLSX/PNG、实验标签、缺失和断线缺口 |
+| `tests/test_system_status.py` | 六项遥测口径、非法值/重复包、历史与真实范围导出、断线/重连、GUI线程与旧连接门闩回归 |
+| `ref/verify_system_status.py` | 真Windows Qt半小时合成数据验收、三图截图、缺口及601行可见范围导出；不连接硬件、不写个人配置 |
+| `docs/2026-10-23-system-status.md` | 系统页使用、遥测口径、四组散热实验设计及本轮未实测边界 |
+| `docs/plans/2026-10-23-system-status-thermal.md` | 先UI再实验的分步计划、固定负载/起温条件与接线待确认项 |
 | `ref/install_local_stereo_runtime.py` | 固定版本私有运行库安装器，已有目录拒绝覆盖 |
 | `ref/verify_npz_selection.py` | 不联网的真Qt验证：临时INI隔离真实偏好，三份真实NPZ、历史双目、后台计算、鼠标标点、单目PNG、启动恢复与丢失文件阻断、切回默认，输出摘要和截图 |
 | `tests/test_host_stereo.py` | 半包/坏包/标定/失效generation、旋转点击、XYZ清理、可见标记和单目保存回归 |

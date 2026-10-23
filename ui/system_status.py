@@ -8,10 +8,11 @@ import time
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QRadioButton,
-                             QButtonGroup, QPushButton, QFileDialog, QMessageBox, QLineEdit)
-from ui.numeric_inputs import NoWheelSpinBox
+                             QButtonGroup, QPushButton, QFileDialog, QMessageBox, QLineEdit,
+                             QScrollArea, QSplitter, QFrame, QSizePolicy)
+from ui.numeric_inputs import NoWheelSpinBox, NoWheelComboBox
 
 
 class SystemStatusWidget(QWidget):
@@ -22,6 +23,7 @@ class SystemStatusWidget(QWidget):
         super().__init__()
         self.rows = []
         self.connected = False
+        self._following = {key: True for key in ('cpu_percent', 'soc_temp_c', 'memory_percent')}
         self.follow_latest = True
         self.sliding_time = False
         self._origin = self._last_arrival = self._last_source = None
@@ -33,7 +35,7 @@ class SystemStatusWidget(QWidget):
         self.status_timer.start(1000)
 
     def _build_ui(self):
-        """Match the time-series page's controls and link three vertically stacked plots."""
+        """Put three independent, height-adjustable canvases in a vertically scrollable page."""
         layout = QVBoxLayout(self)
         mode_row, action_row = QHBoxLayout(), QHBoxLayout()
         self.global_time_cb = QRadioButton('全局时间序列')
@@ -55,7 +57,7 @@ class SystemStatusWidget(QWidget):
         mode_row.addWidget(self.sliding_window_input)
         mode_row.addStretch()
         layout.addLayout(mode_row)
-        for text, callback in (('清除曲线', self.clear_data), ('重置画布', self.reset_view),
+        for text, callback in (('清除曲线', self.clear_data), ('重置全部', self.reset_view),
                                ('保存数据', self._save_data), ('保存图像', self._save_image)):
             button = QPushButton(text)
             button.clicked.connect(callback)
@@ -71,10 +73,24 @@ class SystemStatusWidget(QWidget):
         self.status_label = QLabel('未连接；数据源为机器鱼控制板，不是本地电脑')
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
+        export_row = QHBoxLayout()
+        export_row.addWidget(QLabel('数据导出范围'))
+        self.export_plot_combo = NoWheelComboBox()
+        self.export_plot_combo.addItems(['CPU画布', '温度画布', '内存画布'])
+        self.export_plot_combo.setToolTip('以所选画布的可见时间范围导出全部指标；不改变其他画布。')
+        export_row.addWidget(self.export_plot_combo)
+        export_row.addStretch()
+        layout.addLayout(export_row)
         self.canvas = QWidget()
         canvas = QVBoxLayout(self.canvas)
         canvas.setContentsMargins(0, 0, 0, 0)
+        self.plot_splitter = QSplitter(Qt.Vertical)
+        self.plot_splitter.setChildrenCollapsible(False)
+        self.plot_splitter.setHandleWidth(8)
+        self.plot_splitter.setToolTip('拖动图与图之间的分隔条，调整各画布显示高度。')
+        canvas.addWidget(self.plot_splitter)
         self.plots, self.curves = [], {}
+        self._plot_keys = []
         for key, title, unit, color in (
                 ('cpu_percent', 'CPU占用率', '%', '#41a5ff'),
                 ('soc_temp_c', 'CPU温度', '℃', '#ff9c44'),
@@ -89,11 +105,37 @@ class SystemStatusWidget(QWidget):
             curve.setDownsampling(auto=True, method='peak')
             self.curves[key] = curve
             self.plots.append(plot)
-            if len(self.plots) > 1:
-                plot.setXLink(self.plots[0])
-            plot.getViewBox().sigRangeChangedManually.connect(self._on_manual_view_change)
-            canvas.addWidget(plot)
-        layout.addWidget(self.canvas, 1)
+            self._plot_keys.append(key)
+            plot.getViewBox().sigRangeChangedManually.connect(
+                lambda *args, metric=key: self._on_manual_view_change(metric))
+            panel = QWidget()
+            panel_layout = QVBoxLayout(panel)
+            panel_layout.setContentsMargins(0, 0, 0, 0)
+            reset = QPushButton('重置此图')
+            reset.setMaximumWidth(100)
+            reset.clicked.connect(lambda checked=False, metric=key: self.reset_plot(metric))
+            panel_layout.addWidget(reset, 0, Qt.AlignRight)
+            plot.setMinimumHeight(180)
+            panel_layout.addWidget(plot, 1)
+            self.plot_splitter.addWidget(panel)
+        self.plot_splitter.setSizes([240, 240, 240])
+        self.canvas.setMinimumHeight(720)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.NoFrame)
+        self.scroll_area.setWidget(self.canvas)
+        layout.addWidget(self.scroll_area, 1)
+
+    @property
+    def follow_latest(self):
+        """Keep the existing all-following API while storing each canvas's own follow state."""
+        return all(self._following.values())
+
+    @follow_latest.setter
+    def follow_latest(self, value):
+        """Explicit global mode/reset commands may restore all canvases at once."""
+        for key in self._following:
+            self._following[key] = bool(value)
 
     @staticmethod
     def _number(value, minimum=0., maximum=float('inf')):
@@ -171,10 +213,12 @@ class SystemStatusWidget(QWidget):
         for key, curve in self.curves.items():
             values = np.array([np.nan if row.get(key) is None else row[key] for row in self.rows])
             curve.setData(times, values, connect='finite')
-        if self.follow_latest and self.rows:
+        if self.rows:
             end = self.rows[-1]['time_s']
             start = max(0., end-self.sliding_window_input.value()) if self.sliding_time else 0.
-            self.plots[0].setXRange(start, max(end, start+1.), padding=0)
+            for key, plot in zip(self._plot_keys, self.plots):
+                if self._following[key]:
+                    plot.setXRange(start, max(end, start+1.), padding=0)
 
     def _change_mode(self, checked):
         """Switch view modes without clearing or pruning collected samples."""
@@ -191,9 +235,18 @@ class SystemStatusWidget(QWidget):
             self.follow_latest = True
             self._render()
 
-    def _on_manual_view_change(self, *args):
-        """Freeze automatic X following after a user zoom/pan on any linked plot."""
-        self.follow_latest = False
+    def _on_manual_view_change(self, metric=None, *args):
+        """Freeze only the canvas manually zoomed/panned, not its neighboring views."""
+        if metric in self._following:
+            self._following[metric] = False
+        else:
+            self.follow_latest = False
+
+    def reset_plot(self, metric):
+        """Restore the selected canvas alone; retain all other view ranges and follow flags."""
+        self._following[metric] = True
+        self.plots[self._plot_keys.index(metric)].enableAutoRange(axis='y')
+        self._render()
 
     def reset_view(self):
         """Return to the selected global/sliding X mode and automatic Y ranges."""
@@ -212,10 +265,11 @@ class SystemStatusWidget(QWidget):
         self._refresh_status()
 
     def visible_rows(self):
-        """Select export rows from the actual linked viewport, including any outage markers."""
+        """Export all metrics using the explicitly selected canvas's actual visible interval."""
         if not self.rows:
             return []
-        start, end = sorted(self.plots[0].getViewBox().viewRange()[0])
+        plot = self.plots[self.export_plot_combo.currentIndex()]
+        start, end = sorted(plot.getViewBox().viewRange()[0])
         return [row.copy() for row in self.rows if start-1e-8 <= row['time_s'] <= end+1e-8]
 
     def export_data(self, filepath):

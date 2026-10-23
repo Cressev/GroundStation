@@ -24,6 +24,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from communication.base import FishState
+from ui.system_status import SystemStatusWidget
 from config import PLOT_UPDATE_RATE, UI_CONFIG
 
 class DataVisualizationWidget(QWidget):
@@ -69,6 +70,7 @@ class DataVisualizationWidget(QWidget):
         
         # 创建标签页
         tab_widget = QTabWidget()
+        self.tab_widget = tab_widget
         
         # XY平面图标签
         xy_tab = self._create_xy_plot_tab()
@@ -81,6 +83,8 @@ class DataVisualizationWidget(QWidget):
         # 姿态显示标签
         attitude_tab = self._create_attitude_tab()
         tab_widget.addTab(attitude_tab, "姿态显示")
+        self.system_status_widget = SystemStatusWidget()
+        tab_widget.addTab(self.system_status_widget, '系统状态')
         
         layout.addWidget(tab_widget)
         

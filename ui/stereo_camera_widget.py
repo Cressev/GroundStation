@@ -68,6 +68,8 @@ class SingleViewLabel(QLabel):
         """Retain a detached image rather than a NumPy-backed temporary buffer."""
         super().__init__()
         self._image = None
+        self.setAlignment(Qt.AlignCenter)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
 
     def set_frame(self, frame):
         """Copy one BGR view into Qt-owned storage."""
@@ -297,44 +299,47 @@ class StereoFishCameraWidget(QWidget):
 
         title = QLabel("双目传输 · 电脑测距 · 单目显示（点击画面测距）")
         title.setAlignment(Qt.AlignCenter)
+        title.setWordWrap(True)
+        title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         title.setFont(QFont("Arial", 14, QFont.Bold))
         layout.addWidget(title)
 
         control_group = QGroupBox("连接控制")
-        control_layout = QHBoxLayout(control_group)
+        control_layout = QGridLayout(control_group)
         self.connect_btn = QPushButton("连接视频")
         self.connect_btn.clicked.connect(self._toggle_connection)
         self.disconnect_btn = QPushButton("断开")
         self.disconnect_btn.clicked.connect(self._disconnect)
         self.disconnect_btn.setEnabled(False)
-        control_layout.addWidget(self.connect_btn)
-        control_layout.addWidget(self.disconnect_btn)
+        control_layout.addWidget(self.connect_btn, 0, 0)
+        control_layout.addWidget(self.disconnect_btn, 0, 1)
         self.record_btn = QPushButton("保存视频")
         self.record_btn.setEnabled(False)
         self.record_btn.setToolTip(
             "录制当前单目画面；停止后弹出对话框选择 mp4 保存位置")
         self.record_btn.clicked.connect(self._toggle_recording)
-        control_layout.addWidget(self.record_btn)
+        control_layout.addWidget(self.record_btn, 1, 0)
         self.snapshot_btn = QPushButton("保存图像")
         self.snapshot_btn.clicked.connect(self._choose_snapshot)
-        control_layout.addWidget(self.snapshot_btn)
+        control_layout.addWidget(self.snapshot_btn, 1, 1)
         self.cam_btn = QPushButton("开启摄像头")
         self.cam_btn.setEnabled(False)
         self.cam_btn.setToolTip(
             "板上相机默认不随启动脚本开启；点击发 CAM_ON 打开，再点发 CAM_OFF 关闭")
         self.cam_btn.clicked.connect(self._toggle_camera)
-        control_layout.addWidget(self.cam_btn)
+        control_layout.addWidget(self.cam_btn, 0, 2)
         self.board_rec_btn = QPushButton("板上高清录制")
         self.board_rec_btn.setEnabled(False)
         self.board_rec_btn.setToolTip(
             "命令板子以 2560x720 录制 MJPG 并保存在板子本地（录制期间预览暂停）")
         self.board_rec_btn.clicked.connect(self._toggle_board_recording)
-        control_layout.addWidget(self.board_rec_btn)
+        control_layout.addWidget(self.board_rec_btn, 1, 2)
         self.board_rec_btn.hide()
-        control_layout.addStretch()
 
         self.mode_label = QLabel("模式: 电脑测距 · 显示左校正图")
-        control_layout.addWidget(self.mode_label)
+        self.mode_label.setWordWrap(True)
+        self.mode_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        control_layout.addWidget(self.mode_label, 2, 0, 1, 3)
         layout.addWidget(control_group)
 
         # 测距与标定只在电脑切换；绝不向板端启动测距。
@@ -382,9 +387,8 @@ class StereoFishCameraWidget(QWidget):
         video_layout = QVBoxLayout(video_group)
         self.video_label = SingleViewLabel()
         self.video_label.setAlignment(Qt.AlignCenter)
-        # 竖版画布（两路 640x480 上下拼接 = 640x960, 2:3）：
-        # 画布静态排在页面里随整页滚动，按页面宽度缩放、保持比例
-        self.video_label.setMinimumSize(380, 570)
+        # 转正后单目480×640；忽略pixmap尺寸提示，按可见页面伸缩居中。
+        self.video_label.setMinimumSize(160, 320)
         self.video_label.setCursor(Qt.CrossCursor)
         self.video_label.setStyleSheet("""
             QLabel {
@@ -421,6 +425,9 @@ class StereoFishCameraWidget(QWidget):
         self.camera_state_label.setFont(QFont("Arial", 11, QFont.Bold))
         self.fps_label = QLabel("帧率: --")
         self.resolution_label = QLabel("分辨率: --")
+        for label in (self.status_label, self.camera_state_label, self.fps_label, self.resolution_label):
+            label.setWordWrap(True)
+            label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         status_layout.addWidget(self.status_label)
         status_layout.addWidget(self.camera_state_label)
         status_layout.addWidget(self.fps_label)
@@ -431,6 +438,7 @@ class StereoFishCameraWidget(QWidget):
         # 整页滚动：窗口矮时"双目测距"选项卡整体上下滚动
         # （按钮/画布/测距结果/状态相对页面静止一起滚），窗口高时完整平铺
         page_scroll = QScrollArea()
+        self.page_scroll = page_scroll
         page_scroll.setWidget(content)
         page_scroll.setWidgetResizable(True)
         page_scroll.setFrameShape(QFrame.NoFrame)

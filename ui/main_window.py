@@ -21,7 +21,6 @@ from PyQt5.QtGui import QFont, QKeySequence, QIcon
 from controllers.remote_depth import RemoteParallelDepthController as ParallelDepthController
 
 from ui.visualization import DataVisualizationWidget
-from ui.system_status import SystemStatusWidget
 from ui.keyboard_status import KeyboardStatusWidget
 from ui.video_display import VideoMonitorWidget
 from ui.stereo_camera_widget import StereoFishCameraWidget
@@ -160,8 +159,7 @@ class MainWindow(QMainWindow):
         # 数据可视化标签页
         self.visualization_widget = DataVisualizationWidget()
         center_tabs.addTab(self.visualization_widget, "数据可视化")
-        self.system_status_widget = SystemStatusWidget()
-        center_tabs.addTab(self.system_status_widget, '系统状态')
+        self.system_status_widget = self.visualization_widget.system_status_widget
         
         # 视频页按变体: dual=机载单目流, single=原视频监控（外部+机载相机）
         if self.variant == "dual":

@@ -143,3 +143,28 @@ def test_widget_single_view_marker_save_and_no_board_depth(tmp_path):
     assert widget.current_frame is None, 'Late frame resurrected a closing camera'
     widget.shutdown()
     widget.close()
+
+
+@pytest.mark.parametrize('width', [480, 720, 1100])
+def test_single_view_image_center_tracks_viewport_without_horizontal_overflow(width):
+    """A portrait image centers in the visible page, not in a wider hidden content widget."""
+    from test_ui_state_machine import ensure_app
+    from ui.stereo_camera_widget import StereoFishCameraWidget
+    from PyQt5.QtCore import QPoint
+    app = ensure_app()
+    widget = StereoFishCameraWidget()
+    try:
+        widget.resize(width, 760)
+        widget.show()
+        widget.video_label.set_frame(np.full((640, 480, 3), 120, np.uint8))
+        app.processEvents()
+        app.processEvents()
+        viewport = widget.page_scroll.viewport()
+        assert widget.page_scroll.horizontalScrollBar().maximum() == 0
+        x, y, w, h = widget.video_label.image_rectangle()
+        origin = widget.video_label.mapTo(viewport, QPoint(0, 0))
+        assert abs(origin.x()+x+w/2.-viewport.width()/2.) <= 2.
+        assert abs(y+h/2.-widget.video_label.contentsRect().center().y()) <= 1.
+    finally:
+        widget.shutdown()
+        widget.close()

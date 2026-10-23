@@ -54,8 +54,9 @@ def test_global_sliding_and_free_range_keep_entire_history(status):
     assert [r['time_s'] for r in status.visible_rows()] == list(range(20, 31))
     status.global_time_cb.setChecked(True)
     assert len(status.visible_rows()) == 31
+    status.export_plot_combo.setCurrentIndex(1)
     status.plots[1].setXRange(7.2, 12.8, padding=0)
-    status._on_manual_view_change()
+    status._on_manual_view_change('soc_temp_c')
     assert [r['time_s'] for r in status.visible_rows()] == [8., 9., 10., 11., 12.]
     feed(status, 31)
     assert [r['time_s'] for r in status.visible_rows()] == [8., 9., 10., 11., 12.]
@@ -118,4 +119,42 @@ def test_main_telemetry_is_queued_and_old_connection_is_ignored(window):
     window._on_board_state(object(), dict(payload, timestamp=2.))
     ensure_app().processEvents()
     assert len(window.system_status_widget.rows) == 1
-    assert any(window.center_tabs.tabText(i) == '系统状态' for i in range(window.center_tabs.count()))
+    assert not any(window.center_tabs.tabText(i) == '系统状态' for i in range(window.center_tabs.count()))
+    tabs = window.visualization_widget.tab_widget
+    assert any(tabs.tabText(i) == '系统状态' for i in range(tabs.count()))
+    assert window.system_status_widget is window.visualization_widget.system_status_widget
+
+
+def test_independent_pan_follow_reset_and_export_reference(status):
+    """Panning CPU must leave other views following; resets and export reference are explicit."""
+    for second in range(31):
+        feed(status, second)
+    status.plots[0].setXRange(4., 8., padding=0)
+    status._on_manual_view_change('cpu_percent')
+    feed(status, 31)
+    assert status.plots[0].getViewBox().viewRange()[0] == [4., 8.]
+    assert status.plots[1].getViewBox().viewRange()[0] == [0., 31.]
+    assert status.plots[2].getViewBox().viewRange()[0] == [0., 31.]
+    status.export_plot_combo.setCurrentIndex(0)
+    assert [r['time_s'] for r in status.visible_rows()] == list(range(4, 9))
+    status.export_plot_combo.setCurrentIndex(1)
+    assert len(status.visible_rows()) == 32
+    status.reset_plot('soc_temp_c')
+    assert status.plots[0].getViewBox().viewRange()[0] == [4., 8.]
+
+
+def test_short_window_can_scroll_to_all_three_resizable_canvases(status):
+    """A small screen exposes a real scrollbar and the third plot, not clipped fixed canvases."""
+    app = ensure_app()
+    status.resize(640, 460)
+    status.show()
+    app.processEvents()
+    bar = status.scroll_area.verticalScrollBar()
+    assert bar.maximum() > 0
+    bar.setValue(bar.maximum())
+    app.processEvents()
+    from PyQt5.QtCore import QPoint
+    lower = status.plots[2].mapTo(status.scroll_area.viewport(), QPoint(0, status.plots[2].height()))
+    assert lower.y() <= status.scroll_area.viewport().height()+2
+    assert status.plot_splitter.count() == 3
+    assert not status.plot_splitter.childrenCollapsible()

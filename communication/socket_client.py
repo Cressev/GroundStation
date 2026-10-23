@@ -13,6 +13,8 @@ import socket
 import json
 import threading
 import time
+import math
+from copy import deepcopy
 from typing import Optional, Callable, Dict, Any
 from dataclasses import dataclass
 
@@ -51,6 +53,7 @@ class SocketCommunication(FishCommunicationInterface):
         # 心跳回调（每真实发出一拍心跳调用一次，供 UI 呼吸灯等）
         self._heartbeat_callback: Optional[Callable[[int], None]] = None
         self._hb_seq = 0
+        self._send_lock = threading.Lock()
 
         # 接收缓冲区
         self._recv_buffer = ""
@@ -63,6 +66,7 @@ class SocketCommunication(FishCommunicationInterface):
             self.socket.connect((self.fish_ip, self.port))
             
             self._connected = True
+            self._last_state = FishState()
             self._stop_event.clear()
             
             # 启动接收线程
@@ -129,9 +133,13 @@ class SocketCommunication(FishCommunicationInterface):
                 'pec_angle': getattr(command, 'pec_angle', 1500),
                 'timestamp': command.timestamp
             }
+            if getattr(command, 'pectoral_owner', None) in ('pico_depth', 'pico_hold'):
+                cmd_data.pop('pec_angle')
+                cmd_data['pectoral_owner'] = command.pectoral_owner
             
             json_data = json.dumps(cmd_data) + '\n'
-            self.socket.sendall(json_data.encode('utf-8'))
+            with self._send_lock:
+                self.socket.sendall(json_data.encode('utf-8'))
             return True
             
         except Exception as e:
@@ -140,7 +148,19 @@ class SocketCommunication(FishCommunicationInterface):
     
     def get_fish_state(self) -> Optional[FishState]:
         """获取最新的机器鱼状态"""
-        return self._last_state
+        return deepcopy(self._last_state)
+
+    def send_depth_control(self, request):
+        """Send a board-local PID request as a single serialized JSON line."""
+        if not self._connected or self.socket is None:
+            return False
+        try:
+            payload = (json.dumps(request, allow_nan=False)+'\n').encode('utf-8')
+            with self._send_lock:
+                self.socket.sendall(payload)
+            return True
+        except (OSError, ValueError, TypeError):
+            return False
     
     def is_alive(self) -> bool:
         """检查连接是否存活"""
@@ -170,7 +190,8 @@ class SocketCommunication(FishCommunicationInterface):
         payload = (json.dumps({"type": "ping"}) + "\n").encode("utf-8")
         while not self._stop_event.is_set() and self._connected and self.socket:
             try:
-                self.socket.sendall(payload)
+                with self._send_lock:
+                    self.socket.sendall(payload)
                 self._hb_seq += 1
                 if self._heartbeat_callback:
                     self._heartbeat_callback(self._hb_seq)  # 真实发出后才触发（UI 呼吸灯）
@@ -211,27 +232,63 @@ class SocketCommunication(FishCommunicationInterface):
                         self._connection_callback(False)
                 break
     
+    def _sensor_identity(self, data, previous=None):
+        """Keep source sample identity and age independent of packet/display timestamps."""
+        identity = data.get('sample_id')
+        try:
+            age = float(data.get('age_s', float('nan')))
+            if identity is None or not math.isfinite(age) or age < 0:
+                return None
+        except (ValueError, TypeError):
+            return None
+        if previous is not None and previous['id'] == identity:
+            return previous
+        return dict(id=identity, age_s=age, received_at=time.monotonic(),
+                    source_timestamp=data.get('sample_timestamp'))
+
+    def _merge_imu(self, imu):
+        """Copy new IMU state while rejecting malformed radians and never fabricating pitch=0."""
+        if not isinstance(imu, dict):
+            return
+        try:
+            angles = {key: float(imu[key]) for key in ('roll', 'pitch', 'yaw')}
+            if not all(math.isfinite(value) for value in angles.values()) or abs(angles['pitch']) > math.pi / 2 + .001:
+                return
+        except (KeyError, ValueError, TypeError):
+            return
+        state = deepcopy(self._last_state or FishState())
+        state.orientation = angles
+        state.imu_sample = self._sensor_identity(imu, state.imu_sample)
+        state.timestamp = time.time()
+        self._last_state = state
+        if self._data_callback:
+            self._data_callback(state)
+
     def _parse_sensor_data(self, json_str: str):
         """解析传感器数据"""
         try:
             data = json.loads(json_str)
+            if data.get('type') == 'depth_control_state':
+                state = deepcopy(self._last_state or FishState())
+                state.depth_control = data
+                self._last_state = state
+                return
+            if data.get('type') == 'imu':
+                self._merge_imu(data)
+                return
 
             # gs_bridge 状态回推（含控制板遥测/IMU）：遥测走状态回调；
             # IMU 欧拉角合并进持久 FishState 并触发数据回调（图表实时刷新）
             if data.get("type") == "state":
+                if data.get('depth_control') is not None:
+                    state = deepcopy(self._last_state or FishState())
+                    state.depth_control = data['depth_control']
+                    self._last_state = state
                 if self._state_callback:
                     self._state_callback(data)
                 imu = data.get("imu")
                 if imu:
-                    st = self._last_state or FishState()
-                    st.orientation = {
-                        "roll": imu.get("roll", 0.0),
-                        "pitch": imu.get("pitch", 0.0),
-                        "yaw": imu.get("yaw", 0.0),
-                    }
-                    self._last_state = st
-                    if self._data_callback:
-                        self._data_callback(st)
+                    self._merge_imu(imu)
                 return
 
             state = FishState()
@@ -241,11 +298,13 @@ class SocketCommunication(FishCommunicationInterface):
                 # 双目鱼深度 JSON（10Hz）：五路数值原样进 state.depth，
                 # 标定后深度由主窗口按零点扣减后补进 "calibrated"。
                 # 复用持久 state，保留 IMU 分支已合并的姿态
-                st = self._last_state or FishState()
+                st = deepcopy(self._last_state or FishState())
                 st.depth = {k: data.get(k) for k in
                             ("raw_1", "filtered_1", "raw_2",
                              "filtered_2", "fused")}
                 st.timestamp = data.get("timestamp", time.time())
+                st.depth_timestamp = st.timestamp
+                st.depth_sample = self._sensor_identity(data, st.depth_sample)
                 self._last_state = st
                 if self._data_callback:
                     self._data_callback(st)

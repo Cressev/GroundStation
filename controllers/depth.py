@@ -11,7 +11,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (QCheckBox, QComboBox,
                              QFormLayout, QGroupBox, QHBoxLayout, QLabel,
-                             QPushButton, QVBoxLayout)
+                             QPushButton, QVBoxLayout, QWidget)
 
 from config import CONTROL_LIMITS, DEPTH_CONTROL_DEFAULTS
 from controllers.base import KeyboardController
@@ -152,7 +152,14 @@ class DepthController(KeyboardController):
         layout = widget.layout()
         title = layout.itemAt(0).widget()
         title.setText("深度闭环 + 键盘控制")
+        layout.insertWidget(2, self._create_depth_widget())
+        return widget
 
+    def _create_depth_widget(self):
+        """Build the reusable PID-only parameter/status view without keyboard controls."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
         pid_group = QGroupBox("深度 PID 控制")
         pid_layout = QVBoxLayout(pid_group)
         switch_layout = QHBoxLayout()
@@ -210,7 +217,7 @@ class DepthController(KeyboardController):
         self._apply_pid_button.clicked.connect(self._apply_depth_parameters)
         pid_layout.addWidget(self._apply_pid_button)
         self._set_parameter_widgets_enabled(False)
-        layout.insertWidget(2, pid_group)
+        layout.addWidget(pid_group)
 
         status_group = QGroupBox("深度控制器状态")
         status_layout = QVBoxLayout(status_group)
@@ -225,7 +232,7 @@ class DepthController(KeyboardController):
                       self._error_status_label, self._terms_status_label,
                       self._output_status_label):
             status_layout.addWidget(label)
-        layout.insertWidget(3, status_group)
+        layout.addWidget(status_group)
         return widget
 
     def _double_spin(self, minimum, maximum, step, decimals, suffix):

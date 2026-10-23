@@ -79,6 +79,7 @@ class KeyboardController(ControllerBase):
         # 胸鳍脉宽控制 (500-2500 μs)
         self._pec_angle = CONTROL_LIMITS["pec_angle"]["default"]
         self._pec_angle_step = 10  # 每次增减10μs
+        self._pectoral_override = None
         
         # 上次发送的命令，用于检测变化
         self._last_sent_command = None
@@ -218,6 +219,7 @@ class KeyboardController(ControllerBase):
         self._pec_pulse_input.setMinimumWidth(112)
         self._pec_pulse_input.setMaximumWidth(140)
         set_pec_button = QPushButton("设定")
+        self._set_pec_button = set_pec_button
         set_pec_button.clicked.connect(self._set_pec_from_widget)
         pec_layout.addWidget(self._pec_pulse_input)
         pec_layout.addWidget(set_pec_button)
@@ -323,6 +325,9 @@ class KeyboardController(ControllerBase):
 
     def set_pec_pulse(self, pulse_width):
         """设定胸鳍 PWM 脉宽并立即生成一条包含该值的控制命令。"""
+        if self._pectoral_override is not None:
+            self.status_changed.emit('胸鳍由深度控制占用，请先停止深度控制')
+            return False
         minimum = int(CONTROL_LIMITS["pec_angle"]["min"])
         maximum = int(CONTROL_LIMITS["pec_angle"]["max"])
         self._pec_angle = max(minimum, min(int(pulse_width), maximum))
@@ -333,6 +338,20 @@ class KeyboardController(ControllerBase):
         self._last_sent_command = None
         self._update_control()
         self.status_changed.emit(f"胸鳍脉宽已设定为 {self._pec_angle} μs")
+
+    def set_pectoral_override(self, pulse_width):
+        """Transfer pectoral ownership without emitting a complete stale tail command."""
+        self._pectoral_override = pulse_width
+        if pulse_width is not None:
+            self._pec_angle = max(500, min(2500, int(pulse_width)))
+            if hasattr(self, '_pec_pulse_input'):
+                self._pec_pulse_input.setValue(self._pec_angle)
+        for name in ('_pec_pulse_input', '_set_pec_button'):
+            if hasattr(self, name):
+                getattr(self, name).setEnabled(pulse_width is None)
+        if hasattr(self, '_pec_label'):
+            owner = '（深度控制）' if pulse_width is not None else ''
+            self._pec_label.setText(f'胸鳍脉宽: {self._pec_angle} μs{owner}')
 
     def _set_pec_from_widget(self):
         """读取胸鳍脉宽输入框，并通过控制器现有信号链发送。"""
@@ -404,6 +423,9 @@ class KeyboardController(ControllerBase):
 
     def _update_pectoral_control(self) -> bool:
         """按 Q/E 更新胸鳍脉宽，返回本周期是否需要同步输入框。"""
+        if self._pectoral_override is not None:
+            self._pec_angle = int(self._pectoral_override)
+            return False
         if self._key_states.get(KEYBOARD_MAPPING["increase_pec"], False):  # Q键
             self._pec_angle = min(
                 self._pec_angle + self._pec_angle_step,

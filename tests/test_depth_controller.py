@@ -250,7 +250,8 @@ def test_dual_main_window_exposes_depth_controller():
     """双尾鱼主窗口应注册控制器，并把标定后融合深度送入控制器。"""
     ensure_app()
     window = MainWindow("dual")
-    assert window.controller_combo.findData("depth") >= 0
+    assert window.controller_combo.findData("depth") == -1
+    assert window.depth_controller_combo.findData("pid") >= 0
     assert isinstance(window.controllers["depth"], DepthController)
     widget = window.controllers["depth"].get_control_widget()
     assert widget is not None
@@ -265,7 +266,8 @@ def test_dual_main_window_exposes_depth_controller():
     window.communication = communication
     window.depth_panel.zero_offset = 2.0
     window._update_data()
-    assert window.controllers["depth"]._latest_depth == 40.0
+    assert state.depth['calibrated'] == 40.0
+    assert window.controllers['depth']._latest_depth is None  # Desktop is display/config only.
     window.communication = None
     window.close()
 

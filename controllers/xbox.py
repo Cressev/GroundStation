@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """Windows Xbox 手柄输入、连续控制模型和地面站控制面板。"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import ctypes
 import json
 import math
@@ -458,12 +458,14 @@ class XboxController(ControllerBase):
         self._parameters = self._load_saved_parameters()
         self._model = XboxControlModel(self._parameters)
         self._pec_angle = int(self._parameters["pec_neutral_pwm"])
+        self._pectoral_override = None
         self._control_widget = None
         self._last_poll_time = self._time_source()
         self._last_input = XboxInputState()
         self._last_connected = False
         self._previous_buttons = 0
         self._emergency_latched = False
+        self._external_emergency_monitor = False
         self._last_sent_command = None
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(20)
@@ -523,6 +525,28 @@ class XboxController(ControllerBase):
     def get_pectoral_pwm(self):
         """返回当前胸鳍指令脉宽。"""
         return int(self._pec_angle)
+
+    def set_emergency_monitoring(self, enabled):
+        """Monitor selected Xbox emergency input even when only the depth axis is running."""
+        enabled = bool(enabled)
+        if enabled and not self._external_emergency_monitor:
+            self._emergency_latched = False
+            self._previous_buttons = 0
+        self._external_emergency_monitor = enabled
+
+    def set_pectoral_override(self, pulse_width):
+        """Follow the actual depth-owned PWM and block manual Y/A/center inputs."""
+        self._pectoral_override = pulse_width
+        if pulse_width is not None:
+            self._pec_angle = max(500, min(2500, int(pulse_width)))
+            # Depth owns its own limits; do not clamp actual PWM to the manual Xbox range.
+            self._model._pec_pwm = float(self._pec_angle)
+            self._model._last_output = replace(self._model._last_output, pec_pwm=self._pec_angle)
+        if hasattr(self, '_center_button'):
+            self._center_button.setEnabled(pulse_width is None)
+        if hasattr(self, '_pec_label'):
+            owner = '（深度控制）' if pulse_width is not None else '（手动）'
+            self._pec_label.setText(f'胸鳍指令: {self._pec_angle} μs{owner}')
 
     def _load_saved_parameters(self):
         """读取持久化参数，缺失或损坏时使用安全默认值。"""
@@ -676,6 +700,7 @@ class XboxController(ControllerBase):
         apply_button = QPushButton("应用并保存")
         apply_button.clicked.connect(self._apply_parameters_from_widget)
         center_button = QPushButton("胸鳍回中")
+        self._center_button = center_button
         center_button.clicked.connect(self._center_pectoral)
         button_row.addWidget(apply_button)
         button_row.addWidget(center_button)
@@ -726,6 +751,8 @@ class XboxController(ControllerBase):
             return False
         self._parameters = values
         self._model.configure(values)
+        if self._pectoral_override is not None:
+            self.set_pectoral_override(self._pectoral_override)
         self._pec_angle = self._model._last_output.pec_pwm
         self._last_sent_command = None
         self._save_parameters()
@@ -734,6 +761,9 @@ class XboxController(ControllerBase):
 
     def _center_pectoral(self):
         """把胸鳍指令设为当前配置的中位值。"""
+        if self._pectoral_override is not None:
+            self.status_changed.emit('胸鳍由深度控制占用，请先停止深度控制')
+            return
         self._model.set_pectoral_pwm(self._parameters["pec_neutral_pwm"])
         self._pec_angle = int(self._parameters["pec_neutral_pwm"])
         self._last_sent_command = None
@@ -793,6 +823,18 @@ class XboxController(ControllerBase):
         self._last_input = state
         self._update_connection_state(state)
 
+        if not self._active and self._external_emergency_monitor and not self._emergency_latched:
+            newly_pressed = state.buttons & ~self._previous_buttons
+            self._previous_buttons = state.buttons
+            disconnected = was_connected and not state.connected
+            pressed_stop = state.connected and newly_pressed & (XINPUT_GAMEPAD_X | XINPUT_GAMEPAD_B)
+            if disconnected or pressed_stop:
+                self._emergency_latched = True
+                if pressed_stop:
+                    self._pulse_emergency_vibration(state.controller_index)
+                self.emergency_stop_requested.emit('Xbox紧停/断开：独立深度控制已请求停止')
+                return
+
         if self._active and was_connected and not state.connected:
             self._emergency_latched = True
             output = self._model.immediate_stop()
@@ -823,7 +865,11 @@ class XboxController(ControllerBase):
             self._refresh_status_labels(state, output)
             return
 
-        output = self._model.update(state, dt)
+        model_input = state
+        if self._pectoral_override is not None:
+            model_input = replace(state, buttons=state.buttons & ~(XINPUT_GAMEPAD_Y | XINPUT_GAMEPAD_A))
+            self._model._pec_pwm = float(self._pectoral_override)
+        output = self._model.update(model_input, dt)
         self._emit_output(output)
         self._refresh_status_labels(state, output)
 

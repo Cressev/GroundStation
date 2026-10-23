@@ -33,6 +33,12 @@ class FakeCommunication:
         """初始化为已连接状态。"""
         self.connected = True
         self.commands = []
+        self.depth_requests = []
+
+    def send_depth_control(self, request):
+        """Record settings/intent only, without simulating local PID computation."""
+        self.depth_requests.append(request)
+        return True
 
     def send_control_command(self, command):
         """记录命令并报告发送成功。"""
@@ -80,7 +86,7 @@ def test_control_arm_locks_controller_and_repeated_transitions_are_idempotent():
 
     assert window._set_control_armed(True)
     assert len(communication.commands) == command_count
-    assert not window._request_controller("depth")
+    assert not window._request_controller("xbox")
     assert window._current_controller_name == "keyboard"
 
     window.enable_control_checkbox.setChecked(False)
@@ -93,22 +99,23 @@ def test_control_arm_locks_controller_and_repeated_transitions_are_idempotent():
     window.close()
 
 
-def test_controller_selection_stays_synchronized_and_depth_pid_needs_global_arm():
-    """菜单、下拉框与真实控制器一致，PID 不能在未解锁时开启。"""
+def test_controller_selection_stays_synchronized_and_depth_pid_is_independent():
+    """Heading selection and depth startup are independent and have separate UI locks."""
     window, _ = make_connected_window()
-    assert window._request_controller("depth")
-    assert window._request_controller("depth")
-    assert window._current_controller_name == "depth"
-    assert window.controller_combo.currentData() == "depth"
-    assert window.controller_actions["depth"].isChecked()
+    assert window._request_controller("xbox")
+    assert window._request_controller("xbox")
+    assert window._current_controller_name == "xbox"
+    assert window.controller_combo.currentData() == "xbox"
+    assert window.controller_actions["xbox"].isChecked()
     depth = window.controllers["depth"]
     depth.get_control_widget()
-    assert not depth._pid_enable_checkbox.isEnabled()
-
-    window.enable_control_checkbox.setChecked(True)
-    assert depth._pid_enable_checkbox.isEnabled()
-    window.enable_control_checkbox.setChecked(False)
-    assert not depth._pid_enable_checkbox.isEnabled()
+    assert depth._pid_enable_checkbox.isHidden()
+    window.depth_enable_checkbox.setChecked(True)
+    assert depth._pid_enabled and depth.active
+    assert not window._control_armed
+    assert window.controller_combo.isEnabled()
+    assert not window.depth_controller_combo.isEnabled()
+    window.depth_enable_checkbox.setChecked(False)
     assert not depth._pid_enabled
     window._fish_connection_state = "disconnected"
     window.communication = None

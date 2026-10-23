@@ -23,6 +23,10 @@ class FishState:
         # 双目鱼深度数据（gs_bridge depth JSON）：
         # raw_1/filtered_1/raw_2/filtered_2/fused/calibrated，空 dict = 无数据
         self.depth = {}
+        self.depth_sample = None
+        self.imu_sample = None
+        self.depth_control = None
+        self.depth_timestamp = None
         self.timestamp = time.time()
 
 @dataclass

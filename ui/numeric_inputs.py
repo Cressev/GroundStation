@@ -2,7 +2,7 @@
 
 from PyQt5.QtCore import QEvent, QPointF, Qt
 from PyQt5.QtGui import QWheelEvent
-from PyQt5.QtWidgets import QApplication, QAbstractScrollArea, QDoubleSpinBox, QSpinBox
+from PyQt5.QtWidgets import QApplication, QAbstractScrollArea, QComboBox, QDoubleSpinBox, QSpinBox
 
 
 def forward_wheel_to_page(editor, event):
@@ -21,7 +21,37 @@ def forward_wheel_to_page(editor, event):
     event.ignore()
 
 
-class NoWheelSpinBox(QSpinBox):
+class NoWheelComboBox(QComboBox):
+    """Control-type selector changed deliberately by click/keyboard, not page scrolling."""
+
+    def __init__(self, parent=None):
+        """Keep click and Tab focus with normal popup and arrow-key behavior."""
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def wheelEvent(self, event):
+        """Scroll the controller page rather than silently select another algorithm."""
+        forward_wheel_to_page(self, event)
+
+
+class _AdaptiveParameterWidth:
+    """Protect full numeric text under font/style changes in integrated controller pages."""
+
+    def sizeHint(self):
+        """Reserve suffix/arrow padding only when the integrated sidebar opts in."""
+        size = super().sizeHint()
+        if self.property('adaptive_parameter_width'):
+            size.setWidth(size.width() + 12)
+        return size
+
+    def minimumSizeHint(self):
+        """Allow spare-space growth but never squeeze parameter text below its full hint."""
+        if self.property('adaptive_parameter_width'):
+            return self.sizeHint()
+        return super().minimumSizeHint()
+
+
+class NoWheelSpinBox(_AdaptiveParameterWidth, QSpinBox):
     """Integer editor retaining normal typing, arrow keys and step buttons."""
 
     def __init__(self, parent=None):
@@ -42,7 +72,7 @@ class NoWheelSpinBox(QSpinBox):
         return super().eventFilter(watched, event)
 
 
-class NoWheelDoubleSpinBox(QDoubleSpinBox):
+class NoWheelDoubleSpinBox(_AdaptiveParameterWidth, QDoubleSpinBox):
     """Floating-point editor that cannot change values through wheel input."""
 
     def __init__(self, parent=None):

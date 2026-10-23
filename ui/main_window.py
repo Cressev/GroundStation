@@ -15,9 +15,10 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QGroupBox, QGridLayout, QLabel, QPushButton,
                              QComboBox, QMessageBox, QSplitter, QTextEdit,
                              QLineEdit, QScrollArea, QApplication, QCheckBox,
-                             QSizePolicy, QActionGroup)
-from PyQt5.QtCore import Qt, QSettings, QTimer, pyqtSignal, pyqtSlot
+                             QSizePolicy, QActionGroup, QFormLayout, QAbstractSpinBox)
+from PyQt5.QtCore import Qt, QSettings, QTimer, QPoint, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QFont, QKeySequence, QIcon
+from controllers.remote_depth import RemoteParallelDepthController as ParallelDepthController
 
 from ui.visualization import DataVisualizationWidget
 from ui.keyboard_status import KeyboardStatusWidget
@@ -27,8 +28,11 @@ from ui.image_enhancement_widget import ImageEnhancementWidget
 from ui.depth_panel import DepthPanel
 from ui.connection_store import ConnectionStore
 from ui.heartbeat_light import HeartbeatLight
+from ui.numeric_inputs import NoWheelComboBox
 from controllers.base import KeyboardController
 from controllers.depth import DepthController
+from controllers.remote_depth import RemoteDepthController as DepthAxisController
+from controllers.coordinator import ControlCoordinator
 from controllers.xbox import XboxController
 from communication.socket_client import SocketCommunication
 from communication.base import FishState, ControlCommand
@@ -55,6 +59,10 @@ class MainWindow(QMainWindow):
         self.communication = None
         self._fish_connection_state = "disconnected"
         self._control_armed = False
+        self.axis_coordinator = None
+        self._last_board_depth_state = None
+        self._depth_handover_session = None
+        self._force_safe_neutral = False
         self.current_controller = None
         self._current_controller_name = None
         self.controllers = {}
@@ -134,10 +142,12 @@ class MainWindow(QMainWindow):
         
         # 左侧控制面板
         control_panel = self._create_control_panel()
+        self.left_panel = control_panel
         self.main_splitter.addWidget(control_panel)
         
         # 中央区域 - 包含数据可视化和视频显示
         center_widget = QWidget()
+        center_widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         center_layout = QVBoxLayout(center_widget)
         center_layout.setContentsMargins(0, 0, 0, 0)
         
@@ -173,6 +183,7 @@ class MainWindow(QMainWindow):
         
         # 右侧面板 - 仅保留运行时状态；数据保存已移入时间序列页
         right_panel = QWidget()
+        self.right_panel = right_panel
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(2, 2, 2, 2)
         right_panel.setMinimumWidth(170)   # 可拖窄到此为止，内容自适应
@@ -190,7 +201,15 @@ class MainWindow(QMainWindow):
         self.keyboard_status_widget = KeyboardStatusWidget()
         self.right_tabs.addTab(self.keyboard_status_widget, "按键状态")
         
-        right_layout.addWidget(self.right_tabs)
+        right_layout.addWidget(self.right_tabs, 1)
+        self.system_info_group = QGroupBox('系统信息')
+        info_layout = QVBoxLayout(self.system_info_group)
+        self.info_text = QTextEdit()
+        self.info_text.setReadOnly(True)
+        self.info_text.setMinimumHeight(100)
+        self.info_text.setMaximumHeight(180)
+        info_layout.addWidget(self.info_text)
+        right_layout.addWidget(self.system_info_group)
         # 拖窄时内容自适应面板宽度，而不是被 sizeHint 顶住
         self.right_tabs.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.main_splitter.addWidget(right_panel)
@@ -285,18 +304,19 @@ class MainWindow(QMainWindow):
         self.controller_actions["keyboard"] = keyboard_action
         control_menu.addAction(keyboard_action)
         if self.variant == "dual":
-            depth_action = QAction('深度控制', self, checkable=True)
-            depth_action.triggered.connect(
-                lambda checked: checked and self._request_controller("depth"))
-            self.controller_action_group.addAction(depth_action)
-            self.controller_actions["depth"] = depth_action
-            control_menu.addAction(depth_action)
             xbox_action = QAction('Xbox 控制', self, checkable=True)
             xbox_action.triggered.connect(
                 lambda checked: checked and self._request_controller("xbox"))
             self.controller_action_group.addAction(xbox_action)
             self.controller_actions["xbox"] = xbox_action
             control_menu.addAction(xbox_action)
+            control_menu.addSeparator()
+            self.depth_control_action = QAction('启动深度控制（单闭环PID）', self, checkable=True)
+            self.depth_control_action.toggled.connect(self._set_depth_control_armed)
+            control_menu.addAction(self.depth_control_action)
+            stop_all_action = QAction('全部停止', self)
+            stop_all_action.triggered.connect(lambda: self._stop_all_controls())
+            control_menu.addAction(stop_all_action)
         
         # 帮助菜单
         help_menu = menubar.addMenu('帮助(&H)')
@@ -378,6 +398,10 @@ class MainWindow(QMainWindow):
         connection_layout.addWidget(self.connection_button, 4, 0, 1, 2)
         
         layout.addWidget(connection_group)
+
+        if self.variant == 'dual':
+            self._create_axis_controls(layout)
+            return panel
         
         # 控制方式选择组
         control_group = QGroupBox("控制方式")
@@ -415,28 +439,81 @@ class MainWindow(QMainWindow):
         
         layout.addWidget(control_group)
         
-        # 系统信息组
-        info_group = QGroupBox("系统信息")
-        info_layout = QVBoxLayout(info_group)
-        
-        self.info_text = QTextEdit()
-        self.info_text.setMaximumHeight(150)
-        self.info_text.setReadOnly(True)
-        info_layout.addWidget(self.info_text)
-        
-        layout.addWidget(info_group)
-        
         layout.addStretch()
         
         return panel
+
+    def _create_axis_controls(self, layout):
+        """Build one scrolling stack: independent heading first, depth second."""
+        self.all_stop_button = QPushButton('全部停止')
+        self.all_stop_button.setToolTip('关闭航向与深度两路控制，停尾并将胸鳍回到安全中位')
+        self.all_stop_button.clicked.connect(lambda: self._stop_all_controls())
+        layout.addWidget(self.all_stop_button)
+        self.control_ownership_label = QLabel('航向和深度控制均未启动')
+        self.control_ownership_label.setWordWrap(True)
+        layout.addWidget(self.control_ownership_label)
+
+        content = QWidget()
+        controls_layout = QVBoxLayout(content)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        self.heading_group = QGroupBox('航向控制')
+        heading_layout = QVBoxLayout(self.heading_group)
+        heading_layout.addWidget(QLabel('控制类型'))
+        self.controller_combo = NoWheelComboBox()
+        self.controller_combo.addItem('键盘控制', 'keyboard')
+        self.controller_combo.addItem('Xbox 控制', 'xbox')
+        self.controller_combo.currentIndexChanged.connect(self._on_controller_changed)
+        heading_layout.addWidget(self.controller_combo)
+        self.enable_control_checkbox = QCheckBox('启动航向控制')
+        self.enable_control_checkbox.setToolTip('仅启停尾鳍/手动输入通道，不关闭独立深度PID')
+        self.enable_control_checkbox.toggled.connect(self._on_enable_control_toggled)
+        self.heading_enable_checkbox = self.enable_control_checkbox
+        heading_layout.addWidget(self.enable_control_checkbox)
+        self.controller_widget_container = QWidget()
+        self.controller_widget_layout = QVBoxLayout(self.controller_widget_container)
+        self.controller_widget_layout.setContentsMargins(0, 0, 0, 0)
+        heading_layout.addWidget(self.controller_widget_container)
+        controls_layout.addWidget(self.heading_group)
+
+        self.depth_group = QGroupBox('深度控制')
+        depth_layout = QVBoxLayout(self.depth_group)
+        depth_layout.addWidget(QLabel('控制类型'))
+        self.depth_controller_combo = NoWheelComboBox()
+        self.depth_controller_combo.addItem('单闭环 PID', 'pid')
+        self.depth_controller_combo.addItem('并联双闭环 PID', 'parallel_pid')
+        self.depth_controller_combo.currentIndexChanged.connect(self._on_depth_controller_changed)
+        depth_layout.addWidget(self.depth_controller_combo)
+        self.depth_enable_checkbox = QCheckBox('启动深度控制')
+        self.depth_enable_checkbox.setToolTip('独立控制胸鳍；启动后屏蔽Q/E、Y/A/RT等手动胸鳍输入')
+        self.depth_enable_checkbox.toggled.connect(self._set_depth_control_armed)
+        depth_layout.addWidget(self.depth_enable_checkbox)
+        self.depth_widget_container = QWidget()
+        self.depth_widget_layout = QVBoxLayout(self.depth_widget_container)
+        self.depth_widget_layout.setContentsMargins(0, 0, 0, 0)
+        depth_layout.addWidget(self.depth_widget_container)
+        controls_layout.addWidget(self.depth_group)
+        controls_layout.addStretch()
+        self.axis_control_scroll = QScrollArea()
+        self.axis_control_scroll.setWidgetResizable(True)
+        self.axis_control_scroll.setWidget(content)
+        self.axis_control_scroll.setMinimumHeight(230)
+        self.axis_control_scroll.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        layout.addWidget(self.axis_control_scroll, 1)
     
     def _init_controllers(self):
         """初始化控制器"""
         # 键盘控制器
         self.controllers['keyboard'] = KeyboardController()
         if self.variant == "dual":
-            self.controllers['depth'] = DepthController()
+            self.controllers['depth'] = DepthAxisController()
+            self.controllers['parallel_depth'] = ParallelDepthController()
             self.controllers['xbox'] = XboxController()
+            self.axis_coordinator = ControlCoordinator(
+                {name: self.controllers[name] for name in ('keyboard', 'xbox')},
+                self.controllers['depth'], self)
+            depth_widget = self.controllers['depth'].get_control_widget()
+            self._prepare_axis_widget(depth_widget)
+            self.depth_widget_layout.addWidget(depth_widget)
         
         # 默认选择键盘控制器
         self._switch_controller('keyboard')
@@ -445,8 +522,16 @@ class MainWindow(QMainWindow):
         """初始化信号连接"""
         # 控制器信号连接
         for controller in self.controllers.values():
-            controller.control_command_generated.connect(self._on_control_command)
+            if self.variant != 'dual':
+                controller.control_command_generated.connect(self._on_control_command)
             controller.status_changed.connect(self._on_controller_status_changed)
+            if hasattr(controller, 'remote_fault'):
+                controller.remote_sender = self._send_board_depth_request
+                controller.remote_fault.connect(self._on_board_depth_fault)
+        if self.axis_coordinator is not None:
+            self.axis_coordinator.command_generated.connect(self._on_axes_command)
+            self.axis_coordinator.state_changed.connect(self._apply_main_ui_state)
+            self.axis_coordinator.status_changed.connect(self._log_message)
         xbox_controller = self.controllers.get("xbox")
         if xbox_controller is not None:
             xbox_controller.emergency_stop_requested.connect(
@@ -465,6 +550,18 @@ class MainWindow(QMainWindow):
     
     def _switch_controller(self, controller_name: str):
         """在未启用控制时切换控制器；重复选择保持幂等。"""
+        if self.axis_coordinator is not None:
+            if not self.axis_coordinator.select_heading(controller_name):
+                self._sync_controller_selection()
+                return False
+            changed = controller_name != self._current_controller_name
+            self.current_controller = self.axis_coordinator.heading
+            self._current_controller_name = controller_name
+            if changed:
+                self._update_controller_widget()
+                self.axis_coordinator._sync_pectoral_owner()
+            self._sync_controller_selection()
+            return True
         if controller_name not in self.controllers:
             self._log_message(f"未知控制器: {controller_name}")
             self._sync_controller_selection()
@@ -501,7 +598,59 @@ class MainWindow(QMainWindow):
         # 添加新的控制器界面
         if self.current_controller:
             widget = self.current_controller.get_control_widget()
+            if self.variant == 'dual':
+                first = widget.layout().itemAt(0).widget()
+                if isinstance(first, QLabel):
+                    first.hide()  # The outer heading group already names the selected type.
+                self._prepare_axis_widget(widget)
             self.controller_widget_layout.addWidget(widget)
+
+    def _prepare_axis_widget(self, widget):
+        """Keep parameter names single-line and give spare width to editable fields."""
+        if widget.property('integrated_axis_prepared'):
+            return
+        widget.setProperty('integrated_axis_prepared', True)
+        widget.setMinimumWidth(0)
+        widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        for label in widget.findChildren(QLabel):
+            label.setWordWrap(True)
+            label.setMinimumWidth(0)
+            label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        for grid in widget.findChildren(QGridLayout):
+            for row in range(grid.rowCount()):
+                item = grid.itemAtPosition(row, 0)
+                label = item.widget() if item is not None else None
+                field = grid.itemAtPosition(row, 1)
+                # Parameter grids have a numeric field or the direct-PWM button row.
+                if (isinstance(label, QLabel) and field is not None and
+                        (isinstance(field.widget(), QAbstractSpinBox) or field.layout() is not None)):
+                    label.setWordWrap(False)
+                    label.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
+                    grid.setColumnStretch(0, 0)
+                    grid.setColumnStretch(1, 1)
+        for form in widget.findChildren(QFormLayout):
+            form.setRowWrapPolicy(QFormLayout.DontWrapRows)
+            form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+            for row in range(form.rowCount()):
+                item = form.itemAt(row, QFormLayout.LabelRole)
+                label = item.widget() if item is not None else None
+                if isinstance(label, QLabel):
+                    label.setWordWrap(False)
+                    label.setMinimumWidth(76)
+                    label.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
+        for spin in widget.findChildren(QAbstractSpinBox):
+            spin.setProperty('adaptive_parameter_width', True)
+            spin.setMinimumWidth(0)
+            spin.setMaximumWidth(16777215)
+            spin.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
+            spin.updateGeometry()
+        for group in widget.findChildren(QGroupBox):
+            if group.title() in ('控制按键说明', '控制映射'):
+                group.hide()
+                toggle = QPushButton('显示按键说明')
+                toggle.setCheckable(True)
+                toggle.toggled.connect(group.setVisible)
+                widget.layout().insertWidget(0, toggle)
     
     def _on_controller_changed(self, index):
         """控制器选择改变事件"""
@@ -616,7 +765,7 @@ class MainWindow(QMainWindow):
     def _restore_splitter_sizes(self):
         """恢复当前鱼体变体的侧栏宽度，无记录时使用宽松默认值。"""
         total = max(self.main_splitter.width(), self.width() - 30, 900)
-        default_left, default_right = 360, 280
+        default_left, default_right = (420, 300) if self.variant == 'dual' else (360, 280)
         raw = self._settings.value(f"layout/main_splitter/{self.variant}")
         saved = []
         if isinstance(raw, (list, tuple)):
@@ -700,8 +849,26 @@ class MainWindow(QMainWindow):
         """根据主连接与总控制状态集中刷新主界面可操作性。"""
         state = self._fish_connection_state
         connected = state == "connected"
+        if not connected:
+            self._depth_handover_session = None
         idle = state == "disconnected"
         busy = state in ("connecting", "disconnecting")
+
+        if self.axis_coordinator is not None:
+            self.axis_coordinator.set_connected(bool(connected and self.communication and self.communication.connected))
+            self._control_armed = self.axis_coordinator.heading_enabled
+            self._set_control_checkbox(self._control_armed)
+            depth_enabled = self.axis_coordinator.depth_enabled
+            for widget in (self.depth_enable_checkbox, self.depth_control_action):
+                widget.blockSignals(True)
+                widget.setChecked(depth_enabled)
+                widget.blockSignals(False)
+                widget.setEnabled(connected)
+            self.depth_controller_combo.setEnabled(not depth_enabled)
+            self.depth_widget_container.setEnabled(depth_enabled)
+            self.axis_coordinator.depth._set_parameter_widgets_enabled(depth_enabled)
+            self.all_stop_button.setEnabled(connected)
+            self._refresh_control_ownership()
 
         self.connection_button.setEnabled(not busy)
         self.connection_button.setText(
@@ -720,6 +887,7 @@ class MainWindow(QMainWindow):
                 widget.setEnabled(idle)
 
         self.enable_control_checkbox.setEnabled(connected)
+        self.controller_widget_container.setEnabled(self._control_armed)
         self.controller_combo.setEnabled(not self._control_armed)
         for action in self.controller_actions.values():
             action.setEnabled(not self._control_armed)
@@ -734,6 +902,12 @@ class MainWindow(QMainWindow):
 
     def _set_control_armed(self, armed, send_stop=True):
         """幂等地启用/停用当前控制器，停用前优先发安全停止帧。"""
+        if self.axis_coordinator is not None:
+            self.axis_coordinator.set_connected(bool(self._fish_connection_state == 'connected'
+                and self.communication and self.communication.connected))
+            result = self.axis_coordinator.set_heading_enabled(armed, send=send_stop)
+            self._apply_main_ui_state()
+            return result
         armed = bool(armed)
         if armed == self._control_armed:
             self._set_control_checkbox(armed)
@@ -766,6 +940,92 @@ class MainWindow(QMainWindow):
             self._set_control_checkbox(False)
         self._apply_main_ui_state()
         return True
+
+    def _set_depth_control_armed(self, armed):
+        """Independently start/stop depth PID without arming or changing heading control."""
+        if self.axis_coordinator is None:
+            return False
+        self.axis_coordinator.set_connected(bool(self._fish_connection_state == 'connected'
+            and self.communication and self.communication.connected))
+        previous = self.axis_coordinator.depth_enabled
+        result = self.axis_coordinator.set_depth_enabled(armed)
+        self._apply_main_ui_state()
+        if result and previous != self.axis_coordinator.depth_enabled:
+            message = '深度控制已启动（等待新深度样本）' if armed else '深度控制已停止，胸鳍已交回手动/保持'
+            self._log_message(message)
+            self.status_bar.showMessage(message)
+        return result
+
+    def _on_depth_controller_changed(self, index):
+        """Switch the cached depth view and tagged source only when that axis is stopped."""
+        if self.axis_coordinator is None:
+            return
+        name = self.depth_controller_combo.itemData(index)
+        controller = self.controllers.get('parallel_depth' if name == 'parallel_pid' else 'depth')
+        if controller is None or not self.axis_coordinator.select_depth(controller):
+            self.depth_controller_combo.blockSignals(True)
+            current = 'parallel_pid' if self.axis_coordinator.depth is self.controllers['parallel_depth'] else 'pid'
+            self.depth_controller_combo.setCurrentIndex(self.depth_controller_combo.findData(current))
+            self.depth_controller_combo.blockSignals(False)
+            return
+        for i in reversed(range(self.depth_widget_layout.count())):
+            self.depth_widget_layout.itemAt(i).widget().setParent(None)
+        widget = controller.get_control_widget()
+        self._prepare_axis_widget(widget)
+        self.depth_widget_layout.addWidget(widget)
+        self._apply_main_ui_state()
+        if name == 'parallel_pid':
+            QTimer.singleShot(0, self._fit_parallel_depth_view)
+
+    def _fit_parallel_depth_view(self):
+        """Use available sidebar width for both columns without forcing them to stack."""
+        if self.depth_controller_combo.currentData() != 'parallel_pid':
+            return
+        widget = self.controllers['parallel_depth'].get_control_widget()
+        sizes = self.main_splitter.sizes()
+        required = widget.minimumSizeHint().width() + 60
+        total = sum(sizes)
+        right = max(220, sizes[2])
+        left = max(sizes[0], min(required, max(320, total - right - 420)))
+        self.main_splitter.setSizes([left, max(320, total-left-right), right])
+        self.axis_control_scroll.widget().layout().activate()
+        position = self.depth_group.mapTo(self.axis_control_scroll.widget(), QPoint(0, 0))
+        self.axis_control_scroll.verticalScrollBar().setValue(position.y())
+
+    def _refresh_control_ownership(self):
+        """Display actual actuator ownership independently of which type is selected."""
+        coordinator = self.axis_coordinator
+        if coordinator is None:
+            return
+        heading = self.controller_combo.currentText() if coordinator.heading_enabled else '已停止'
+        pectoral = self.depth_controller_combo.currentText() if coordinator.depth_enabled else '航向页手动' if coordinator.heading_enabled else '保持/安全中位'
+        self.control_ownership_label.setText(f'尾鳍：{heading}\n胸鳍：{pectoral} · {coordinator.last_pwm} μs')
+
+    def _on_axes_command(self, command):
+        """Send only the coordinator's whole-frame snapshot; no independent source can send."""
+        self._refresh_control_ownership()
+        if self.axis_coordinator.depth_enabled:
+            command.pectoral_owner = 'pico_depth'
+        elif self._depth_handover_session is not None and not self._force_safe_neutral:
+            command.pectoral_owner = 'pico_hold'
+        if (self._fish_connection_state == 'connected' and self.communication and
+                self.communication.connected and self.axis_coordinator.connected):
+            try:
+                if not self.communication.send_control_command(command):
+                    self._log_message('组合控制指令发送失败')
+            except Exception as exc:
+                self._log_message(f'组合控制指令发送异常: {exc}')
+
+    def _stop_all_controls(self, send_stop=True):
+        """Stop both independent channels; not the same operation as stopping heading alone."""
+        if self.axis_coordinator is not None:
+            if send_stop:
+                self._send_stop_command()
+            else:
+                self.axis_coordinator.stop_all(send=False)
+            self._apply_main_ui_state()
+        else:
+            self._set_control_armed(False, send_stop=send_stop)
 
     def _toggle_connection(self):
         """切换连接状态"""
@@ -853,8 +1113,11 @@ class MainWindow(QMainWindow):
             return
         try:
             was_armed = self._control_armed
-            self._set_control_armed(False, send_stop=True)
-            if not was_armed:
+            if self.axis_coordinator is not None:
+                self._stop_all_controls(send_stop=True)
+            else:
+                self._set_control_armed(False, send_stop=True)
+            if not was_armed and self.axis_coordinator is None:
                 # 即使当前未启用控制，主动断链前仍发送一次安全停止帧。
                 self._send_stop_command()
             self._fish_connection_state = "disconnecting"
@@ -911,6 +1174,17 @@ class MainWindow(QMainWindow):
             try:
                 fish_state = self.communication.get_fish_state()
                 if fish_state:
+                    remote = getattr(fish_state, 'depth_control', None)
+                    if remote is not None and self.axis_coordinator is not None:
+                        if (not remote.get('enabled') and remote.get('session_id') == self._depth_handover_session
+                                and self._depth_handover_session is not None):
+                            self.axis_coordinator.receive_remote_pwm(remote['pwm'], handover=True)
+                            self._depth_handover_session = None
+                        controller = self.axis_coordinator.depth
+                        if self.axis_coordinator.depth_enabled and remote.get('session_id') == controller.remote_session:
+                            self.axis_coordinator.receive_remote_pwm(remote['pwm'])
+                            self._refresh_control_ownership()
+                        controller.receive_remote_state(remote)
                     # 双目鱼：深度五路按零点补出标定后值（零点来自深度面板的
                     # depth_zero.json，未标定时零点为 0，标定后曲线=fused）
                     if fish_state.depth and fish_state.depth.get("fused") is not None:
@@ -918,11 +1192,6 @@ class MainWindow(QMainWindow):
                             if hasattr(self, "depth_panel") else 0.0
                         fish_state.depth["calibrated"] = \
                             fish_state.depth["fused"] - zero
-                        depth_controller = self.controllers.get("depth")
-                        if depth_controller is not None:
-                            depth_controller.update_depth(
-                                fish_state.depth["calibrated"],
-                                fish_state.timestamp)
                     self.visualization_widget.update_data(fish_state)
             except Exception as e:
                 # 降低错误日志频率避免刷屏
@@ -938,6 +1207,24 @@ class MainWindow(QMainWindow):
         # 注意：此方法在工作线程中调用，直接更新会有线程安全问题
         # 数据通过get_fish_state()获取，定时器_update_data会读取并更新UI
         pass
+
+    def _send_board_depth_request(self, request):
+        """Send only settings/start/stop intent; calibration offset is applied on Pico."""
+        from copy import deepcopy
+        if not self.communication or not self.communication.connected or not hasattr(self.communication, 'send_depth_control'):
+            return False
+        request = deepcopy(request)
+        request['params']['zero_offset'] = self.depth_panel.zero_offset
+        if request['action'] == 'start':
+            self._depth_handover_session = None
+        if request['action'] == 'stop' and not self._force_safe_neutral:
+            self._depth_handover_session = request['session_id']
+        return self.communication.send_depth_control(request)
+
+    def _on_board_depth_fault(self, message):
+        """Latch depth off on missing/rejected board state, without changing tail ownership."""
+        self._set_depth_control_armed(False)
+        self._log_message(message)
 
     def _on_board_state(self, state: dict):
         """控制板状态回推（由Socket线程调用，仅存数据不改UI）"""
@@ -976,6 +1263,8 @@ class MainWindow(QMainWindow):
             else:
                 # 连接断开，重置UI状态
                 self.communication = None
+                if self.axis_coordinator is not None:
+                    self.axis_coordinator.set_connected(False)
                 self._set_control_armed(False, send_stop=False)
                 self._fish_connection_state = "disconnected"
                 self.data_timer.stop()
@@ -993,6 +1282,18 @@ class MainWindow(QMainWindow):
     
     def _send_stop_command(self):
         """发送停止命令，确保机器鱼停止运动"""
+        if self.axis_coordinator is not None:
+            coordinator = self.axis_coordinator
+            was_active = coordinator.heading_enabled or coordinator.depth_enabled
+            self._force_safe_neutral = True
+            self._depth_handover_session = None
+            try:
+                coordinator.stop_all(send=True, neutral=True)
+                if not was_active:
+                    coordinator._publish(force=True)
+            finally:
+                self._force_safe_neutral = False
+            return
         if self.communication and self.communication.connected:
             stop_offset = 0.0
             if (self.current_controller is not None and
@@ -1011,6 +1312,12 @@ class MainWindow(QMainWindow):
         """启用控制开关切换"""
         if not self._set_control_armed(checked, send_stop=True):
             return
+        if self.axis_coordinator is not None:
+            message = (f'航向控制已启动（{self.controller_combo.currentText()}）' if self._control_armed else
+                       '航向控制已停止（深度控制仍运行）' if self.axis_coordinator.depth_enabled else '航向控制已停止')
+            self._log_message(message)
+            self.status_bar.showMessage(message)
+            return
         if self._control_armed:
             self._log_message(
                 f"控制已启用，{self._current_controller_name}控制器生效")
@@ -1021,6 +1328,8 @@ class MainWindow(QMainWindow):
 
     def _on_control_command(self, command: ControlCommand):
         """处理控制命令"""
+        if self.axis_coordinator is not None:
+            return  # dual commands must enter through the source-tagged coordinator only.
         # 安全开关：未勾选"启用控制"时不发送任何控制命令
         if not self._control_armed:
             return
@@ -1045,7 +1354,16 @@ class MainWindow(QMainWindow):
 
     def _on_xbox_emergency_stop(self, message: str):
         """接收 Xbox 紧急停止/断连事件，并锁定为未启用状态。"""
-        if self._current_controller_name != "xbox" or not self._control_armed:
+        if self._current_controller_name != "xbox":
+            return
+        if self.axis_coordinator is not None:
+            if not (self.axis_coordinator.heading_enabled or self.axis_coordinator.depth_enabled):
+                return
+            self.axis_coordinator.emergency_stop()
+            self._log_message(message)
+            self.status_bar.showMessage(message)
+            return
+        if not self._control_armed:
             return
         # Xbox 控制器先发送保持当前胸鳍位置的零摆幅帧，再请求主界面撤销发送权；
         # 此处禁止再次发送通用回中帧，避免紧急停止时胸鳍突然跳回中位。
@@ -1150,7 +1468,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """窗口关闭事件"""
         self._save_splitter_sizes()
-        self._set_control_armed(False, send_stop=True)
+        self._stop_all_controls(send_stop=True)
         # 停用控制器
         if self.current_controller and self.current_controller.active:
             self.current_controller.deactivate()
@@ -1164,6 +1482,9 @@ class MainWindow(QMainWindow):
             self._disconnect_from_fish()
         if isinstance(self.video_widget, StereoFishCameraWidget):
             self.video_widget.shutdown()
+        if self.variant == 'dual':
+            self.controllers['xbox']._poll_timer.stop()
+            self.controllers['xbox']._stop_vibration()
         
         # VideoMonitorWidget没有_stop_camera方法，不需要调用
             

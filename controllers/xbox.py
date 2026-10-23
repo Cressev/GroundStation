@@ -14,14 +14,12 @@ from ctypes import wintypes
 from PyQt5.QtCore import QTimer, pyqtSignal, Qt
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
-    QDoubleSpinBox,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QSizePolicy,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -29,6 +27,7 @@ from PyQt5.QtWidgets import (
 from communication.base import ControlCommand
 from config import CONTROL_LIMITS, XBOX_CONTROL_DEFAULTS
 from controllers.base import ControllerBase
+from ui.numeric_inputs import NoWheelDoubleSpinBox, NoWheelSpinBox
 
 
 PARAMS_FILE = os.path.join(
@@ -633,7 +632,7 @@ class XboxController(ControllerBase):
         def add_double(row, key, label, minimum, maximum, step, suffix, decimals=3):
             """向参数网格添加一个浮点输入框。"""
             parameter_layout.addWidget(QLabel(label), row, 0)
-            spin = QDoubleSpinBox()
+            spin = NoWheelDoubleSpinBox()
             spin.setRange(minimum, maximum)
             spin.setSingleStep(step)
             spin.setDecimals(decimals)
@@ -648,7 +647,7 @@ class XboxController(ControllerBase):
         def add_integer(row, key, label, minimum, maximum, step, suffix):
             """向参数网格添加一个整数输入框。"""
             parameter_layout.addWidget(QLabel(label), row, 0)
-            spin = QSpinBox()
+            spin = NoWheelSpinBox()
             spin.setRange(minimum, maximum)
             spin.setSingleStep(step)
             spin.setValue(int(self._parameters[key]))

@@ -117,8 +117,9 @@ class KeyboardController(ControllerBase):
         """创建键盘控制界面"""
         from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, 
                                      QLabel, QGroupBox, QGridLayout,
-                                     QDoubleSpinBox, QSpinBox, QPushButton,
+                                     QPushButton,
                                      QSizePolicy)
+        from ui.numeric_inputs import NoWheelDoubleSpinBox, NoWheelSpinBox
         from PyQt5.QtCore import Qt
         from PyQt5.QtGui import QFont
         
@@ -173,7 +174,7 @@ class KeyboardController(ControllerBase):
             label_widget = QLabel(label)
             label_widget.setMinimumWidth(58)
             input_layout.addWidget(label_widget, row, 0)
-            spin = QDoubleSpinBox()
+            spin = NoWheelDoubleSpinBox()
             spin.setRange(minimum, maximum)
             spin.setSingleStep(step)
             spin.setDecimals(3)
@@ -207,7 +208,7 @@ class KeyboardController(ControllerBase):
         # 胸鳍脉宽直接设定：与 Q/E 增量调节共用同一个状态。
         input_layout.addWidget(QLabel("胸鳍脉宽"), 8, 0)
         pec_layout = QHBoxLayout()
-        self._pec_pulse_input = QSpinBox()
+        self._pec_pulse_input = NoWheelSpinBox()
         self._pec_pulse_input.setRange(
             int(CONTROL_LIMITS["pec_angle"]["min"]),
             int(CONTROL_LIMITS["pec_angle"]["max"]))

@@ -9,12 +9,13 @@ from pathlib import Path
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox,
+from PyQt5.QtWidgets import (QCheckBox, QComboBox,
                              QFormLayout, QGroupBox, QHBoxLayout, QLabel,
-                             QPushButton, QSpinBox, QVBoxLayout)
+                             QPushButton, QVBoxLayout)
 
 from config import CONTROL_LIMITS, DEPTH_CONTROL_DEFAULTS
 from controllers.base import KeyboardController
+from ui.numeric_inputs import NoWheelDoubleSpinBox, NoWheelSpinBox
 
 
 DEFAULT_PARAMS_PATH = Path(__file__).resolve().parent.parent / "depth_pid_params.json"
@@ -229,7 +230,7 @@ class DepthController(KeyboardController):
 
     def _double_spin(self, minimum, maximum, step, decimals, suffix):
         """创建统一样式的浮点参数输入框。"""
-        spin = QDoubleSpinBox()
+        spin = NoWheelDoubleSpinBox()
         spin.setRange(minimum, maximum)
         spin.setSingleStep(step)
         spin.setDecimals(decimals)
@@ -238,7 +239,7 @@ class DepthController(KeyboardController):
 
     def _integer_spin(self, minimum, maximum, step, suffix):
         """创建统一样式的整数参数输入框。"""
-        spin = QSpinBox()
+        spin = NoWheelSpinBox()
         spin.setRange(minimum, maximum)
         spin.setSingleStep(step)
         spin.setSuffix(suffix)

@@ -15,7 +15,8 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QGroupBox, QGridLayout, QLabel, QPushButton,
                              QComboBox, QMessageBox, QSplitter, QTextEdit,
                              QLineEdit, QScrollArea, QApplication, QCheckBox,
-                             QSizePolicy, QActionGroup, QFormLayout, QAbstractSpinBox)
+                             QSizePolicy, QActionGroup, QFormLayout, QAbstractSpinBox,
+                             QToolButton)
 from PyQt5.QtCore import Qt, QSettings, QTimer, QPoint, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QFont, QKeySequence, QIcon
 from controllers.remote_depth import RemoteParallelDepthController as ParallelDepthController
@@ -187,7 +188,30 @@ class MainWindow(QMainWindow):
         # 右侧面板 - 仅保留运行时状态；数据保存已移入时间序列页
         right_panel = QWidget()
         self.right_panel = right_panel
-        right_layout = QVBoxLayout(right_panel)
+        self._right_sidebar_collapsed = False
+        self._right_sidebar_expanded_width = 300 if self.variant == 'dual' else 280
+        self._right_sidebar_rail_width = 28
+        sidebar_layout = QHBoxLayout(right_panel)
+        sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        sidebar_layout.setSpacing(0)
+        rail = QWidget()
+        rail.setFixedWidth(self._right_sidebar_rail_width)
+        rail_layout = QVBoxLayout(rail)
+        rail_layout.setContentsMargins(2, 2, 2, 2)
+        self.right_sidebar_toggle = QToolButton()
+        self.right_sidebar_toggle.setFixedSize(24, 28)
+        self.right_sidebar_toggle.setArrowType(Qt.RightArrow)
+        self.right_sidebar_toggle.setToolTip('向右收起侧栏')
+        self.right_sidebar_toggle.setAccessibleName('向右收起侧栏')
+        self.right_sidebar_toggle.setFocusPolicy(Qt.StrongFocus)
+        self.right_sidebar_toggle.clicked.connect(self._toggle_right_sidebar)
+        rail_layout.addWidget(self.right_sidebar_toggle)
+        rail_layout.addStretch()
+        sidebar_layout.addWidget(rail)
+        self.right_sidebar_content = QWidget()
+        self.right_sidebar_content.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        sidebar_layout.addWidget(self.right_sidebar_content, 1)
+        right_layout = QVBoxLayout(self.right_sidebar_content)
         right_layout.setContentsMargins(2, 2, 2, 2)
         right_panel.setMinimumWidth(170)   # 可拖窄到此为止，内容自适应
         control_panel.setMinimumWidth(170)
@@ -216,6 +240,7 @@ class MainWindow(QMainWindow):
         # 拖窄时内容自适应面板宽度，而不是被 sizeHint 顶住
         self.right_tabs.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.main_splitter.addWidget(right_panel)
+        self.main_splitter.setCollapsible(2, False)
 
         # 设置分割器比例 (控制面板:中央区域:右侧栏 = 2:8:2)
         self.main_splitter.setSizes([360, 760, 280])
@@ -784,17 +809,60 @@ class MainWindow(QMainWindow):
         except (TypeError, ValueError):
             left, right = default_left, default_right
         left = max(320, min(left, max(320, total - 640)))
-        right = max(220, min(right, max(220, total - left - 420)))
+        right = max(170, min(right, max(170, total - left - 420)))
         center = max(420, total - left - right)
+        collapsed = str(self._settings.value(
+            f"layout/right_sidebar_collapsed/{self.variant}", 'false')).lower() == 'true'
+        self.set_right_sidebar_collapsed(False, persist=False)
         self.main_splitter.setSizes([left, center, right])
+        self._right_sidebar_expanded_width = right
+        self.set_right_sidebar_collapsed(collapsed, persist=False)
+
+    def _toggle_right_sidebar(self):
+        """只切换侧栏可见性，不改变连接、控制器或标签页状态。"""
+        self.set_right_sidebar_collapsed(not self._right_sidebar_collapsed)
+
+    def set_right_sidebar_collapsed(self, collapsed, persist=True):
+        """幂等收放右栏，将释放的宽度交给画布并记住展开宽度。"""
+        collapsed = bool(collapsed)
+        if collapsed == self._right_sidebar_collapsed:
+            return
+        sizes = self.main_splitter.sizes()
+        total = sum(sizes)
+        if collapsed:
+            self._right_sidebar_expanded_width = max(170, sizes[2])
+            right = self._right_sidebar_rail_width
+            self.right_sidebar_content.hide()
+            self.right_panel.setFixedWidth(right)
+        else:
+            self.right_panel.setMaximumWidth(16777215)
+            self.right_panel.setMinimumWidth(170)
+            self.right_sidebar_content.show()
+            right = max(170, min(self._right_sidebar_expanded_width,
+                                 max(170, total - sizes[0] - 320)))
+        self._right_sidebar_collapsed = collapsed
+        self.right_sidebar_toggle.setArrowType(Qt.LeftArrow if collapsed else Qt.RightArrow)
+        label = '向左展开侧栏' if collapsed else '向右收起侧栏'
+        self.right_sidebar_toggle.setToolTip(label)
+        self.right_sidebar_toggle.setAccessibleName(label)
+        self.main_splitter.setSizes([sizes[0], max(1, total - sizes[0] - right), right])
+        if persist:
+            self._save_splitter_sizes()
 
     def _save_splitter_sizes(self):
-        """分变体保存主分割器宽度。"""
+        """分变体保存布局；收起时保存原展开宽度，不用窄条覆盖它。"""
         sizes = self.main_splitter.sizes()
         if len(sizes) == 3:
+            if self._right_sidebar_collapsed:
+                sizes[2] = self._right_sidebar_expanded_width
+            else:
+                self._right_sidebar_expanded_width = sizes[2]
             self._settings.setValue(
                 f"layout/main_splitter/{self.variant}",
                 ",".join(str(int(value)) for value in sizes))
+            self._settings.setValue(f"layout/right_sidebar_collapsed/{self.variant}",
+                                    self._right_sidebar_collapsed)
+            self._settings.sync()
 
     def _sync_video_actions(self):
         """使视频菜单与双目页面的真实状态保持一致。"""
@@ -991,7 +1059,7 @@ class MainWindow(QMainWindow):
         sizes = self.main_splitter.sizes()
         required = widget.minimumSizeHint().width() + 60
         total = sum(sizes)
-        right = max(220, sizes[2])
+        right = self._right_sidebar_rail_width if self._right_sidebar_collapsed else max(220, sizes[2])
         left = max(320, min(required, max(320, total - right - 420)))
         self.main_splitter.setSizes([left, max(320, total-left-right), right])
         self.axis_control_scroll.widget().layout().activate()

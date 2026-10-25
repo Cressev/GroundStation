@@ -38,11 +38,13 @@ from stereo.transport import (MAX_PACKET, STEREO_FRAME, CALIBRATION,
 from stereo.calculation import (StereoCalculator, StereoPreview, display_to_rectified,
                                 measure_depth, MAX_CALIBRATION_BYTES)
 from stereo.worker import StereoWorker
+from ui.numeric_inputs import NoWheelSpinBox
 
 # 画布布局常量（与 pico_stereo.stereo_lib 保持一致）
 CANVAS_W, CANVAS_H = 1280, 960
 LEFT_RECT_W, LEFT_RECT_H = 640, 480
 FAST_PREVIEW_GAMMA = 2.0
+DEFAULT_VIDEO_CANVAS_HEIGHT = 720
 FAST_PREVIEW_LUT = np.array([
     ((value / 255.0) ** (1.0 / FAST_PREVIEW_GAMMA)) * 255.0
     for value in range(256)
@@ -409,10 +411,28 @@ class StereoFishCameraWidget(QWidget):
 
         video_group = QGroupBox("单目实时画面")
         video_layout = QVBoxLayout(video_group)
+        canvas_controls = QHBoxLayout()
+        canvas_controls.addWidget(QLabel('画布高度'))
+        self.video_height_input = NoWheelSpinBox()
+        self.video_height_input.setRange(320, 2400)
+        self.video_height_input.setSingleStep(80)
+        self.video_height_input.setValue(DEFAULT_VIDEO_CANVAS_HEIGHT)
+        self.video_height_input.setSuffix(' px')
+        self.video_height_input.setAccessibleName('单目显示画布高度')
+        self.video_height_input.setToolTip('界面逻辑像素；只调整显示大小，不改变相机分辨率、测距或保存尺寸。可输入、用方向键或按钮调整，滚轮只滚动页面。')
+        canvas_controls.addWidget(self.video_height_input)
+        self.video_height_reset_btn = QPushButton('恢复默认大小')
+        self.video_height_reset_btn.clicked.connect(
+            lambda: self.video_height_input.setValue(DEFAULT_VIDEO_CANVAS_HEIGHT))
+        canvas_controls.addWidget(self.video_height_reset_btn)
+        canvas_controls.addStretch()
+        video_layout.addLayout(canvas_controls)
         self.video_label = SingleViewLabel()
         self.video_label.setAlignment(Qt.AlignCenter)
-        # 转正后单目480×640；忽略pixmap尺寸提示，按可见页面伸缩居中。
-        self.video_label.setMinimumSize(160, 320)
+        # 竖向图按高度缩放，增大画布而不拉伸或裁剪；整页可滚动。
+        self.video_label.setMinimumWidth(160)
+        self.video_label.setFixedHeight(DEFAULT_VIDEO_CANVAS_HEIGHT)
+        self.video_height_input.valueChanged.connect(self._set_video_canvas_height)
         self.video_label.setCursor(Qt.CrossCursor)
         self.video_label.setStyleSheet("""
             QLabel {
@@ -476,6 +496,10 @@ class StereoFishCameraWidget(QWidget):
         self.stream_client.calibration_received.connect(self._on_calibration, Qt.QueuedConnection)
         self.stream_client.connection_status.connect(self._on_connection_status, Qt.QueuedConnection)
         self.stream_client.message_received.connect(self._on_message, Qt.QueuedConnection)
+
+    def _set_video_canvas_height(self, height):
+        """Resize only the display canvas, preserving image identity and click mapping."""
+        self.video_label.setFixedHeight(height)
 
     def set_fish_connection_available(self, available):
         """设置主控连接门闩；断开主连接时同步收拢视频连接。"""

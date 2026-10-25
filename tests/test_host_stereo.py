@@ -168,3 +168,97 @@ def test_single_view_image_center_tracks_viewport_without_horizontal_overflow(wi
     finally:
         widget.shutdown()
         widget.close()
+
+
+def test_stereo_canvas_default_height_is_larger_and_adjustable_without_camera_commands():
+    """Height controls enlarge the image only, preserving capture and result identity."""
+    from test_ui_state_machine import ensure_app
+    from ui.stereo_camera_widget import StereoFishCameraWidget
+    app = ensure_app()
+    widget = StereoFishCameraWidget()
+    commands = []
+    widget.stream_client.send_command = lambda command: commands.append(command) or True
+    try:
+        widget.resize(1100, 900)
+        widget.show()
+        frame = np.full((1600, 1200, 3), 120, np.uint8)
+        widget.video_label.set_frame(frame)
+        widget.current_frame = frame
+        app.processEvents()
+        assert widget.video_height_input.value() == 720
+        assert widget.video_label.height() == 720
+        initial = widget.video_label.image_rectangle()
+        assert initial[2] >= 525  # Old 320-high canvas displayed about 230px width.
+        generation = widget.worker.generation
+        widget.video_height_input.setValue(960)
+        app.processEvents()
+        enlarged = widget.video_label.image_rectangle()
+        assert widget.video_label.height() == 960 and enlarged[2] > initial[2]
+        assert abs(enlarged[2]/enlarged[3]-.75) < .003
+        assert widget.current_frame is frame and widget.worker.generation == generation
+        assert widget.page_scroll.verticalScrollBar().maximum() > 0
+        widget.video_height_reset_btn.click()
+        app.processEvents()
+        assert widget.video_label.height() == 720 and not commands
+    finally:
+        widget.close()
+
+
+def test_canvas_resizing_keeps_click_mapping_and_source_snapshot_dimensions(tmp_path):
+    """A larger display must not alter current-frame coordinates or PNG resolution."""
+    from test_ui_state_machine import ensure_app
+    from ui.stereo_camera_widget import StereoFishCameraWidget
+    from PyQt5.QtCore import Qt, QPointF
+    from PyQt5.QtGui import QMouseEvent
+    app = ensure_app()
+    widget = StereoFishCameraWidget()
+    try:
+        widget._stream_state, widget._camera_state = 'connected', 'on'
+        widget._local_result = dict(frame_id=7, image=np.full((480, 640, 3), 90, np.uint8),
+            disparity=np.full((480, 640), 10, np.float32), points=np.ones((480, 640, 3), np.float32),
+            scale=1., offset=0., compute_ms=1., metadata={})
+        widget.resize(1100, 900)
+        widget.show()
+        widget._render_local_result(record=True)
+        points = []
+        for height in (720, 960, 480):
+            widget.video_height_input.setValue(height)
+            app.processEvents()
+            left, top, width, shown_height = widget.video_label.image_rectangle()
+            event = QMouseEvent(QMouseEvent.MouseButtonPress,
+                QPointF(left+width*.5, top+shown_height*.5), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+            app.sendEvent(widget.video_label, event)
+            points.append(widget._selected_point)
+            assert '1.73' in widget.distance_label.text()
+            assert widget._local_result['frame_id'] == 7
+        assert max(p[0] for p in points)-min(p[0] for p in points) <= 1
+        assert max(p[1] for p in points)-min(p[1] for p in points) <= 1
+        path = tmp_path/'native-single.png'
+        widget.save_snapshot(str(path))
+        assert cv2.imdecode(np.fromfile(path, np.uint8), 1).shape == (640, 480, 3)
+    finally:
+        widget.close()
+
+
+def test_canvas_height_wheel_scrolls_page_without_changing_number():
+    """Accidental scrolling over the new numeric editor must not resize the canvas."""
+    from test_ui_state_machine import ensure_app
+    from ui.stereo_camera_widget import StereoFishCameraWidget
+    from PyQt5.QtCore import Qt, QPoint, QPointF
+    from PyQt5.QtGui import QWheelEvent
+    app = ensure_app()
+    widget = StereoFishCameraWidget()
+    try:
+        widget.resize(700, 700)
+        widget.show()
+        app.processEvents()
+        editor = widget.video_height_input
+        editor.setFocus()
+        event = QWheelEvent(QPointF(10, 10), QPointF(editor.mapToGlobal(QPoint(10, 10))),
+            QPoint(), QPoint(0, -120), Qt.NoButton, Qt.NoModifier, Qt.ScrollUpdate, False)
+        app.sendEvent(editor, event)
+        app.processEvents()
+        assert editor.value() == 720 and widget.video_label.height() == 720
+        assert widget.page_scroll.verticalScrollBar().value() > 0
+    finally:
+        widget.close()

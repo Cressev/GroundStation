@@ -1,0 +1,32 @@
+﻿# 双目页画布加大
+
+## 怎么用
+
+保存当前曲线和录像后，自行重开地面站加载新布局；不需要重启Pico，也不改原接线。代理没有关闭你的当前窗口或操作相机。
+
+进入“双目测距（本地）”，在“单目实时画面”标题下方使用：
+
+- “画布高度”：默认720，允许320—2400逻辑像素，可直接输入、方向键或上下按钮调整。滚轮只滚动整页，不改变数字。
+- “恢复默认大小”：恢复720。高度只影响当前窗口，不新增设置记忆。
+- 默认比原最低320更高，竖向画面有更多可用高度；放大后整页可向下滚动查看测距结果和状态。
+
+逻辑像素会随Windows缩放比例变为不同实际像素，并不是相机分辨率。保持完整图像、原比例、居中和黑边，不拉伸、不裁剪。窄屏下仍按可用宽度限制图像，不能无限放大。
+
+画布高度不会发送相机指令，不改变采集尺寸、NPZ/算法、当前测点、PNG或录像原始像素尺寸。例如每目1280×720转正后仍保存为宽720×高1280，而不是画布大小；点击映射继续依据真实显示矩形反算。
+
+## 验收
+
+222项地面站非交互回归通过，其中双目目标12项。覆盖默认/调整/复位、滚轮不改数、比例居中、垂直滚动、旧帧/保存和点击坐标不变。原两个手动图形演示test_opengl.py、test_fish_model.py不收集。
+
+真实Windows合成TCP联调：720画布的竖图为396×704，960画布为531×944，测点均为合成80cm，保存PNG仍720×1280；640宽页面无水平溢出。四份个人JSON散列保持，无真实相机、SSH、控制指令或硬件实测。
+
+复现（src/GroundStation，agentscope环境）：
+
+```powershell
+python -X utf8 -c "import stereo_runtime; import pytest; raise SystemExit(pytest.main(['-q','tests/test_host_stereo.py']))"
+python -X utf8 ref/verify_stereo_resolution.py --output ../../tmp/stereo_canvas_新目录
+```
+
+预期12项通过，合成验证输出summary.json和canvas-default-720.png、canvas-enlarged-960.png，且real_fish_touched=false。脚本只连127.0.0.1假相机，不连接机器鱼；输出目录必须未存在。
+
+备份与原始证据位于根tmp/stereo_canvas_20261026_0213/；正式报告和配图见根docs/test-reports/pico/stereo_canvas_20261026_0213/report.md。

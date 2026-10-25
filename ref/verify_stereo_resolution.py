@@ -127,6 +127,22 @@ def main():
         view.save_snapshot(str(output/'single-measurement.png'))
         view.grab().save(str(output/'calibrated-measurement.png'))
         measurement = view.distance_label.text()
+        assert view.video_height_input.value() == 720 and view.video_label.height() == 720
+        app.processEvents()
+        default_rectangle = view.video_label.image_rectangle()
+        view.video_label.parentWidget().grab().save(str(output/'canvas-default-720.png'))
+        view.video_height_input.setValue(960)
+        app.processEvents()
+        enlarged_rectangle = view.video_label.image_rectangle()
+        assert enlarged_rectangle[2] > default_rectangle[2]
+        click_image(app, view)
+        assert view.distance_label.text() == measurement
+        view.video_label.parentWidget().grab().save(str(output/'canvas-enlarged-960.png'))
+        view.save_snapshot(str(output/'single-enlarged.png'))
+        assert cv2.imdecode(np.fromfile(output/'single-enlarged.png', np.uint8), 1).shape == (1280, 720, 3)
+        view.video_height_reset_btn.click()
+        app.processEvents()
+        assert view.video_label.height() == 720
         assert not view.resolution_combo.isEnabled()
         view._toggle_camera()
         wait_for(app, lambda: view._camera_state == 'off')
@@ -139,6 +155,9 @@ def main():
         summary = dict(synthetic=True, real_fish_touched=False, commands=commands,
                        options=view._resolution_options, opened=opened,
                        high_npz_bytes=high.stat().st_size, measurement=measurement,
+                       canvas_default_rectangle=list(default_rectangle),
+                       canvas_enlarged_rectangle=list(enlarged_rectangle),
+                       canvas_height_reset=720,
                        saved_shape=list(cv2.imdecode(np.fromfile(output/'single-measurement.png', np.uint8), 1).shape),
                        horizontal_scroll=view.page_scroll.horizontalScrollBar().maximum(),
                        personal_settings_unchanged=all(hashlib.sha256((PROJECT/name).read_bytes()).hexdigest() == digest

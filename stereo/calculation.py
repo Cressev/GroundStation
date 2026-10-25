@@ -9,6 +9,8 @@ import stereo_runtime
 import cv2
 import numpy as np
 
+MAX_CALIBRATION_BYTES = 32*1024*1024
+
 
 def measure_depth(disparity, points, x, y, scale=1.0, offset=0.0, win=4):
     """Use the original 9x9 valid-pixel medians and underwater correction (cm)."""
@@ -55,7 +57,7 @@ class StereoCalculator:
         if (not isinstance(self.source_sha256, str) or len(self.source_sha256) != 64 or
                 any(value not in '0123456789abcdef' for value in self.source_sha256)):
             raise ValueError('Invalid capture source SHA256')
-        if len(calibration_bytes) > 8*1024*1024:
+        if len(calibration_bytes) > MAX_CALIBRATION_BYTES:
             raise ValueError('Calibration too large')
         with zipfile.ZipFile(io.BytesIO(calibration_bytes)) as archive:
             if len(archive.infolist()) > 64 or sum(v.file_size for v in archive.infolist()) > 32*1024*1024:
@@ -136,6 +138,28 @@ class StereoCalculator:
         if pair is None:
             raise ValueError('Invalid JPEG frame')
         return self.process(pair, metadata, enabled)
+
+
+class StereoPreview:
+    """Display only the raw first eye when no matching calibration is available."""
+
+    def __init__(self, source):
+        """Bind preview geometry and source identity without constructing a matcher."""
+        self.width, self.height = source['width']//2, source['height']
+        self.source_sha256 = source['sha256']
+
+    def process_jpeg(self, data, metadata, enabled=True):
+        """Validate before decoding, never resize maps/Q or return a distance."""
+        if metadata.get('calibration_sha256') != self.source_sha256:
+            raise ValueError('Frame/capture source mismatch')
+        if jpeg_size(data) != (self.width*2, self.height):
+            raise ValueError('JPEG dimensions do not match selected capture')
+        pair = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+        if pair is None:
+            raise ValueError('Invalid JPEG frame')
+        return dict(frame_id=metadata.get('frame_id'), image=pair[:, :self.width].copy(),
+                    disparity=None, points=None, scale=1.0, offset=0.0, compute_ms=0.0,
+                    metadata=metadata, uncalibrated=True)
 
 
 def jpeg_size(data):

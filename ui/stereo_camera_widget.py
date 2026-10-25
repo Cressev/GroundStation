@@ -26,7 +26,7 @@ import hashlib
 
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QGroupBox, QMessageBox, QGridLayout,
-                             QFileDialog, QSizePolicy, QScrollArea, QFrame, QLineEdit)
+                             QFileDialog, QSizePolicy, QScrollArea, QFrame, QLineEdit, QComboBox)
 from PyQt5.QtCore import QThread, QTimer, pyqtSignal, Qt, pyqtSlot, QSettings
 from PyQt5.QtGui import QImage, QPixmap, QFont
 
@@ -35,7 +35,8 @@ from config import (DUAL_FISH_CONFIG, STEREO_PREVIEW_LAYOUT,
                     STEREO_RANGING_UI_ENABLED)
 from stereo.transport import (MAX_PACKET, STEREO_FRAME, CALIBRATION,
                               decode_blob, receive_exact)
-from stereo.calculation import StereoCalculator, display_to_rectified, measure_depth
+from stereo.calculation import (StereoCalculator, StereoPreview, display_to_rectified,
+                                measure_depth, MAX_CALIBRATION_BYTES)
 from stereo.worker import StereoWorker
 
 # 画布布局常量（与 pico_stereo.stereo_lib 保持一致）
@@ -265,6 +266,10 @@ class StereoFishCameraWidget(QWidget):
         self._chosen_calibration = None
         self._board_calibration = None
         self._source_descriptor = None
+        self._source_epoch = None
+        self._resolution_options = []
+        self._resolution_supported = False
+        self._resolution_pending = None
         self._calibration_notice_error = False
         self._selected_point = None
         self._relay_mode = False
@@ -340,6 +345,23 @@ class StereoFishCameraWidget(QWidget):
         self.mode_label.setWordWrap(True)
         self.mode_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         control_layout.addWidget(self.mode_label, 2, 0, 1, 3)
+        resolution_row = QHBoxLayout()
+        resolution_row.addWidget(QLabel('采集分辨率'))
+        self.resolution_combo = QComboBox()
+        self.resolution_combo.setAccessibleName('双目采集分辨率')
+        self.resolution_combo.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.resolution_combo.setMinimumWidth(100)
+        self.resolution_combo.setToolTip('每目是单个相机的尺寸；双目是实际传输的横拼尺寸。关闭摄像头后应用。')
+        self.resolution_combo.currentIndexChanged.connect(self._resolution_selection_changed)
+        resolution_row.addWidget(self.resolution_combo, 1)
+        self.resolution_apply_btn = QPushButton('应用分辨率')
+        self.resolution_apply_btn.clicked.connect(self._apply_resolution)
+        resolution_row.addWidget(self.resolution_apply_btn)
+        control_layout.addLayout(resolution_row, 3, 0, 1, 3)
+        self.resolution_hint = QLabel('连接视频后读取相机可用档位；关闭摄像头后可切换。')
+        self.resolution_hint.setWordWrap(True)
+        self.resolution_hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        control_layout.addWidget(self.resolution_hint, 4, 0, 1, 3)
         layout.addWidget(control_group)
 
         # 测距与标定只在电脑切换；绝不向板端启动测距。
@@ -347,14 +369,16 @@ class StereoFishCameraWidget(QWidget):
         range_layout = QVBoxLayout(range_group)
         range_controls = QHBoxLayout()
         self.range_btn = QPushButton("暂停本地测距")
+        self.range_btn.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         self.range_btn.setEnabled(False)
         self.range_btn.setToolTip(
             "只切换电脑端SGBM/WLS；不会启动Pico测距")
         self.range_btn.clicked.connect(self._toggle_ranging)
         self.range_state_label = QLabel("测距状态: 关")
+        self.range_state_label.setWordWrap(True)
+        self.range_state_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         range_controls.addWidget(self.range_btn)
-        range_controls.addWidget(self.range_state_label)
-        range_controls.addStretch()
+        range_controls.addWidget(self.range_state_label, 1)
         range_layout.addLayout(range_controls)
         calibration_row = QHBoxLayout()
         self.load_npz_btn = QPushButton("加载本地NPZ")
@@ -532,6 +556,12 @@ class StereoFishCameraWidget(QWidget):
         self._local_model = self._local_result = self._selected_point = None
         self._relay_mode = False
         self._board_calibration = self._source_descriptor = None
+        self._source_epoch = None
+        self._resolution_pending = None
+        self._resolution_options = []
+        self._resolution_supported = False
+        self.resolution_combo.clear()
+        self.resolution_hint.setText('连接视频后读取相机可用档位；关闭摄像头后可切换。')
         self._local_enabled = True
         self._clear_measurement()
         self._refresh_calibration_label(self._calibration_restore_error or
@@ -550,7 +580,16 @@ class StereoFishCameraWidget(QWidget):
 
         self.connect_btn.setEnabled(can_connect)
         self.disconnect_btn.setEnabled(can_disconnect)
-        self.cam_btn.setEnabled(stream_connected and camera_ready)
+        self.cam_btn.setEnabled(stream_connected and camera_ready and self._resolution_pending is None)
+        resolution_ready = (stream_connected and self._camera_state == 'off' and
+                            not self.recording and self._resolution_supported and
+                            self._resolution_pending is None)
+        self.resolution_combo.setEnabled(resolution_ready)
+        actual = ((self._source_descriptor['width'], self._source_descriptor['height'])
+                  if self._source_descriptor else None)
+        self.resolution_apply_btn.setEnabled(resolution_ready and
+            self.resolution_combo.currentData() in self._resolution_options and
+            self.resolution_combo.currentData() != actual)
         self.record_btn.setEnabled(
             stream_connected and camera_on and self.current_frame is not None and
             not self.board_rec_on)
@@ -559,8 +598,8 @@ class StereoFishCameraWidget(QWidget):
         self.range_btn.setEnabled(
             stream_connected and camera_on and self._local_model is not None)
         self.range_btn.setText("暂停本地测距" if self._local_enabled else "恢复本地测距")
-        self.load_npz_btn.setEnabled(not self.recording)
-        self.board_npz_btn.setEnabled(not self.recording and bool(self._calibration_path))
+        self.load_npz_btn.setEnabled(not self.recording and self._resolution_pending is None)
+        self.board_npz_btn.setEnabled(not self.recording and self._resolution_pending is None and bool(self._calibration_path))
 
         camera_text = {
             "unavailable": "开启摄像头",
@@ -576,6 +615,81 @@ class StereoFishCameraWidget(QWidget):
         self.board_rec_btn.setText(
             "停止板上录制" if self.board_rec_on else "板上高清录制")
         self.state_changed.emit()
+
+    def _resolution_selection_changed(self, index):
+        """Update the apply gate without issuing a network write on combo selection."""
+        if hasattr(self, 'resolution_apply_btn'):
+            self._apply_ui_state()
+
+    def _update_resolution_state(self, info):
+        """Accept server capabilities and exact acknowledgements, not guessed UI state."""
+        options = info.get('resolution_options', [])
+        valid = []
+        if isinstance(options, list) and len(options) <= 32:
+            for option in options:
+                if not isinstance(option, dict):
+                    continue
+                width, height = option.get('width'), option.get('height')
+                if (type(width) is int and type(height) is int and
+                        384 < width <= 5120 and width % 2 == 0 and 0 < height <= 1440 and
+                        (width, height) not in valid):
+                    valid.append((width, height))
+        self._resolution_supported = (self._relay_mode and self._source_descriptor is not None and
+                                      info.get('resolution_switch') is True and bool(valid))
+        actual = (info.get('source_width'), info.get('source_height'))
+        pending = self._resolution_pending
+        acknowledged = bool(pending and info.get('command') == 'SET_RESOLUTION' and
+                            info.get('request_id') == pending['id'])
+        resolved = acknowledged or bool(pending and pending['querying'])
+        if resolved:
+            self._resolution_pending = None
+        selected = self.resolution_combo.currentData()
+        if valid != self._resolution_options:
+            self.resolution_combo.blockSignals(True)
+            self.resolution_combo.clear()
+            for width, height in valid:
+                self.resolution_combo.addItem(f'每目 {width//2}×{height} · 双目 {width}×{height}', (width, height))
+            self._resolution_options = valid
+            self.resolution_combo.blockSignals(False)
+            selected = None
+        if resolved or selected is None:
+            self.resolution_combo.blockSignals(True)
+            self.resolution_combo.setCurrentIndex(valid.index(actual) if actual in valid else -1)
+            self.resolution_combo.blockSignals(False)
+        if self._resolution_pending:
+            self.resolution_hint.setText('分辨率设置中，等待板端确认…')
+        elif not self._resolution_supported:
+            self.resolution_hint.setText('视频服务未提供可切换档位；请升级板端双目传输服务并检查相机枚举。')
+        else:
+            prefix = '已确认' if self._camera_state == 'on' else '下次采集'
+            self.resolution_hint.setText(f'{prefix}：每目 {actual[0]//2}×{actual[1]} · 双目 {actual[0]}×{actual[1]}。关闭摄像头后应用；测距须匹配NPZ。')
+            if resolved and actual != pending['size']:
+                self.resolution_hint.setText('设置未生效，已恢复板端实际档位。'+self.resolution_hint.text())
+
+    def _apply_resolution(self):
+        """Request one camera-off configuration transaction; never reopen automatically."""
+        self._apply_ui_state()
+        if not self.resolution_apply_btn.isEnabled():
+            return
+        width, height = self.resolution_combo.currentData()
+        request_id = f'{self.stream_client.connection_id}_{time.monotonic_ns()}'
+        self._resolution_pending = dict(id=request_id, size=(width, height), querying=False)
+        self._clear_local_frames()
+        self._selected_point = None
+        self.resolution_hint.setText('分辨率设置中，等待板端确认…')
+        self._apply_ui_state()
+        if not self.stream_client.send_command(f'SET_RESOLUTION {width} {height} {request_id}'):
+            self._resolution_timeout(request_id)
+        else:
+            QTimer.singleShot(3000, lambda: self._resolution_timeout(request_id))
+
+    def _resolution_timeout(self, request_id):
+        """Reconcile uncertain writes with GET_STATE, never repeat a camera operation."""
+        if self._resolution_pending and self._resolution_pending['id'] == request_id:
+            self._resolution_pending['querying'] = True
+            self.resolution_hint.setText('设置确认超时，正在查询实际档位；若无响应请断开视频后重连。')
+            self.stream_client.send_command('GET_STATE')
+            self._apply_ui_state()
 
     def get_action_states(self):
         """返回供主菜单同步的双目视频操作状态。"""
@@ -670,6 +784,8 @@ class StereoFishCameraWidget(QWidget):
 
         命令在板端是幂等的：重复 CAM_ON/CAM_OFF 无副作用。
         """
+        if self._resolution_pending is not None:
+            return
         if self._stream_state != "connected":
             QMessageBox.warning(self, "切换失败", "请先连接视频服务")
             return
@@ -759,6 +875,15 @@ class StereoFishCameraWidget(QWidget):
             return
         if msg_type == 'error':
             self.status_label.setText('视频服务: '+str(info.get('message', '未知错误')))
+            pending = self._resolution_pending
+            if (pending and info.get('command') == 'SET_RESOLUTION' and
+                    info.get('request_id') == pending['id']):
+                self._resolution_pending = None
+                actual = (self._source_descriptor['width'], self._source_descriptor['height'])
+                self.resolution_combo.setCurrentIndex(self._resolution_options.index(actual)
+                    if actual in self._resolution_options else -1)
+                self.resolution_hint.setText('分辨率设置失败，保留原档位：'+str(info.get('message', '未知错误')))
+                self._apply_ui_state()
         elif msg_type == "ranging":
             return  # 板端开关不能改变电脑端算法的状态。
         elif msg_type == "camera":
@@ -799,6 +924,8 @@ class StereoFishCameraWidget(QWidget):
             self._camera_request_id += 1
             self.camera_on = enabled
             self._camera_state = "on" if enabled else "off"
+            self._source_epoch = info.get('camera_epoch')
+            self._update_resolution_state(info)
             self.camera_state_label.setText(
                 f"摄像头: {'已开启' if enabled else '关闭——点击开启摄像头出画面'}")
             if enabled and self.current_frame is None:
@@ -807,8 +934,9 @@ class StereoFishCameraWidget(QWidget):
                 self._clear_local_frames()
                 self.video_label.setText(
                     "摄像头处于关闭状态\n点击'开启摄像头'按钮开始回传")
-            self.mode_label.setText('模式: Pico只传双目 · 电脑SGBM/WLS · 显示左校正图'
-                                    if self._relay_mode else '旧视频服务: 仅预览，不启动板端测距')
+            self.mode_label.setText(('模式: Pico只传双目 · 电脑SGBM/WLS · 显示左校正图'
+                if self._local_model else '模式: 仅预览原始第一目 · 未启用测距')
+                if self._relay_mode else '旧视频服务: 仅预览，不启动板端测距')
             if not self._relay_mode:
                 self.range_state_label.setText('本地测距: 旧服务未提供同步双目和标定')
             self._apply_ui_state()
@@ -865,7 +993,10 @@ class StereoFishCameraWidget(QWidget):
                 self._fps_t0 = now
 
             h, w = frame.shape[:2]
-            self.resolution_label.setText(f"分辨率: {w}x{h}")
+            source = self._source_descriptor
+            self.resolution_label.setText(
+                f"采集双目: {source['width']}×{source['height']} · 显示单目: {w}×{h}"
+                if source else f"分辨率: {w}×{h}")
             self.video_label.set_frame(frame)
             self.single_frame_ready.emit(frame)
             self._record_frame(frame)
@@ -956,9 +1087,15 @@ class StereoFishCameraWidget(QWidget):
         """Invalidate camera-off results, including a calculation already in flight."""
         self.worker.invalidate()
         self._local_result = None
+        self.ranging_on = False
         self._stream_seen = False
         self.current_frame = None
         self._clear_measurement()
+        self.range_state_label.setText('本地测距: 摄像头已关闭' if self._camera_state == 'off'
+                                       else '本地测距: 等待有效新帧')
+        if self._relay_mode:
+            self.mode_label.setText('模式: Pico只传双目 · 电脑SGBM/WLS · 显示左校正图'
+                if self._local_model else '模式: 仅预览原始第一目 · 未启用测距')
         if self.recording:
             self._stop_recording(prompt_for_path=False)
 
@@ -990,8 +1127,8 @@ class StereoFishCameraWidget(QWidget):
         width, height = info.get('source_width'), info.get('source_height')
         if (not isinstance(digest, str) or len(digest) != 64 or
                 any(value not in '0123456789abcdef' for value in digest) or
-                not isinstance(width, int) or not isinstance(height, int) or
-                width <= 0 or height <= 0):
+                type(width) is not int or type(height) is not int or
+                not (384 < width <= 5120 and width % 2 == 0 and 0 < height <= 1440)):
             self._source_descriptor = None
             self._install_calibration_model(None)
             self._refresh_calibration_label('视频来源信息不完整，不能测距', error=True)
@@ -1013,9 +1150,12 @@ class StereoFishCameraWidget(QWidget):
         self._selected_point = None
         self.ranging_on = False
         self._local_model = model
-        self.worker.set_model(model)
+        preview = StereoPreview(self._source_descriptor) if model is None and self._source_descriptor else None
+        self.worker.set_model(model if model is not None else preview)
         self.worker.invalidate(enabled=self._local_enabled)
-        self.video_label.setText('标定已切换，等待当前参数的新帧…' if model else '等待有效标定与同步双目…')
+        self.video_label.setText('标定已切换，等待当前参数的新帧…' if model else '无匹配标定：仅预览原始第一目，不能测距')
+        if model is None:
+            self.range_state_label.setText('本地测距: 未启用，请加载匹配分辨率的NPZ')
         self._apply_ui_state()
 
     def _activate_calibration(self):
@@ -1094,6 +1234,9 @@ class StereoFishCameraWidget(QWidget):
 
     def load_calibration_file(self, path, persist=True):
         """Validate a local final NPZ transactionally; never upload it or start calibration."""
+        if self._resolution_pending is not None:
+            self._refresh_calibration_label('请等待分辨率设置确认后再切换NPZ', error=True)
+            return False
         if self.recording:
             self._refresh_calibration_label('请先停止并保存录像，再切换NPZ', error=True)
             return False
@@ -1101,7 +1244,7 @@ class StereoFishCameraWidget(QWidget):
             if os.path.splitext(path)[1].lower() != '.npz':
                 raise ValueError('请选择NPZ格式的最终标定文件')
             with open(path, 'rb') as stream:
-                data = stream.read(8*1024*1024+1)
+                data = stream.read(MAX_CALIBRATION_BYTES+1)
             digest = hashlib.sha256(data).hexdigest()
             source = self._source_descriptor['sha256'] if self._source_descriptor else None
             model = StereoCalculator(data, digest, source_sha256=source)
@@ -1131,7 +1274,7 @@ class StereoFishCameraWidget(QWidget):
 
     def _use_board_calibration(self):
         """Explicitly return to automatic server parameters, requesting them only if needed."""
-        if self.recording:
+        if self.recording or self._resolution_pending is not None:
             return
         self._calibration_path = self._calibration_restore_error = ''
         self._chosen_calibration = None
@@ -1143,7 +1286,9 @@ class StereoFishCameraWidget(QWidget):
     def _submit_stereo(self, metadata, jpeg):
         """Network-thread callback: submit bytes only, never touch Qt or run SGBM."""
         if (self._stream_state == 'connected' and self._camera_state == 'on' and
-                metadata.get('connection_id') == self.stream_client.connection_id):
+                self._resolution_pending is None and
+                metadata.get('connection_id') == self.stream_client.connection_id and
+                (self._source_epoch is None or metadata.get('camera_epoch') == self._source_epoch)):
             self.worker.submit(metadata, jpeg)
 
     def _poll_local_result(self):
@@ -1156,11 +1301,12 @@ class StereoFishCameraWidget(QWidget):
             self.video_label.setText('本地处理错误，等待有效新帧\n'+result['error'])
             self.range_state_label.setText('本地测距错误: '+result['error'])
             return
-        if self._local_result is None and not self._calibration_notice_error:
+        if self._local_result is None and not self._calibration_notice_error and not result.get('uncalibrated'):
             self._refresh_calibration_label('本地NPZ已生效' if self._chosen_calibration else '板端NPZ已生效')
         self._local_result = result
         self.ranging_on = result['disparity'] is not None
-        self.range_state_label.setText(
+        self.range_state_label.setText('仅预览原始第一目：NPZ与当前采集不匹配或尚未加载，不能测距'
+            if result.get('uncalibrated') else
             f"本地测距: {'开' if self.ranging_on else '暂停'} · 帧{result['frame_id']} · 计算{result['compute_ms']:.1f}ms")
         self._render_local_result(record=True)
 

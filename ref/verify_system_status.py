@@ -15,10 +15,11 @@ sys.path.insert(0, str(GS))
 import stereo_runtime
 from PyQt5.QtGui import QFont
 from PyQt5.QtCore import QSettings, QPoint
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QLabel
 from ui.main_window import MainWindow
 from ui.stereo_camera_widget import StereoFishCameraWidget
 from ui.connection_store import ConnectionStore
+from ui.system_status import SystemStatusWidget
 import numpy as np
 
 
@@ -39,10 +40,10 @@ def main():
             patch('ui.main_window.ConnectionStore', return_value=ConnectionStore(output/'profiles.json')):
         window = MainWindow('dual')
     page = window.system_status_widget
-    window.resize(1360, 800)
+    window.resize(1900, 1000)
     window.setWindowTitle('系统状态离线验收 · 演示数据，非实测 · 不连接机器鱼')
     window.visualization_widget.tab_widget.setCurrentWidget(page)
-    page.condition_input.setText('演示数据：充电宝 / 无风扇；不是散热实验结果')
+    assert not hasattr(page, 'condition_input') and not hasattr(page, 'export_plot_combo')
     page.set_connected(True)
     origin = time.monotonic()-1800.
     try:
@@ -61,7 +62,6 @@ def main():
         app.processEvents()
         page.grab().save(str(output/'system-status-global.png'))
         window.grab().save(str(output/'nested-system-status.png'))
-        assert page.scroll_area.verticalScrollBar().maximum() > 0
         page.scroll_area.verticalScrollBar().setValue(page.scroll_area.verticalScrollBar().maximum())
         app.processEvents()
         page.grab().save(str(output/'system-status-scroll-bottom.png'))
@@ -81,10 +81,46 @@ def main():
         with (output/'visible.csv').open(encoding='utf-8-sig', newline='') as stream:
             saved = list(csv.DictReader(stream))
         assert saved[0]['time_s'] == '600.0' and saved[-1]['time_s'] == '900.0'
+        assert 'condition' not in saved[0]
+        page.plots[1].setXRange(700., 750., padding=0)
+        page._on_manual_view_change('soc_temp_c')
+        assert page.visible_rows()[0]['time_s'] == 700.
+        assert page.visible_rows()[-1]['time_s'] == 750.
+        assert '温度' in page.action_buttons['save_data'].toolTip()
         page.reset_view()
         assert len(page.rows) == 3563
         page.set_connected(False)
         page.grab().save(str(output/'system-status-disconnected.png'))
+        compact = SystemStatusWidget()
+        toolbar_geometry = []
+        try:
+            compact.set_connected(True)
+            for row in page.rows:
+                compact.rows.append(row.copy())
+            for width in (1200, 640):
+                compact.resize(width, 650 if width == 1200 else 460)
+                compact.show()
+                compact._render()
+                app.processEvents()
+                app.processEvents()
+                assert compact.width() == width, (width, compact.width(), compact.minimumSizeHint().width())
+                assert compact.scroll_area.verticalScrollBar().maximum() > 0
+                labels = [label.text() for label in compact.findChildren(QLabel)]
+                assert '实验标签' not in labels and '数据导出范围' not in labels
+                reference = compact.global_time_cb.mapTo(compact, compact.global_time_cb.rect().center()).y()
+                button_centers = []
+                for button in compact.action_buttons.values():
+                    assert compact.rect().contains(button.mapTo(compact, button.rect().topLeft()))
+                    assert compact.rect().contains(button.mapTo(compact, button.rect().bottomRight()))
+                    button_centers.append(button.mapTo(compact, button.rect().center()).y())
+                if width == 1200:
+                    assert all(abs(center-reference) <= 3 for center in button_centers)
+                toolbar_geometry.append(dict(width=width, wrapped=compact._toolbar_wrapped,
+                                             mode_center_y=reference, action_center_y=button_centers))
+                compact.grab().save(str(output/f'compact-toolbar-{width}.png'))
+        finally:
+            compact.status_timer.stop()
+            compact.close()
         centered = []
         with patch('ui.stereo_camera_widget.QSettings', return_value=settings):
             video = StereoFishCameraWidget()
@@ -114,7 +150,9 @@ def main():
                       history_rows=len(page.rows), visible_export_rows=count,
                       export_range_s=[600, 900], gap_rows=sum(r['status']=='gap' for r in page.rows),
                       plots=3, no_personal_config_writes=True, nested_system_tab=True,
-                      independent_canvases=True, vertical_scroll=True, video_centered=centered)
+                      independent_canvases=True, vertical_scroll=True, video_centered=centered,
+                      annotation_removed=True, export_selector_removed=True,
+                      automatic_export_reference=True, toolbar_geometry=toolbar_geometry)
         (output/'summary.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
         print(json.dumps(result))
     finally:

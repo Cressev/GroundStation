@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 from PyQt5.QtCore import Qt
 from PyQt5.QtTest import QTest
+from PyQt5.QtWidgets import QLabel
 from ui.system_status import SystemStatusWidget
 from test_ui_state_machine import ensure_app
 from test_control_axes import window
@@ -54,7 +55,6 @@ def test_global_sliding_and_free_range_keep_entire_history(status):
     assert [r['time_s'] for r in status.visible_rows()] == list(range(20, 31))
     status.global_time_cb.setChecked(True)
     assert len(status.visible_rows()) == 31
-    status.export_plot_combo.setCurrentIndex(1)
     status.plots[1].setXRange(7.2, 12.8, padding=0)
     status._on_manual_view_change('soc_temp_c')
     assert [r['time_s'] for r in status.visible_rows()] == [8., 9., 10., 11., 12.]
@@ -76,6 +76,8 @@ def test_exports_real_visible_range_csv_and_excel(status, tmp_path):
     assert count == 3 and [float(r['time_s']) for r in rows] == [4., 5., 6.]
     assert rows[0]['memory_percent'] == '25.0'
     assert 'received_utc' in rows[0] and 'source_timestamp' in rows[0]
+    assert 'condition' not in rows[0]
+    assert all('condition' not in row for row in status.rows)
     path, count = status.export_data(tmp_path/'samples.xlsx')
     assert count == 3 and zipfile.is_zipfile(path)
 
@@ -126,7 +128,7 @@ def test_main_telemetry_is_queued_and_old_connection_is_ignored(window):
 
 
 def test_independent_pan_follow_reset_and_export_reference(status):
-    """Panning CPU must leave other views following; resets and export reference are explicit."""
+    """Panning CPU leaves others following; export follows the last manually viewed canvas."""
     for second in range(31):
         feed(status, second)
     status.plots[0].setXRange(4., 8., padding=0)
@@ -135,12 +137,64 @@ def test_independent_pan_follow_reset_and_export_reference(status):
     assert status.plots[0].getViewBox().viewRange()[0] == [4., 8.]
     assert status.plots[1].getViewBox().viewRange()[0] == [0., 31.]
     assert status.plots[2].getViewBox().viewRange()[0] == [0., 31.]
-    status.export_plot_combo.setCurrentIndex(0)
     assert [r['time_s'] for r in status.visible_rows()] == list(range(4, 9))
-    status.export_plot_combo.setCurrentIndex(1)
-    assert len(status.visible_rows()) == 32
+    status.plots[1].setXRange(10., 12., padding=0)
+    status._on_manual_view_change('soc_temp_c')
+    assert [r['time_s'] for r in status.visible_rows()] == [10., 11., 12.]
     status.reset_plot('soc_temp_c')
+    assert len(status.visible_rows()) == 32
     assert status.plots[0].getViewBox().viewRange()[0] == [4., 8.]
+
+
+def test_top_toolbar_has_one_row_without_label_or_range_inputs(status):
+    """Normal-width pages place the four actions beside time controls, not on another row."""
+    app = ensure_app()
+    assert not hasattr(status, 'condition_input')
+    assert not hasattr(status, 'export_plot_combo')
+    labels = [label.text() for label in status.findChildren(QLabel)]
+    assert '实验标签' not in labels and '数据导出范围' not in labels
+    status.resize(1200, 650)
+    status.show()
+    app.processEvents()
+    app.processEvents()
+    from PyQt5.QtCore import QPoint
+    reference = status.global_time_cb.mapTo(status, status.global_time_cb.rect().center()).y()
+    assert len(status.action_buttons) == 4
+    for button in status.action_buttons.values():
+        assert abs(button.mapTo(status, button.rect().center()).y()-reference) <= 3
+        assert status.rect().contains(button.mapTo(status, QPoint(button.width()-1, button.height()-1)))
+
+
+def test_small_toolbar_wraps_without_forcing_the_page_wider(status):
+    """Narrow pages keep every button reachable and expand the toolbar vertically only."""
+    app = ensure_app()
+    status.resize(1200, 650)
+    status.show()
+    app.processEvents()
+    status.resize(640, 460)
+    app.processEvents()
+    app.processEvents()
+    assert status.width() == 640, (status.width(), status.minimumSizeHint().width())
+    for button in status.action_buttons.values():
+        rectangle = button.rect()
+        assert status.rect().contains(button.mapTo(status, rectangle.topLeft()))
+        assert status.rect().contains(button.mapTo(status, rectangle.bottomRight()))
+
+
+def test_export_reference_tracks_manual_canvas_and_global_reset(status):
+    """Saving uses the last inspected actual viewport; rendering never steals that reference."""
+    for second in range(21):
+        feed(status, second)
+    status.plots[2].setXRange(5., 7., padding=0)
+    status._on_manual_view_change('memory_percent')
+    assert '内存' in status.action_buttons['save_data'].toolTip()
+    feed(status, 21)
+    assert [r['time_s'] for r in status.visible_rows()] == [5., 6., 7.]
+    status.reset_view()
+    assert 'CPU' in status.action_buttons['save_data'].toolTip()
+    assert len(status.visible_rows()) == 22
+    status.clear_data()
+    assert status.visible_rows() == []
 
 
 def test_short_window_can_scroll_to_all_three_resizable_canvases(status):

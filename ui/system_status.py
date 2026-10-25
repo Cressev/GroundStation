@@ -10,9 +10,9 @@ import numpy as np
 import pyqtgraph as pg
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QRadioButton,
-                             QButtonGroup, QPushButton, QFileDialog, QMessageBox, QLineEdit,
+                             QButtonGroup, QPushButton, QFileDialog, QMessageBox, QGridLayout,
                              QScrollArea, QSplitter, QFrame, QSizePolicy)
-from ui.numeric_inputs import NoWheelSpinBox, NoWheelComboBox
+from ui.numeric_inputs import NoWheelSpinBox
 
 
 class SystemStatusWidget(QWidget):
@@ -29,6 +29,8 @@ class SystemStatusWidget(QWidget):
         self._origin = self._last_arrival = self._last_source = None
         self._outage = False
         self._session = 0
+        self._export_plot_key = 'cpu_percent'
+        self._toolbar_wrapped = None
         self._build_ui()
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self._refresh_status)
@@ -37,7 +39,17 @@ class SystemStatusWidget(QWidget):
     def _build_ui(self):
         """Put three independent, height-adjustable canvases in a vertically scrollable page."""
         layout = QVBoxLayout(self)
-        mode_row, action_row = QHBoxLayout(), QHBoxLayout()
+        self.toolbar = QWidget()
+        self.toolbar.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.toolbar_layout = QGridLayout(self.toolbar)
+        self.toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        self.toolbar_layout.setHorizontalSpacing(12)
+        self.toolbar_layout.setColumnStretch(2, 1)
+        self.mode_controls, self.action_controls = QWidget(), QWidget()
+        mode_row, action_row = QHBoxLayout(self.mode_controls), QHBoxLayout(self.action_controls)
+        for row in (mode_row, action_row):
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(6)
         self.global_time_cb = QRadioButton('全局时间序列')
         self.sliding_time_cb = QRadioButton('滑动窗口')
         group = QButtonGroup(self)
@@ -50,37 +62,27 @@ class SystemStatusWidget(QWidget):
         self.sliding_window_input.setRange(1, 86400)
         self.sliding_window_input.setValue(300)
         self.sliding_window_input.setSuffix(' 秒')
+        self.sliding_window_input.setMaximumWidth(max(96, self.fontMetrics().horizontalAdvance('86400 秒')+36))
         self.sliding_window_input.setKeyboardTracking(False)
         self.sliding_window_input.setEnabled(False)
         self.sliding_window_input.valueChanged.connect(self._change_window)
         mode_row.addWidget(QLabel('窗口大小'))
         mode_row.addWidget(self.sliding_window_input)
-        mode_row.addStretch()
-        layout.addLayout(mode_row)
-        for text, callback in (('清除曲线', self.clear_data), ('重置全部', self.reset_view),
-                               ('保存数据', self._save_data), ('保存图像', self._save_image)):
+        self.action_buttons = {}
+        for key, text, callback in (('clear', '清除曲线', self.clear_data),
+                                    ('reset', '重置全部', self.reset_view),
+                                    ('save_data', '保存数据', self._save_data),
+                                    ('save_image', '保存图像', self._save_image)):
             button = QPushButton(text)
             button.clicked.connect(callback)
+            button.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+            self.action_buttons[key] = button
             action_row.addWidget(button)
-        action_row.addStretch()
-        layout.addLayout(action_row)
-        condition = QHBoxLayout()
-        condition.addWidget(QLabel('实验标签'))
-        self.condition_input = QLineEdit()
-        self.condition_input.setPlaceholderText('例如：充电宝 / 无风扇 / 室温25℃；仅标记，不切换硬件')
-        condition.addWidget(self.condition_input)
-        layout.addLayout(condition)
+        layout.addWidget(self.toolbar)
+        self._select_export_plot('cpu_percent')
         self.status_label = QLabel('未连接；数据源为机器鱼控制板，不是本地电脑')
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
-        export_row = QHBoxLayout()
-        export_row.addWidget(QLabel('数据导出范围'))
-        self.export_plot_combo = NoWheelComboBox()
-        self.export_plot_combo.addItems(['CPU画布', '温度画布', '内存画布'])
-        self.export_plot_combo.setToolTip('以所选画布的可见时间范围导出全部指标；不改变其他画布。')
-        export_row.addWidget(self.export_plot_combo)
-        export_row.addStretch()
-        layout.addLayout(export_row)
         self.canvas = QWidget()
         canvas = QVBoxLayout(self.canvas)
         canvas.setContentsMargins(0, 0, 0, 0)
@@ -125,6 +127,37 @@ class SystemStatusWidget(QWidget):
         self.scroll_area.setFrameShape(QFrame.NoFrame)
         self.scroll_area.setWidget(self.canvas)
         layout.addWidget(self.scroll_area, 1)
+        self._arrange_toolbar()
+
+    def _arrange_toolbar(self):
+        """Keep actions on the first row when they fit; narrow windows wrap without clipping."""
+        available = self.width()-self.layout().contentsMargins().left()-self.layout().contentsMargins().right()
+        required = self.mode_controls.sizeHint().width()+self.action_controls.sizeHint().width()+12
+        wrapped = available < required
+        if wrapped == self._toolbar_wrapped:
+            return
+        self._toolbar_wrapped = wrapped
+        self.toolbar_layout.removeWidget(self.mode_controls)
+        self.toolbar_layout.removeWidget(self.action_controls)
+        self.toolbar_layout.addWidget(self.mode_controls, 0, 0, 1, 2 if wrapped else 1, Qt.AlignLeft)
+        self.toolbar_layout.addWidget(self.action_controls, 1 if wrapped else 0,
+                                      0 if wrapped else 1, 1, 2 if wrapped else 1, Qt.AlignLeft)
+
+    def resizeEvent(self, event):
+        """Reflow only toolbar groups; do not alter plot ranges or any connection state."""
+        super().resizeEvent(event)
+        if hasattr(self, 'toolbar_layout'):
+            self._arrange_toolbar()
+
+    def _select_export_plot(self, metric):
+        """Make the last inspected canvas the export reference and explain it on the button."""
+        names = {'cpu_percent': 'CPU', 'soc_temp_c': '温度', 'memory_percent': '内存'}
+        if metric not in names:
+            return
+        self._export_plot_key = metric
+        self.action_buttons['save_data'].setToolTip(
+            f'按{names[metric]}画布当前可见时间范围保存全部指标；'
+            '缩放、拖动或重置某张图可切换参照，默认使用CPU画布。')
 
     @property
     def follow_latest(self):
@@ -177,7 +210,7 @@ class SystemStatusWidget(QWidget):
         memory = 100.*used/total if used is not None and total and used <= total else None
         receipt_wall = time.time()+arrival-time.monotonic()
         row = dict(time_s=elapsed, received_utc=datetime.fromtimestamp(receipt_wall, timezone.utc).isoformat(timespec='milliseconds'),
-                   source_timestamp=source, session=self._session, condition=self.condition_input.text().strip(),
+                   source_timestamp=source, session=self._session,
                    status='sample', cpu_percent=self._number(telemetry.get('cpu_percent'), maximum=100.),
                    soc_temp_c=self._number(telemetry.get('soc_temp_c'), minimum=-40., maximum=150.),
                    memory_percent=memory, mem_used_mb=used, mem_total_mb=total,
@@ -227,6 +260,7 @@ class SystemStatusWidget(QWidget):
         self.sliding_time = self.sliding_time_cb.isChecked()
         self.sliding_window_input.setEnabled(self.sliding_time)
         self.follow_latest = True
+        self._select_export_plot('cpu_percent')
         self._render()
 
     def _change_window(self, value):
@@ -239,18 +273,21 @@ class SystemStatusWidget(QWidget):
         """Freeze only the canvas manually zoomed/panned, not its neighboring views."""
         if metric in self._following:
             self._following[metric] = False
+            self._select_export_plot(metric)
         else:
             self.follow_latest = False
 
     def reset_plot(self, metric):
         """Restore the selected canvas alone; retain all other view ranges and follow flags."""
         self._following[metric] = True
+        self._select_export_plot(metric)
         self.plots[self._plot_keys.index(metric)].enableAutoRange(axis='y')
         self._render()
 
     def reset_view(self):
         """Return to the selected global/sliding X mode and automatic Y ranges."""
         self.follow_latest = True
+        self._select_export_plot('cpu_percent')
         for plot in self.plots:
             plot.enableAutoRange(axis='y')
         self._render()
@@ -261,14 +298,15 @@ class SystemStatusWidget(QWidget):
         self._origin = self._last_arrival = self._last_source = None
         self._outage = False
         self.follow_latest = True
+        self._select_export_plot('cpu_percent')
         self._render()
         self._refresh_status()
 
     def visible_rows(self):
-        """Export all metrics using the explicitly selected canvas's actual visible interval."""
+        """Export all metrics using the last manually inspected canvas's real visible interval."""
         if not self.rows:
             return []
-        plot = self.plots[self.export_plot_combo.currentIndex()]
+        plot = self.plots[self._plot_keys.index(self._export_plot_key)]
         start, end = sorted(plot.getViewBox().viewRange()[0])
         return [row.copy() for row in self.rows if start-1e-8 <= row['time_s'] <= end+1e-8]
 
@@ -278,7 +316,7 @@ class SystemStatusWidget(QWidget):
         if not rows:
             raise ValueError('当前画布时间范围内没有可保存的数据')
         headers = ('time_s', 'cpu_percent', 'soc_temp_c', 'memory_percent', 'mem_used_mb',
-                   'mem_total_mb', 'cpu_freq_mhz', 'received_utc', 'source_timestamp', 'session', 'condition', 'status')
+                   'mem_total_mb', 'cpu_freq_mhz', 'received_utc', 'source_timestamp', 'session', 'status')
         path = Path(filepath)
         if path.suffix.lower() == '.csv':
             with path.open('w', newline='', encoding='utf-8-sig') as stream:

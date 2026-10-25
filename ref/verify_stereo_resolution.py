@@ -101,6 +101,13 @@ def main():
     try:
         view.resize(1100, 1000)
         view.show()
+        app.processEvents()
+        action_buttons = [view.connect_btn, view.disconnect_btn, view.cam_btn,
+                          view.record_btn, view.snapshot_btn]
+        action_centers = [button.mapTo(view, button.rect().center()).y() for button in action_buttons]
+        assert max(action_centers)-min(action_centers) <= 1
+        assert all(button.width() <= button.sizeHint().width()+2 for button in action_buttons)
+        view.action_scroll.parentWidget().grab().save(str(output/'compact-connection-controls.png'))
         view._fish_connection_available = True
         view._stream_state = 'connecting'
         view.stream_client.set_connection('127.0.0.1', relay.port)
@@ -151,6 +158,13 @@ def main():
         app.processEvents()
         assert view.page_scroll.horizontalScrollBar().maximum() == 0
         view.grab().save(str(output/'narrow-640.png'))
+        view.action_scroll.setMaximumWidth(220)
+        app.processEvents()
+        app.processEvents()
+        assert view.action_scroll.horizontalScrollBar().maximum() > 0
+        view.action_scroll.ensureWidgetVisible(view.snapshot_btn)
+        app.processEvents()
+        view.action_scroll.parentWidget().grab().save(str(output/'narrow-action-scroll.png'))
         assert not any(command.startswith(('RANGE_ON', 'SET_POINT', 'REC_START')) for command in commands)
         summary = dict(synthetic=True, real_fish_touched=False, commands=commands,
                        options=view._resolution_options, opened=opened,
@@ -158,6 +172,9 @@ def main():
                        canvas_default_rectangle=list(default_rectangle),
                        canvas_enlarged_rectangle=list(enlarged_rectangle),
                        canvas_height_reset=720,
+                       action_button_centers=action_centers,
+                       action_button_widths=[button.width() for button in action_buttons],
+                       action_toolbar_scroll_max=view.action_scroll.horizontalScrollBar().maximum(),
                        saved_shape=list(cv2.imdecode(np.fromfile(output/'single-measurement.png', np.uint8), 1).shape),
                        horizontal_scroll=view.page_scroll.horizontalScrollBar().maximum(),
                        personal_settings_unchanged=all(hashlib.sha256((PROJECT/name).read_bytes()).hexdigest() == digest

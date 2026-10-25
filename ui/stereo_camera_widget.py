@@ -312,41 +312,57 @@ class StereoFishCameraWidget(QWidget):
         layout.addWidget(title)
 
         control_group = QGroupBox("连接控制")
-        control_layout = QGridLayout(control_group)
+        control_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        control_layout = QVBoxLayout(control_group)
+        control_layout.setSpacing(6)
         self.connect_btn = QPushButton("连接视频")
         self.connect_btn.clicked.connect(self._toggle_connection)
         self.disconnect_btn = QPushButton("断开")
         self.disconnect_btn.clicked.connect(self._disconnect)
         self.disconnect_btn.setEnabled(False)
-        control_layout.addWidget(self.connect_btn, 0, 0)
-        control_layout.addWidget(self.disconnect_btn, 0, 1)
         self.record_btn = QPushButton("保存视频")
         self.record_btn.setEnabled(False)
         self.record_btn.setToolTip(
             "录制当前单目画面；停止后弹出对话框选择 mp4 保存位置")
         self.record_btn.clicked.connect(self._toggle_recording)
-        control_layout.addWidget(self.record_btn, 1, 0)
         self.snapshot_btn = QPushButton("保存图像")
         self.snapshot_btn.clicked.connect(self._choose_snapshot)
-        control_layout.addWidget(self.snapshot_btn, 1, 1)
         self.cam_btn = QPushButton("开启摄像头")
         self.cam_btn.setEnabled(False)
         self.cam_btn.setToolTip(
             "板上相机默认不随启动脚本开启；点击发 CAM_ON 打开，再点发 CAM_OFF 关闭")
         self.cam_btn.clicked.connect(self._toggle_camera)
-        control_layout.addWidget(self.cam_btn, 0, 2)
-        self.board_rec_btn = QPushButton("板上高清录制")
+        self.board_rec_btn = QPushButton("板上高清录制", control_group)
         self.board_rec_btn.setEnabled(False)
         self.board_rec_btn.setToolTip(
             "命令板子以 2560x720 录制 MJPG 并保存在板子本地（录制期间预览暂停）")
         self.board_rec_btn.clicked.connect(self._toggle_board_recording)
-        control_layout.addWidget(self.board_rec_btn, 1, 2)
         self.board_rec_btn.hide()
+
+        self.action_bar = QWidget()
+        action_layout = QHBoxLayout(self.action_bar)
+        action_layout.setContentsMargins(0, 0, 0, 0)
+        action_layout.setSpacing(6)
+        for button in (self.connect_btn, self.disconnect_btn, self.cam_btn,
+                       self.record_btn, self.snapshot_btn):
+            button.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+            action_layout.addWidget(button)
+        action_layout.addStretch(1)
+        self.action_scroll = QScrollArea()
+        self.action_scroll.setWidget(self.action_bar)
+        self.action_scroll.setWidgetResizable(True)
+        self.action_scroll.setFrameShape(QFrame.NoFrame)
+        self.action_scroll.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.action_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.action_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.action_scroll.horizontalScrollBar().rangeChanged.connect(self._update_action_bar_height)
+        self._update_action_bar_height(0, 0)
+        control_layout.addWidget(self.action_scroll)
 
         self.mode_label = QLabel("模式: 电脑测距 · 显示左校正图")
         self.mode_label.setWordWrap(True)
         self.mode_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        control_layout.addWidget(self.mode_label, 2, 0, 1, 3)
+        control_layout.addWidget(self.mode_label)
         resolution_row = QHBoxLayout()
         resolution_row.addWidget(QLabel('采集分辨率'))
         self.resolution_combo = QComboBox()
@@ -359,11 +375,11 @@ class StereoFishCameraWidget(QWidget):
         self.resolution_apply_btn = QPushButton('应用分辨率')
         self.resolution_apply_btn.clicked.connect(self._apply_resolution)
         resolution_row.addWidget(self.resolution_apply_btn)
-        control_layout.addLayout(resolution_row, 3, 0, 1, 3)
+        control_layout.addLayout(resolution_row)
         self.resolution_hint = QLabel('连接视频后读取相机可用档位；关闭摄像头后可切换。')
         self.resolution_hint.setWordWrap(True)
         self.resolution_hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        control_layout.addWidget(self.resolution_hint, 4, 0, 1, 3)
+        control_layout.addWidget(self.resolution_hint)
         layout.addWidget(control_group)
 
         # 测距与标定只在电脑切换；绝不向板端启动测距。
@@ -500,6 +516,12 @@ class StereoFishCameraWidget(QWidget):
     def _set_video_canvas_height(self, height):
         """Resize only the display canvas, preserving image identity and click mapping."""
         self.video_label.setFixedHeight(height)
+
+    def _update_action_bar_height(self, minimum, maximum):
+        """Keep one compact action row, adding scrollbar height only on narrow pages."""
+        scrollbar = self.action_scroll.horizontalScrollBar()
+        self.action_scroll.setFixedHeight(self.action_bar.sizeHint().height()+
+                                         (scrollbar.sizeHint().height() if maximum > minimum else 0))
 
     def set_fish_connection_available(self, available):
         """设置主控连接门闩；断开主连接时同步收拢视频连接。"""

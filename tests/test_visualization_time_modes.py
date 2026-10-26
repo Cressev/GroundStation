@@ -134,3 +134,74 @@ def test_export_dialog_extensions_follow_selected_format():
         "test_export", "Excel 工作簿 (*.xlsx)").endswith(".xlsx")
     assert DataVisualizationWidget._normalize_png_path(
         "time_series_canvas").endswith(".png")
+
+
+def test_time_series_is_first_default_tab_without_changing_other_pages():
+    """Put frequently used time traces before XY; preserve the remaining tab identities."""
+    ensure_app()
+    widget = DataVisualizationWidget()
+    try:
+        assert [widget.tab_widget.tabText(i) for i in range(widget.tab_widget.count())] == [
+            '时间序列', 'XY轨迹图', '姿态显示', '系统状态']
+        assert widget.tab_widget.currentIndex() == 0
+        assert widget.tab_widget.indexOf(widget.system_status_widget) == 3
+    finally:
+        widget.close()
+
+
+def test_time_legends_are_compact_anchored_and_keep_all_curve_names():
+    """Legend labels/samples fit tightly at the ViewBox top left through resizing."""
+    from PyQt5.QtCore import QPointF
+    app = ensure_app()
+    widget = DataVisualizationWidget()
+    widget.update_timer.stop()
+    try:
+        widget.resize(1100, 850)
+        widget.show()
+        app.processEvents()
+        for plot, names in [(widget.z_plot, ['深度', '原始1', '原始2', '滤波1', '滤波2', '标定后']),
+                            (widget.rpy_plot, ['Roll', 'Pitch', 'Yaw'])]:
+            legend = plot.plotItem.legend
+            assert legend.opts['labelTextSize'] == '8pt'
+            assert [label.text for sample, label in legend.items] == names
+            assert all(sample.boundingRect().width() <= 16 and sample.boundingRect().height() <= 14
+                       for sample, label in legend.items)
+            packed_height = 6+sum(max(sample.height(), label.height()) for sample, label in legend.items)
+            assert legend.boundingRect().height() <= packed_height+1
+            assert all(label.item.document().documentMargin() == 0 and
+                       label.maximumHeight() == label.minimumHeight() for sample, label in legend.items)
+            for width in (1100, 700):
+                widget.resize(width, 850)
+                plot.setXRange(10, 30, padding=0)
+                app.processEvents()
+                origin = legend.mapToParent(QPointF(0, 0))
+                assert abs(origin.x()-6) <= 1 and abs(origin.y()-6) <= 1
+        assert widget.xy_plot.plotItem.legend.opts['labelTextSize'] == '9pt'
+    finally:
+        widget.close()
+
+
+def test_compact_legend_sample_keeps_click_to_toggle_curve_visibility():
+    """Shrinking a sample must preserve the existing pyqtgraph visibility interaction."""
+    from PyQt5.QtCore import Qt
+    ensure_app()
+    widget = DataVisualizationWidget()
+
+    class Click:
+        """Provide the minimal left-click interface expected by pyqtgraph."""
+
+        def button(self):
+            """Use the normal visibility-toggle button."""
+            return Qt.LeftButton
+
+        def accept(self):
+            """Accept the fake event without a real mouse or network."""
+
+    try:
+        sample = widget.z_plot.plotItem.legend.items[0][0]
+        sample.mouseClickEvent(Click())
+        assert not widget.z_curve.isVisible()
+        sample.mouseClickEvent(Click())
+        assert widget.z_curve.isVisible()
+    finally:
+        widget.close()

@@ -2,6 +2,8 @@
 
 双版本机器鱼地面站：启动时选择鱼体版本，按版本加载对应的视频、通信与控制页面。
 
+数据可视化页顺序改为“时间序列 → XY轨迹图 → 姿态显示 → 系统状态”，默认进入时间序列。深度和姿态角图例采用8pt、小线段和紧凑间距，锚定各自绘图区左上角；全部名称/颜色及点击图例切换曲线显隐保留，不改数据、时间模式、导出或XY图例。[验证说明](docs/2026-10-26-time-series-legends.md)。
+
 双目页“连接控制”五个常用按钮已收为紧凑单行：连接视频、断开、摄像头开关、保存视频、保存图像，不再等分撑满整栏。按钮栏宽度不足时仅工具栏横向滚动，不挤宽视频页；启停门闩、保存和连接行为不变。
 
 双目页单目画布已加大：默认高度720逻辑像素，可在“画布高度”输入320—2400并恢复默认；竖向图按比例放大、居中留黑边，不拉伸不裁剪。高度框滚轮只滚页面，原截图/录像像素尺寸、测距坐标和相机配置不变。不需重启Pico，保存当前数据后重开地面站加载新布局。[画布说明](docs/2026-10-26-stereo-canvas.md)。
@@ -157,7 +159,7 @@ python main.py
 | `models/README.md` | 大模型本地路径、SHA256、Ucolor 转换/解压步骤和数值对齐结果；实际权重由 `.gitignore` 排除 |
 | `ui/fish_camera_widget.py` | 单尾鱼机载相机组件（TCP 9998 客户端 + 机上录制控制），仅 single 变体使用 |
 | `ui/video_display.py` | 笔记本外接 USB 相机监控（VideoDisplayWidget + VideoMonitorWidget 容器），仅 single 变体使用 |
-| `ui/visualization.py` | pyqtgraph 数据可视化（XY 轨迹/深度/姿态/实时朝向）；全局时间序列保留从最近一次“清除曲线”以来的完整数据，滑动窗口只筛选显示范围；两张时序图 X 轴同步，用户缩放/拖动后“保存数据”仅导出当前可见范围的深度各通道与 Roll/Pitch/Yaw，文件对话框可选 CSV 或 XLSX；“保存图像”将当前画布导出为 PNG；清除、重置、保存按钮在同一操作行 |
+| `ui/visualization.py` | 时间序列优先、XY轨迹/姿态/实时朝向；两张时间图紧凑8pt左上图例及小样例、保留显隐交互；全局保留完整历史，滑动仅筛选显示；双图X轴同步，按可见范围保存深度/姿态CSV或XLSX，保存画布PNG，清除/重置/保存同行 |
 | `ui/keyboard_status.py` | 键盘按键状态面板与特殊功能键处理 |
 | `ui/data_recording.py` | 历史持续记录控制面板源码，为保留旧功能未删除；当前主界面不再挂载，实际导出由时间序列页的按钮完成 |
 | `controllers/base.py` | 键盘尾鳍控制与500–2500μs胸鳍直设/QE；保留输入不被定时器抢写，新增外部胸鳍归属门闩，PID占用时屏蔽QE/直设并同步合成PWM |
@@ -173,7 +175,8 @@ python main.py
 | `tests/test_ui_state_machine.py` | 主连接、控制锁定、Xbox 模式接入和无手柄拒绝启用、视频确认状态、失败重试、侧栏默认值与持久化的离线回归测试 |
 | `tests/test_last_connection.py` | 12项地址记忆隔离测试：重开/跨进程、双鱼体隔离、失败不覆盖、坏记录回退、档案同步，不接真实网络 |
 | `tests/test_xbox_controller.py` | Xbox 前半圆转向、后半圆保持及跨侧偏置过渡、两个周期启停、LT/RT 全量程无符号读取、LT 连续加速、Y/A/RT 胸鳍调节、启用成功长震、X/B 紧停短震和无手柄拒绝激活的离线回归测试 |
-| `tests/test_visualization_time_modes.py` | 全局历史不受滑动窗口截断、时间模式幂等、双图时间轴同步、可见范围筛选及 CSV/XLSX 文件输出的离线回归测试 |
+| `tests/test_visualization_time_modes.py` | 全局/滑动/幂等/双图时间轴/可见范围CSV/XLSX，页签顺序默认值、图例名称/尺寸/紧凑/锚定及点击显隐回归 |
+| `ref/verify_time_series_layout.py` | 真Windows合成曲线窗口，1200/760尺寸检查图例锚定、输出PNG/CSV，验证个人JSON散列保持；无网络或硬件 |
 | `tests/test_depth_controller.py` | PID 数学、参数锁、中位与限幅、方向切换、键盘并行控制和断流回中测试 |
 | `docs/2026-10-13-ui-state-machine-design.md` | 本次 UI 状态机的状态、门闩、幂等规则和验证边界 |
 | `docs/2026-10-21-npz-selection-plan.md` | 本地最终NPZ选择、独立来源绑定和事务式切换的实现计划 |

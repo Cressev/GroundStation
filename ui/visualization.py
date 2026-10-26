@@ -11,11 +11,12 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
+from pyqtgraph.graphicsItems.LegendItem import ItemSample
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
                              QLabel, QGroupBox, QGridLayout, QSizePolicy,
                              QPushButton, QRadioButton, QButtonGroup, QSpinBox,
                              QFileDialog, QMessageBox)
-from PyQt5.QtCore import QTimer, pyqtSignal, Qt
+from PyQt5.QtCore import QTimer, pyqtSignal, Qt, QRectF
 from PyQt5.QtGui import QFont
 import time
 
@@ -26,6 +27,28 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from communication.base import FishState
 from ui.system_status import SystemStatusWidget
 from config import PLOT_UPDATE_RATE, UI_CONFIG
+
+
+class CompactLegendSample(ItemSample):
+    """Small legend swatch retaining pyqtgraph's curve visibility interaction."""
+
+    def __init__(self, item):
+        """Reserve a compact fixed rectangle without changing the plotted curve."""
+        super().__init__(item)
+        self.setFixedWidth(16)
+        self.setFixedHeight(14)
+
+    def boundingRect(self):
+        """Keep painting and mouse picking inside the small legend entry."""
+        return QRectF(0, 0, 16, 14)
+
+    def paint(self, painter, *args):
+        """Scale only the sample, including its hidden-curve icon, not plot data."""
+        painter.save()
+        painter.scale(.8, .7)
+        super().paint(painter, *args)
+        painter.restore()
+
 
 class DataVisualizationWidget(QWidget):
     """数据可视化主组件"""
@@ -72,13 +95,11 @@ class DataVisualizationWidget(QWidget):
         tab_widget = QTabWidget()
         self.tab_widget = tab_widget
         
-        # XY平面图标签
-        xy_tab = self._create_xy_plot_tab()
-        tab_widget.addTab(xy_tab, "XY轨迹图")
-        
-        # 时间序列图标签
+        # 常用时间序列优先，XY轨迹保持为独立的第二页。
         time_series_tab = self._create_time_series_tab()
         tab_widget.addTab(time_series_tab, "时间序列")
+        xy_tab = self._create_xy_plot_tab()
+        tab_widget.addTab(xy_tab, "XY轨迹图")
         
         # 姿态显示标签
         attitude_tab = self._create_attitude_tab()
@@ -189,7 +210,9 @@ class DataVisualizationWidget(QWidget):
         self.z_plot.showGrid(x=True, y=True)
         
         # 添加图例（在创建曲线之前）
-        self.z_plot.addLegend()
+        self.z_plot.addLegend(offset=(6, 6), labelTextSize='8pt', horSpacing=3,
+                              verSpacing=0, sampleType=CompactLegendSample,
+                              brush=(0, 0, 0, 170))
         
         self.z_curve = self.z_plot.plot(pen=pg.mkPen(color=UI_CONFIG["plot_colors"]["z"], width=2), name='深度')
 
@@ -212,11 +235,24 @@ class DataVisualizationWidget(QWidget):
         self.rpy_plot.showGrid(x=True, y=True)
         
         # 添加图例（在创建曲线之前）
-        self.rpy_plot.addLegend()
+        self.rpy_plot.addLegend(offset=(6, 6), labelTextSize='8pt', horSpacing=3,
+                                verSpacing=0, sampleType=CompactLegendSample,
+                                brush=(0, 0, 0, 170))
         
         self.roll_curve = self.rpy_plot.plot(pen=pg.mkPen(color=UI_CONFIG["plot_colors"]["roll"], width=2), name='Roll')
         self.pitch_curve = self.rpy_plot.plot(pen=pg.mkPen(color=UI_CONFIG["plot_colors"]["pitch"], width=2), name='Pitch')
         self.yaw_curve = self.rpy_plot.plot(pen=pg.mkPen(color=UI_CONFIG["plot_colors"]["yaw"], width=2), name='Yaw')
+
+        for plot in (self.z_plot, self.rpy_plot):
+            legend = plot.plotItem.legend
+            legend.layout.setContentsMargins(3, 3, 3, 3)
+            for sample, label in legend.items:
+                label.item.document().setDocumentMargin(0)
+                label.updateMin()
+                label.setFixedWidth(label.minimumWidth())
+                label.setFixedHeight(label.minimumHeight())
+            legend.layout.activate()
+            legend.updateSize()
         
         # 底部状态栏显示当前姿态角
         self.rpy_status_label = QLabel("当前姿态: Roll: 0.000, Pitch: 0.000, Yaw: 0.000")

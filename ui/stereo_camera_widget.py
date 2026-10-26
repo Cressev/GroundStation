@@ -289,10 +289,16 @@ class StereoFishCameraWidget(QWidget):
         self.writer = None
         self.recording_path = None
         self._rec_count = 0
+        self._rec_started_at = None
+        self._rec_elapsed = 0.0
+        self._rec_status = '未录制'
         self._fps_count = 0
         self._fps_t0 = time.time()
         self._init_ui()
         self._init_connections()
+        self._record_stats_timer = QTimer(self)
+        self._record_stats_timer.setInterval(250)
+        self._record_stats_timer.timeout.connect(self._update_recording_stats)
         self._result_timer = QTimer(self)
         self._result_timer.timeout.connect(self._poll_local_result)
         self._result_timer.start(20)
@@ -320,8 +326,23 @@ class StereoFishCameraWidget(QWidget):
         self.disconnect_btn = QPushButton("断开")
         self.disconnect_btn.clicked.connect(self._disconnect)
         self.disconnect_btn.setEnabled(False)
-        self.record_btn = QPushButton("保存视频")
+        self.record_btn = QPushButton("开始录制")
         self.record_btn.setEnabled(False)
+        self.record_btn.setStyleSheet('''
+            QPushButton[recording="false"] {
+                background-color: #15803d; color: white; border: 1px solid #166534;
+                border-radius: 4px; padding: 5px 10px;
+            }
+            QPushButton[recording="false"]:hover { background-color: #166534; }
+            QPushButton[recording="true"] {
+                background-color: #b91c1c; color: white; border: 1px solid #991b1b;
+                border-radius: 4px; padding: 5px 10px;
+            }
+            QPushButton[recording="true"]:hover { background-color: #991b1b; }
+            QPushButton:disabled {
+                background-color: #e5e7eb; color: #6b7280; border: 1px solid #d1d5db;
+            }
+        ''')
         self.record_btn.setToolTip(
             "录制当前单目画面；停止后弹出对话框选择 mp4 保存位置")
         self.record_btn.clicked.connect(self._toggle_recording)
@@ -348,6 +369,13 @@ class StereoFishCameraWidget(QWidget):
             button.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
             action_layout.addWidget(button)
         action_layout.addStretch(1)
+        self.record_stats_label = QLabel('未录制 00:00:00 · 0帧')
+        self.record_stats_label.setAccessibleName('本次录制时长和帧数')
+        self.record_stats_label.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        self.record_stats_label.setToolTip(
+            '本次实际经过时间与送入编码器的单目帧数；停止后保留，下次开始清零。'
+            'MP4使用固定15FPS，播放时长可能不同；编码器无逐帧落盘回执。')
+        action_layout.addWidget(self.record_stats_label)
         self.action_scroll = QScrollArea()
         self.action_scroll.setWidget(self.action_bar)
         self.action_scroll.setWidgetResizable(True)
@@ -657,7 +685,12 @@ class StereoFishCameraWidget(QWidget):
         }
         self.cam_btn.setText(camera_text.get(
             self._camera_state, "开启摄像头"))
-        self.record_btn.setText("停止录制" if self.recording else "保存视频")
+        self.record_btn.setText("停止录制" if self.recording else "开始录制")
+        if self.record_btn.property('recording') is not self.recording:
+            self.record_btn.setProperty('recording', self.recording)
+            self.record_btn.style().unpolish(self.record_btn)
+            self.record_btn.style().polish(self.record_btn)
+            self.record_btn.update()
         self.board_rec_btn.setText(
             "停止板上录制" if self.board_rec_on else "板上高清录制")
         self.state_changed.emit()
@@ -764,21 +797,33 @@ class StereoFishCameraWidget(QWidget):
             self.writer = None  # 首帧到达时按实际尺寸创建
             self.recording = True
             self._rec_count = 0
-            self.range_state_label.setText("录制状态: 录制中…")
+            self._rec_started_at = time.monotonic()
+            self._rec_elapsed = 0.0
+            self._rec_status = '录制中'
+            self.record_stats_label.setToolTip(
+                '本次实际经过时间与送入编码器的单目帧数；MP4固定15FPS，播放时长可能不同。')
+            self._update_recording_stats()
+            self._record_stats_timer.start()
             self._apply_ui_state()
         else:
             self._stop_recording()
 
     def _stop_recording(self, prompt_for_path=True):
         """停止录制并弹出保存对话框（仅 mp4）；取消则存到默认位置。"""
+        if not self.recording:
+            return
         if self.writer is not None:
             self.writer.release()
             self.writer = None
-        self.recording = False
+        self._finish_recording_stats('已停止')
         self._apply_ui_state()
         temp_path = self.recording_path
         self.recording_path = None
         if not temp_path:
+            return
+        if self._rec_count == 0:
+            os.remove(temp_path)
+            self.record_stats_label.setToolTip('本次未写入视频帧，未生成空视频文件。')
             return
         default_name = f"stereo_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
         path = ""
@@ -791,27 +836,50 @@ class StereoFishCameraWidget(QWidget):
             path += ".mp4"
         os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
         shutil.move(temp_path, path)
-        self.range_state_label.setText(f"录制状态: 已保存 {os.path.basename(path)}")
+        self.record_stats_label.setToolTip(
+            f'已保存: {os.path.abspath(path)}\n本次实际经过时间与单目写帧数；MP4为固定15FPS。')
         if prompt_for_path:
             QMessageBox.information(self, "录制完成", f"视频已保存到:\n{path}")
 
+    def _update_recording_stats(self):
+        """Show monotonic wall duration separately from actual encoder write count."""
+        elapsed = self._rec_elapsed
+        if self.recording and self._rec_started_at is not None:
+            elapsed = max(0.0, time.monotonic()-self._rec_started_at)
+        hours, remainder = divmod(int(elapsed), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        self.record_stats_label.setText(
+            f'{self._rec_status} {hours:02d}:{minutes:02d}:{seconds:02d} · {self._rec_count}帧')
+
+    def _finish_recording_stats(self, status):
+        """Freeze one session on all stop paths, including encoder failures."""
+        if self._rec_started_at is not None:
+            self._rec_elapsed = max(0.0, time.monotonic()-self._rec_started_at)
+        self._rec_started_at = None
+        self.recording = False
+        self._rec_status = status
+        self._record_stats_timer.stop()
+        self._update_recording_stats()
+
     def _record_frame(self, frame):
-        """录制中则写入一帧（writer 在首帧按实际尺寸懒创建）。"""
+        """Count a submitted single-view frame only after its encoder write returns."""
         if not self.recording:
             return
-        if self.writer is None:
-            h, w = frame.shape[:2]
-            self.writer = cv2.VideoWriter(
-                self.recording_path, cv2.VideoWriter_fourcc(*"mp4v"),
-                15.0, (w, h))
-            if not self.writer.isOpened():
-                self.writer = None
-                self.recording = False
-                self.range_state_label.setText("录制状态: 编码器不可用")
-                self._apply_ui_state()
-                return
-        self.writer.write(frame)
-        self._rec_count += 1
+        try:
+            if self.writer is None:
+                h, w = frame.shape[:2]
+                self.writer = cv2.VideoWriter(
+                    self.recording_path, cv2.VideoWriter_fourcc(*"mp4v"),
+                    15.0, (w, h))
+                if not self.writer.isOpened():
+                    raise RuntimeError('编码器不可用')
+            self.writer.write(frame)
+            self._rec_count += 1
+        except Exception as exc:
+            self._stop_recording(prompt_for_path=False)
+            self._rec_status = '录制失败'
+            self._update_recording_stats()
+            self.record_stats_label.setToolTip('录制失败: '+str(exc))
 
     def _toggle_ranging(self):
         """仅切换本地算法；不发送RANGE_ON或任何板端测距命令。"""

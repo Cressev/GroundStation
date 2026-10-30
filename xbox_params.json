@@ -3,7 +3,7 @@
   "trigger_deadzone": 0.05,
   "normal_frequency": 1.5,
   "normal_amplitude": 0.2,
-  "boost_frequency": 2.0,
+  "boost_frequency": 2.5,
   "boost_amplitude": 0.35,
   "maximum_turn_bias": 0.3,
   "base_bias": 0.0,

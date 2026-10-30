@@ -531,7 +531,7 @@ class MainWindow(QMainWindow):
     def _init_controllers(self):
         """初始化控制器"""
         # 键盘控制器
-        self.controllers['keyboard'] = KeyboardController()
+        self.controllers['keyboard'] = KeyboardController(enable_kappa=self.variant == 'dual')
         if self.variant == "dual":
             self.controllers['depth'] = DepthAxisController()
             self.controllers['parallel_depth'] = ParallelDepthController()

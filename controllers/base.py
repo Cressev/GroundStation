@@ -10,6 +10,7 @@ from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 from PyQt5.QtWidgets import QWidget
 from typing import Dict, Any
 import json
+import math
 import time
 
 import sys
@@ -62,8 +63,9 @@ class ControllerBase(QObject):
 class KeyboardController(ControllerBase):
     """键盘控制器"""
     
-    def __init__(self):
+    def __init__(self, enable_kappa=True):
         super().__init__()
+        self._enable_kappa = bool(enable_kappa)
         self._key_states = {}
         self._control_widget = None
         self._update_timer = QTimer()
@@ -205,9 +207,13 @@ class KeyboardController(ControllerBase):
                  0.01, " rad")
         add_spin(7, "tail_phase_diff", "相位差", -6.282, 6.282,
                  0.1, " rad")
+        if self._enable_kappa:
+            add_spin(8, "tail_kappa", "去程占比 κ", 0.1, 0.9, 0.01, "")
+            self._param_inputs["tail_kappa"].setToolTip(
+                "最小角度到最大角度占完整周期的比例；0.5对称，低于0.5去程快、回程慢。")
 
         # 胸鳍脉宽直接设定：与 Q/E 增量调节共用同一个状态。
-        input_layout.addWidget(QLabel("胸鳍脉宽"), 8, 0)
+        input_layout.addWidget(QLabel("胸鳍脉宽"), 9, 0)
         pec_layout = QHBoxLayout()
         self._pec_pulse_input = NoWheelSpinBox()
         self._pec_pulse_input.setRange(
@@ -223,7 +229,7 @@ class KeyboardController(ControllerBase):
         set_pec_button.clicked.connect(self._set_pec_from_widget)
         pec_layout.addWidget(self._pec_pulse_input)
         pec_layout.addWidget(set_pec_button)
-        input_layout.addLayout(pec_layout, 8, 1)
+        input_layout.addLayout(pec_layout, 9, 1)
 
         button_layout = QHBoxLayout()
         apply_button = QPushButton("应用参数")
@@ -232,7 +238,7 @@ class KeyboardController(ControllerBase):
         stop_button.clicked.connect(self.stop_motion)
         button_layout.addWidget(apply_button)
         button_layout.addWidget(stop_button)
-        input_layout.addLayout(button_layout, 9, 0, 1, 2)
+        input_layout.addLayout(button_layout, 10, 0, 1, 2)
 
         layout.addWidget(input_group)
         
@@ -245,6 +251,7 @@ class KeyboardController(ControllerBase):
         self._amp_label = QLabel(f"摆尾幅度: {self._current_command.tail_amplitude:.2f} rad")
         self._offset_label = QLabel(f"偏移角度: {self._current_command.tail_offset:.2f} rad")
         self._pec_label = QLabel(f"胸鳍脉宽: {self._pec_angle} μs")
+        self._kappa_label = QLabel("去程占比 κ: 0.500（停止）")
         self._param_label = QLabel(self._format_parameter_summary())
         self._param_label.setWordWrap(True)
         
@@ -253,6 +260,8 @@ class KeyboardController(ControllerBase):
         params_layout.addWidget(self._amp_label)
         params_layout.addWidget(self._offset_label)
         params_layout.addWidget(self._pec_label)
+        if self._enable_kappa:
+            params_layout.addWidget(self._kappa_label)
         params_layout.addWidget(self._param_label)
         
         layout.addWidget(params_group)
@@ -287,10 +296,12 @@ class KeyboardController(ControllerBase):
 
     def set_keyboard_parameters(self, base_bias, slow_frequency, slow_amplitude,
                                 slow_turn_bias, fast_frequency, fast_amplitude,
-                                fast_turn_bias, tail_phase_diff=1.57):
+                                fast_turn_bias, tail_phase_diff=1.57, tail_kappa=0.5):
         """应用键盘开环控制参数，所有输入在控制器层再次限幅。"""
         # 转向量以基础偏置为中心, 单侧范围受tail_offset.max限制
         turn_max = CONTROL_LIMITS["tail_offset"]["max"]
+        tail_kappa = float(tail_kappa)
+        tail_kappa = self._clamp(tail_kappa, 0.1, 0.9) if math.isfinite(tail_kappa) else 0.5
         self._keyboard_params = {
             "base_bias": self._clamp_offset(base_bias),
             "slow_frequency": self._clamp_frequency(slow_frequency),
@@ -300,6 +311,7 @@ class KeyboardController(ControllerBase):
             "fast_amplitude": self._clamp_amplitude(fast_amplitude),
             "fast_turn_bias": self._clamp(fast_turn_bias, 0.0, turn_max),
             "tail_phase_diff": self._clamp(tail_phase_diff, -6.282, 6.282),
+            "tail_kappa": tail_kappa,
         }
         if hasattr(self, "_param_label"):
             self._param_label.setText(self._format_parameter_summary())
@@ -317,6 +329,8 @@ class KeyboardController(ControllerBase):
             fast_amplitude=self._param_inputs["fast_amplitude"].value(),
             fast_turn_bias=self._param_inputs["fast_turn_bias"].value(),
             tail_phase_diff=self._param_inputs["tail_phase_diff"].value(),
+            tail_kappa=(self._param_inputs["tail_kappa"].value() if self._enable_kappa
+                        else self._keyboard_params["tail_kappa"]),
         )
         self._save_parameters()
         self._last_sent_command = None
@@ -364,6 +378,7 @@ class KeyboardController(ControllerBase):
             f"base={p['base_bias']:.3f}, "
             f"慢速 f={p['slow_frequency']:.2f} A={p['slow_amplitude']:.3f} turn={p['slow_turn_bias']:.3f}, "
             f"快速 f={p['fast_frequency']:.2f} A={p['fast_amplitude']:.3f} turn={p['fast_turn_bias']:.3f}"
+            + (f", κ={p['tail_kappa']:.3f}" if self._enable_kappa else "")
         )
 
     def get_base_bias(self):
@@ -453,6 +468,7 @@ class KeyboardController(ControllerBase):
         p = self._keyboard_params
         motion_label_text = "停止"
         self._current_command.tail_phase_diff = p.get("tail_phase_diff", 1.57)
+        self._current_command.tail_kappa = p.get("tail_kappa", 0.5) if self._enable_kappa else 0.5
         
         if self._motion_state == "stop":
             self._current_command.tail_frequency = 0.0
@@ -508,6 +524,11 @@ class KeyboardController(ControllerBase):
             self._amp_label.setText(f"摆尾幅度: {self._current_command.tail_amplitude:.2f} rad")
             self._offset_label.setText(f"偏移角度: {self._current_command.tail_offset:.2f} rad")
             self._pec_label.setText(f"胸鳍脉宽: {self._pec_angle} μs")
+            freq = self._current_command.tail_frequency
+            kappa = self._current_command.tail_kappa
+            timing = (f"去程 {kappa/freq:.3f} s / 回程 {(1-kappa)/freq:.3f} s"
+                      if freq > 0 else "停止")
+            self._kappa_label.setText(f"去程占比 κ: {kappa:.3f}（{timing}）")
         if (pec_adjusted_by_key and hasattr(self, '_pec_pulse_input') and
                 self._pec_pulse_input.value() != self._pec_angle):
             self._pec_pulse_input.setValue(self._pec_angle)
@@ -517,6 +538,8 @@ class KeyboardController(ControllerBase):
             round(self._current_command.tail_frequency, 2),
             round(self._current_command.tail_amplitude, 2), 
             round(self._current_command.tail_offset, 2),
+            round(self._current_command.tail_phase_diff, 3),
+            round(self._current_command.tail_kappa, 3),
             self._pec_angle
         )
         

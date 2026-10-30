@@ -35,6 +35,7 @@ class ControlCommand:
     tail_frequency: float  # 摆尾频率 (Hz)
     tail_amplitude: float  # 摆尾幅度 (rad)
     tail_offset: float     # 摆尾偏移角 (rad)
+    tail_kappa: float      # 最小角度到最大角度占完整周期的比例
     timestamp: float
     
     def __init__(self, freq=1.0, amp=0.5, offset=0.0):
@@ -42,6 +43,7 @@ class ControlCommand:
         self.tail_amplitude = amp
         self.tail_offset = offset
         self.tail_phase_diff = 1.57  # 双关节相位差 rad（90°=历史默认步态）
+        self.tail_kappa = 0.5
         self.timestamp = time.time()
 
 class FishCommunicationInterface(ABC):

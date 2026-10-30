@@ -1,5 +1,13 @@
 ﻿# 机器鱼地面站 GroundStation（PyQt5）
 
+## 2026-10-28 快摆慢回 κ
+
+双尾键盘与Xbox新增“去程占比 κ”，默认0.5，范围0.1—0.9，步进0.01，两个尾关节共用；只改κ也会发送，应用后保存。κ=0.5对称，低于0.5去程快、回程慢，高于0.5相反，不需要切模式。键盘实时区显示κ/f及(1−κ)/f秒；原有其他参数与保存文件保留。单尾隐藏κ。重开旧窗口才能加载新代码。
+
+改动文件：config.py定义默认值；communication/base.py定义tail_kappa；communication/socket_client.py发送JSON；controllers/base.py管理键盘输入和保存；controllers/xbox.py管理Xbox；controllers/coordinator.py在独立深度控制时保留κ；ui/main_window.py按鱼型开关输入；data/recorder.py导出control_kappa。新增tests/test_tail_kappa.py覆盖本功能，ref/verify_tail_kappa.py以假通信和假手柄截取真实Windows面板。
+
+Pico与STM32已同步更新，104项相关回归、消息与串口转换、五组真实CCR、驱动断心跳和GUI断线保护通过。机械和水中效果待测。[完整操作与报告](../../docs/test-reports/stm32/kappa_20261028_2043/report.md)。
+
 双版本机器鱼地面站：启动时选择鱼体版本，按版本加载对应的视频、通信与控制页面。
 
 数据可视化页顺序改为“时间序列 → XY轨迹图 → 姿态显示 → 系统状态”，默认进入时间序列。深度和姿态角图例采用8pt、小线段和紧凑间距，锚定各自绘图区左上角；全部名称/颜色及点击图例切换曲线显隐保留，不改数据、时间模式、导出或XY图例。[验证说明](docs/2026-10-26-time-series-legends.md)。

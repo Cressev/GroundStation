@@ -130,6 +130,7 @@ class SocketCommunication(FishCommunicationInterface):
                 'tail_amplitude': command.tail_amplitude,
                 'tail_offset': command.tail_offset,
                 'tail_phase_diff': getattr(command, 'tail_phase_diff', 1.57),
+                'tail_kappa': getattr(command, 'tail_kappa', 0.5),
                 'pec_angle': getattr(command, 'pec_angle', 1500),
                 'timestamp': command.timestamp
             }

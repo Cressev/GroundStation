@@ -603,6 +603,8 @@ class XboxController(ControllerBase):
         result["tail_phase_diff"] = max(
             -6.282, min(float(result["tail_phase_diff"]), 6.282)
         )
+        kappa = float(result.get("tail_kappa", 0.5))
+        result["tail_kappa"] = max(0.1, min(kappa, 0.9)) if math.isfinite(kappa) else 0.5
         result["ramp_cycles"] = 2.0
         for key in ("pec_minimum_pwm", "pec_neutral_pwm", "pec_maximum_pwm"):
             result[key] = int(
@@ -695,6 +697,9 @@ class XboxController(ControllerBase):
         add_integer(10, "pec_maximum_pwm", "胸鳍最大值", 500, 2500, 10, " μs")
         add_double(11, "pec_normal_rate", "胸鳍普通速度", 1.0, 2000.0, 10.0, " μs/s", 1)
         add_double(12, "pec_fast_rate", "胸鳍 RT 速度", 1.0, 4000.0, 10.0, " μs/s", 1)
+        add_double(13, "tail_kappa", "去程占比 κ", 0.1, 0.9, 0.01, "")
+        self._parameter_inputs["tail_kappa"].setToolTip(
+            "0.5对称；低于0.5去程快、回程慢。两个尾关节共用。")
 
         button_row = QHBoxLayout()
         apply_button = QPushButton("应用并保存")
@@ -704,7 +709,7 @@ class XboxController(ControllerBase):
         center_button.clicked.connect(self._center_pectoral)
         button_row.addWidget(apply_button)
         button_row.addWidget(center_button)
-        parameter_layout.addLayout(button_row, 13, 0, 1, 2)
+        parameter_layout.addLayout(button_row, 14, 0, 1, 2)
         layout.addWidget(parameter_group)
 
         status_group = QGroupBox("实时状态")
@@ -881,6 +886,7 @@ class XboxController(ControllerBase):
             round(output.tail_amplitude, 4),
             round(output.tail_offset, 4),
             round(output.tail_phase_diff, 4),
+            round(self._parameters["tail_kappa"], 3),
             int(output.pec_pwm),
         )
         if not force and command_key == self._last_sent_command:
@@ -892,6 +898,7 @@ class XboxController(ControllerBase):
             offset=output.tail_offset,
         )
         command.tail_phase_diff = output.tail_phase_diff
+        command.tail_kappa = self._parameters["tail_kappa"]
         command.pec_angle = output.pec_pwm
         command.timestamp = time.time()
         self._current_command = command

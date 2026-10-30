@@ -26,6 +26,7 @@ class ControlCoordinator(QObject):
         self._heading_snapshot = None
         self._safe_offset = 0.0
         self._safe_phase = 1.57
+        self._safe_kappa = 0.5
         self._manual_pwm = self._depth_pwm = self.last_pwm = 1500
         for name, controller in self.headings.items():
             controller.control_command_generated.connect(
@@ -154,9 +155,10 @@ class ControlCoordinator(QObject):
         """Keep only the selected live source's copied tail snapshot, ignoring stale signals."""
         if not self.connected or not self.heading_enabled or source != self.heading_name:
             return
-        fields = ('tail_frequency', 'tail_amplitude', 'tail_offset', 'tail_phase_diff')
+        fields = ('tail_frequency', 'tail_amplitude', 'tail_offset', 'tail_phase_diff', 'tail_kappa')
         try:
             valid = all(math.isfinite(float(getattr(command, name, 1.57))) for name in fields)
+            valid = valid and 0.1 <= float(getattr(command, 'tail_kappa', 0.5)) <= 0.9
             manual_pwm = float(getattr(command, 'pec_angle', self.heading._pec_angle))
             valid = valid and math.isfinite(manual_pwm)
         except (TypeError, ValueError):
@@ -166,6 +168,7 @@ class ControlCoordinator(QObject):
             return
         self._heading_snapshot = deepcopy(command)
         self._safe_phase = getattr(command, 'tail_phase_diff', 1.57)
+        self._safe_kappa = getattr(command, 'tail_kappa', 0.5)
         if not self.depth_enabled:
             self._manual_pwm = max(500, min(2500, int(round(manual_pwm))))
         self._publish()
@@ -205,9 +208,10 @@ class ControlCoordinator(QObject):
         source = self._heading_snapshot if self.heading_enabled else None
         command = ControlCommand(freq=0.0, amp=0.0, offset=self._safe_offset)
         command.tail_phase_diff = self._safe_phase
+        command.tail_kappa = self._safe_kappa
         if source is not None:
-            for key in ('tail_frequency', 'tail_amplitude', 'tail_offset', 'tail_phase_diff'):
-                setattr(command, key, getattr(source, key, self._safe_phase))
+            for key in ('tail_frequency', 'tail_amplitude', 'tail_offset', 'tail_phase_diff', 'tail_kappa'):
+                setattr(command, key, getattr(source, key, getattr(command, key)))
         command.pec_angle = self._depth_pwm if self.depth_enabled else self._manual_pwm
         command.timestamp = time.time()
         self.last_pwm = command.pec_angle

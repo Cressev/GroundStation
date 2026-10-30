@@ -61,6 +61,7 @@ KEYBOARD_CONTROL_DEFAULTS = {
     "fast_amplitude": 0.5,
     "fast_turn_bias": 0.5,
     "tail_phase_diff": 1.57,
+    "tail_kappa": 0.5,
 }
 
 # Xbox 开环控制默认参数。前半圆负责方向、后半圆保持进入前状态，LT 在普通档与加速档之间连续插值。
@@ -74,6 +75,7 @@ XBOX_CONTROL_DEFAULTS = {
     "maximum_turn_bias": 0.5,
     "base_bias": 0.0,
     "tail_phase_diff": 1.57,
+    "tail_kappa": 0.5,
     "ramp_cycles": 2.0,
     "pec_minimum_pwm": 500,
     "pec_neutral_pwm": 1500,

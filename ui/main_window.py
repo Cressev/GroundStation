@@ -169,7 +169,14 @@ class MainWindow(QMainWindow):
             mock_video_path = os.environ.get("GROUNDSTATION_MOCK_VIDEO", "")
             self.enhancement_widget = ImageEnhancementWidget(
                 mock_video_path=mock_video_path or None)
-            center_tabs.addTab(self.enhancement_widget, "图像增强对比")
+            # Hidden QTabWidget pages also contribute minimum sizes. Keep the
+            # comparison controls reachable without enlarging unrelated tabs.
+            self.enhancement_scroll = QScrollArea()
+            self.enhancement_scroll.setObjectName('enhancementPageScroll')
+            self.enhancement_scroll.setFrameShape(QScrollArea.NoFrame)
+            self.enhancement_scroll.setWidgetResizable(True)
+            self.enhancement_scroll.setWidget(self.enhancement_widget)
+            center_tabs.addTab(self.enhancement_scroll, "图像增强对比")
             # 复用现有 9998 视频连接，禁止为了增强页面再建立第二条视频流。
             self.video_widget.single_frame_ready.connect(
                 self.enhancement_widget.push_live_frame, Qt.QueuedConnection)
@@ -177,7 +184,7 @@ class MainWindow(QMainWindow):
                 self.enhancement_widget.set_live_connection_status,
                 Qt.QueuedConnection)
             if mock_video_path:
-                center_tabs.setCurrentWidget(self.enhancement_widget)
+                center_tabs.setCurrentWidget(self.enhancement_scroll)
         else:
             self.video_widget = VideoMonitorWidget()
             center_tabs.addTab(self.video_widget, "视频监控")
@@ -208,9 +215,19 @@ class MainWindow(QMainWindow):
         rail_layout.addWidget(self.right_sidebar_toggle)
         rail_layout.addStretch()
         sidebar_layout.addWidget(rail)
+        # A sidebar must scroll, not impose every tab's minimum height on the
+        # entire window (including currently hidden pages and wrapped labels).
+        self.right_sidebar_scroll = QScrollArea()
+        self.right_sidebar_scroll.setObjectName('rightSidebarScroll')
+        self.right_sidebar_scroll.setWidgetResizable(True)
+        self.right_sidebar_scroll.setFrameShape(QScrollArea.NoFrame)
+        self.right_sidebar_scroll.setMinimumSize(0, 0)
+        self.right_sidebar_scroll.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        sidebar_layout.addWidget(self.right_sidebar_scroll, 1)
         self.right_sidebar_content = QWidget()
-        self.right_sidebar_content.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
-        sidebar_layout.addWidget(self.right_sidebar_content, 1)
+        self.right_sidebar_content.setMinimumWidth(250)
+        self.right_sidebar_content.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        self.right_sidebar_scroll.setWidget(self.right_sidebar_content)
         right_layout = QVBoxLayout(self.right_sidebar_content)
         right_layout.setContentsMargins(2, 2, 2, 2)
         right_panel.setMinimumWidth(170)   # 可拖窄到此为止，内容自适应
@@ -238,7 +255,7 @@ class MainWindow(QMainWindow):
         info_layout.addWidget(self.info_text)
         right_layout.addWidget(self.system_info_group)
         # 拖窄时内容自适应面板宽度，而不是被 sizeHint 顶住
-        self.right_tabs.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.right_tabs.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         self.main_splitter.addWidget(right_panel)
         self.main_splitter.setCollapsible(2, False)
 
@@ -524,7 +541,7 @@ class MainWindow(QMainWindow):
         self.axis_control_scroll = QScrollArea()
         self.axis_control_scroll.setWidgetResizable(True)
         self.axis_control_scroll.setWidget(content)
-        self.axis_control_scroll.setMinimumHeight(230)
+        self.axis_control_scroll.setMinimumHeight(120)
         self.axis_control_scroll.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         layout.addWidget(self.axis_control_scroll, 1)
     
@@ -833,11 +850,13 @@ class MainWindow(QMainWindow):
             self._right_sidebar_expanded_width = max(170, sizes[2])
             right = self._right_sidebar_rail_width
             self.right_sidebar_content.hide()
+            self.right_sidebar_scroll.hide()
             self.right_panel.setFixedWidth(right)
         else:
             self.right_panel.setMaximumWidth(16777215)
             self.right_panel.setMinimumWidth(170)
             self.right_sidebar_content.show()
+            self.right_sidebar_scroll.show()
             right = max(170, min(self._right_sidebar_expanded_width,
                                  max(170, total - sizes[0] - 320)))
         self._right_sidebar_collapsed = collapsed

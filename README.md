@@ -2,6 +2,10 @@
 
 ## 2026-10-28 快摆慢回 κ
 
+2026-10-30连接后底部裁切已修复：右侧整体可滚动，深度按钮与状态上下分行，原始/滤波/融合值各占一行；隐藏图像增强页不再撑高主窗口，时间序列双图有独立滚动、保存目标不变。左侧控制滚动区可随短窗口收缩，“全部停止”仍固定可见。原宽度记忆、右栏收放、控制/通信和零点不变。**先停止控制并保存数据，再重开地面站加载新代码，不用重启Pico。** [使用说明](docs/2026-10-30-connected-layout.md)。
+
+本次代码：ui/main_window.py负责右栏/增强页滚动与收放，ui/depth_panel.py负责窄栏状态和数值排布，ui/visualization.py负责完整双图画布滚动。新增tests/test_connected_layout.py覆盖7项连接态布局/滚动/收放检查，ref/verify_connected_layout.py用真实Windows Qt、临时设置和假反馈/假手柄生成多尺寸截图及几何JSON，可加载内存中的备份源文件作同DPI对照，不覆盖用户文件。
+
 双尾键盘与Xbox新增“去程占比 κ”，默认0.5，范围0.1—0.9，步进0.01，两个尾关节共用；只改κ也会发送，应用后保存。κ=0.5对称，低于0.5去程快、回程慢，高于0.5相反，不需要切模式。键盘实时区显示κ/f及(1−κ)/f秒；原有其他参数与保存文件保留。单尾隐藏κ。重开旧窗口才能加载新代码。
 
 改动文件：config.py定义默认值；communication/base.py定义tail_kappa；communication/socket_client.py发送JSON；controllers/base.py管理键盘输入和保存；controllers/xbox.py管理Xbox；controllers/coordinator.py在独立深度控制时保留κ；ui/main_window.py按鱼型开关输入；data/recorder.py导出control_kappa。新增tests/test_tail_kappa.py覆盖本功能，ref/verify_tail_kappa.py以假通信和假手柄截取真实Windows面板。

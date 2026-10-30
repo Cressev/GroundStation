@@ -15,7 +15,7 @@ from pyqtgraph.graphicsItems.LegendItem import ItemSample
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
                              QLabel, QGroupBox, QGridLayout, QSizePolicy,
                              QPushButton, QRadioButton, QButtonGroup, QSpinBox,
-                             QFileDialog, QMessageBox)
+                             QFileDialog, QMessageBox, QScrollArea)
 from PyQt5.QtCore import QTimer, pyqtSignal, Qt, QRectF
 from PyQt5.QtGui import QFont
 import time
@@ -262,13 +262,22 @@ class DataVisualizationWidget(QWidget):
         # 不把上方功能按钮一起截入 PNG。
         self.time_series_canvas = QWidget()
         self.time_series_canvas.setObjectName("timeSeriesCanvas")
+        self.time_series_canvas.setMinimumHeight(400)
         canvas_layout = QVBoxLayout(self.time_series_canvas)
         canvas_layout.setContentsMargins(0, 0, 0, 0)
-        canvas_layout.addWidget(self.z_plot)
+        self.z_plot.setMinimumHeight(150)
+        self.rpy_plot.setMinimumHeight(150)
+        canvas_layout.addWidget(self.z_plot, 1)
         canvas_layout.addWidget(self.z_status_label)
-        canvas_layout.addWidget(self.rpy_plot)
+        canvas_layout.addWidget(self.rpy_plot, 1)
         canvas_layout.addWidget(self.rpy_status_label)
-        layout.addWidget(self.time_series_canvas)
+        self.time_series_scroll = QScrollArea()
+        self.time_series_scroll.setObjectName('timeSeriesScroll')
+        self.time_series_scroll.setFrameShape(QScrollArea.NoFrame)
+        self.time_series_scroll.setWidgetResizable(True)
+        self.time_series_scroll.setWidget(self.time_series_canvas)
+        self.time_series_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        layout.addWidget(self.time_series_scroll, 1)
 
         # 两张图的时间轴始终同步；用户在任一图上缩放/拖动后，
         # “保存数据”就能使用唯一、明确的当前时间范围。

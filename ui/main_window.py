@@ -26,6 +26,7 @@ from ui.keyboard_status import KeyboardStatusWidget
 from ui.video_display import VideoMonitorWidget
 from ui.stereo_camera_widget import StereoFishCameraWidget
 from ui.image_enhancement_widget import ImageEnhancementWidget
+from ui.top_camera_tracking import TopCameraTrackingWidget
 from ui.depth_panel import DepthPanel
 from ui.connection_store import ConnectionStore
 from ui.heartbeat_light import HeartbeatLight
@@ -166,6 +167,8 @@ class MainWindow(QMainWindow):
         if self.variant == "dual":
             self.video_widget = StereoFishCameraWidget()
             center_tabs.addTab(self.video_widget, "双目测距（本地）")
+            self.top_camera_widget = TopCameraTrackingWidget()
+            center_tabs.addTab(self.top_camera_widget, "顶部相机跟踪")
             mock_video_path = os.environ.get("GROUNDSTATION_MOCK_VIDEO", "")
             self.enhancement_widget = ImageEnhancementWidget(
                 mock_video_path=mock_video_path or None)
@@ -1578,6 +1581,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """窗口关闭事件"""
         self._save_splitter_sizes()
+        if hasattr(self, 'top_camera_widget'):
+            self.top_camera_widget.shutdown()
         self.system_status_widget.status_timer.stop()
         self._stop_all_controls(send_stop=True)
         # 停用控制器

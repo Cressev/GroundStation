@@ -67,6 +67,7 @@ class KeyboardController(ControllerBase):
         super().__init__()
         self._enable_kappa = bool(enable_kappa)
         self._key_states = {}
+        self._experiment = None
         self._control_widget = None
         self._update_timer = QTimer()
         self._update_timer.timeout.connect(self._update_control)
@@ -100,6 +101,7 @@ class KeyboardController(ControllerBase):
     def deactivate(self) -> bool:
         """停用键盘控制"""
         try:
+            self._experiment = None
             self._active = False
             self._update_timer.stop()
             self._key_states.clear()
@@ -120,7 +122,7 @@ class KeyboardController(ControllerBase):
         """创建键盘控制界面"""
         from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, 
                                      QLabel, QGroupBox, QGridLayout,
-                                     QPushButton,
+                                     QPushButton, QComboBox,
                                      QSizePolicy)
         from ui.numeric_inputs import NoWheelDoubleSpinBox, NoWheelSpinBox
         from PyQt5.QtCore import Qt
@@ -212,8 +214,20 @@ class KeyboardController(ControllerBase):
             self._param_inputs["tail_kappa"].setToolTip(
                 "最小角度到最大角度占完整周期的比例；0.5对称，低于0.5去程快、回程慢。")
 
+        if self._enable_kappa:
+            input_layout.addWidget(QLabel("转弯模式"), 9, 0)
+            self._turn_mode_input = QComboBox()
+            for label, value in (("仅偏置", "bias"), ("仅 κ", "kappa"),
+                                 ("偏置 + κ", "combined")):
+                self._turn_mode_input.addItem(label, value)
+            self._turn_mode_input.setCurrentIndex(
+                self._turn_mode_input.findData(self._keyboard_params["turn_mode"]))
+            self._turn_mode_input.setToolTip(
+                "基础偏置始终保留；左转使用设定 κ，右转使用 1−κ。前进为 κ=0.5。")
+            input_layout.addWidget(self._turn_mode_input, 9, 1)
+
         # 胸鳍脉宽直接设定：与 Q/E 增量调节共用同一个状态。
-        input_layout.addWidget(QLabel("胸鳍脉宽"), 9, 0)
+        input_layout.addWidget(QLabel("胸鳍脉宽"), 10, 0)
         pec_layout = QHBoxLayout()
         self._pec_pulse_input = NoWheelSpinBox()
         self._pec_pulse_input.setRange(
@@ -229,7 +243,7 @@ class KeyboardController(ControllerBase):
         set_pec_button.clicked.connect(self._set_pec_from_widget)
         pec_layout.addWidget(self._pec_pulse_input)
         pec_layout.addWidget(set_pec_button)
-        input_layout.addLayout(pec_layout, 9, 1)
+        input_layout.addLayout(pec_layout, 10, 1)
 
         button_layout = QHBoxLayout()
         apply_button = QPushButton("应用参数")
@@ -238,9 +252,45 @@ class KeyboardController(ControllerBase):
         stop_button.clicked.connect(self.stop_motion)
         button_layout.addWidget(apply_button)
         button_layout.addWidget(stop_button)
-        input_layout.addLayout(button_layout, 10, 0, 1, 2)
+        input_layout.addLayout(button_layout, 11, 0, 1, 2)
 
         layout.addWidget(input_group)
+
+        experiment_group = QGroupBox("自动转弯实验")
+        experiment_layout = QGridLayout(experiment_group)
+        self._experiment_speed = QComboBox()
+        self._experiment_speed.addItem("慢速", "slow")
+        self._experiment_speed.addItem("快速", "fast")
+        self._experiment_kind = QComboBox()
+        self._experiment_kind.addItem("仅偏置", "bias")
+        if self._enable_kappa:
+            self._experiment_kind.addItem("仅 κ（直接使用所设值）", "kappa")
+        self._experiment_direction = QComboBox()
+        self._experiment_direction.addItem("负偏置", -1)
+        self._experiment_direction.addItem("正偏置", 1)
+        self._experiment_straight = NoWheelDoubleSpinBox()
+        self._experiment_straight.setRange(0.1, 300.0)
+        self._experiment_straight.setValue(5.0)
+        self._experiment_straight.setSuffix(" s")
+        self._experiment_turn = NoWheelDoubleSpinBox()
+        self._experiment_turn.setRange(0.1, 300.0)
+        self._experiment_turn.setValue(5.0)
+        self._experiment_turn.setSuffix(" s")
+        for row, (label, control) in enumerate((("速度", self._experiment_speed),
+                ("实验类型", self._experiment_kind), ("偏置方向", self._experiment_direction),
+                ("直游时长", self._experiment_straight), ("转弯时长", self._experiment_turn))):
+            experiment_layout.addWidget(QLabel(label), row, 0)
+            experiment_layout.addWidget(control, row, 1)
+        start_experiment = QPushButton("开始自动实验")
+        start_experiment.clicked.connect(self._start_experiment_from_widget)
+        stop_experiment = QPushButton("停止实验")
+        stop_experiment.clicked.connect(self.stop_motion)
+        experiment_layout.addWidget(start_experiment, 5, 0)
+        experiment_layout.addWidget(stop_experiment, 5, 1)
+        self._experiment_label = QLabel("实验状态：未运行")
+        self._experiment_label.setWordWrap(True)
+        experiment_layout.addWidget(self._experiment_label, 6, 0, 1, 2)
+        layout.addWidget(experiment_group)
         
         # 当前参数显示
         params_group = QGroupBox("当前控制参数")
@@ -296,7 +346,8 @@ class KeyboardController(ControllerBase):
 
     def set_keyboard_parameters(self, base_bias, slow_frequency, slow_amplitude,
                                 slow_turn_bias, fast_frequency, fast_amplitude,
-                                fast_turn_bias, tail_phase_diff=1.57, tail_kappa=0.5):
+                                fast_turn_bias, tail_phase_diff=1.57, tail_kappa=0.5,
+                                turn_mode="combined"):
         """应用键盘开环控制参数，所有输入在控制器层再次限幅。"""
         # 转向量以基础偏置为中心, 单侧范围受tail_offset.max限制
         turn_max = CONTROL_LIMITS["tail_offset"]["max"]
@@ -312,6 +363,7 @@ class KeyboardController(ControllerBase):
             "fast_turn_bias": self._clamp(fast_turn_bias, 0.0, turn_max),
             "tail_phase_diff": self._clamp(tail_phase_diff, -6.282, 6.282),
             "tail_kappa": tail_kappa,
+            "turn_mode": turn_mode if turn_mode in ("bias", "kappa", "combined") else "combined",
         }
         if hasattr(self, "_param_label"):
             self._param_label.setText(self._format_parameter_summary())
@@ -331,6 +383,8 @@ class KeyboardController(ControllerBase):
             tail_phase_diff=self._param_inputs["tail_phase_diff"].value(),
             tail_kappa=(self._param_inputs["tail_kappa"].value() if self._enable_kappa
                         else self._keyboard_params["tail_kappa"]),
+            turn_mode=(self._turn_mode_input.currentData() if self._enable_kappa
+                       else self._keyboard_params["turn_mode"]),
         )
         self._save_parameters()
         self._last_sent_command = None
@@ -378,7 +432,8 @@ class KeyboardController(ControllerBase):
             f"base={p['base_bias']:.3f}, "
             f"慢速 f={p['slow_frequency']:.2f} A={p['slow_amplitude']:.3f} turn={p['slow_turn_bias']:.3f}, "
             f"快速 f={p['fast_frequency']:.2f} A={p['fast_amplitude']:.3f} turn={p['fast_turn_bias']:.3f}"
-            + (f", κ={p['tail_kappa']:.3f}" if self._enable_kappa else "")
+            + (f", κ={p['tail_kappa']:.3f}, 模式="
+               f"{dict(bias='仅偏置', kappa='仅 κ', combined='偏置 + κ')[p['turn_mode']]}" if self._enable_kappa else "")
         )
 
     def get_base_bias(self):
@@ -387,12 +442,13 @@ class KeyboardController(ControllerBase):
     def _load_saved_parameters(self):
         """从keyboard_params.json加载上次保存的控制参数, 首次启动用默认值"""
         params = dict(KEYBOARD_CONTROL_DEFAULTS)
+        params["turn_mode"] = "combined"
         try:
             with open(PARAMS_FILE, "r", encoding="utf-8") as f:
                 saved = json.load(f)
             for k in params:
                 if k in saved:
-                    params[k] = float(saved[k])
+                    params[k] = saved[k] if k == "turn_mode" else float(saved[k])
         except (FileNotFoundError, json.JSONDecodeError, ValueError):
             pass  # 文件不存在或损坏时使用默认参数
         return params
@@ -405,7 +461,28 @@ class KeyboardController(ControllerBase):
         except OSError as e:
             self.status_changed.emit(f"控制参数保存失败: {e}")
 
+    def _start_experiment_from_widget(self):
+        if not self._active:
+            self.status_changed.emit("请先连接机器鱼并启动键盘航向控制")
+            return
+        params = dict(self._keyboard_params)
+        speed = self._experiment_speed.currentData()
+        if params[speed + "_frequency"] <= 0 or params[speed + "_amplitude"] <= 0:
+            self.status_changed.emit("实验频率和幅度必须大于零，请先应用参数")
+            return
+        self._experiment = dict(params=params, speed=speed,
+            kind=self._experiment_kind.currentData(), direction=self._experiment_direction.currentData(),
+            straight=self._experiment_straight.value(), turn=self._experiment_turn.value(),
+            started=time.monotonic(), stage="straight")
+        self._motion_state = speed + "_forward"
+        self._last_sent_command = None
+        self.status_changed.emit(f"自动实验开始：直游，地面站时间 {time.time():.3f}")
+        self._update_control()
+
     def stop_motion(self):
+        self._experiment = None
+        if hasattr(self, "_experiment_label"):
+            self._experiment_label.setText("实验状态：已停止")
         self._motion_state = "stop"
         self._last_sent_command = None
         self._update_control()
@@ -415,6 +492,12 @@ class KeyboardController(ControllerBase):
         方向键用大小写区分快慢: 小写w/a/d=慢速, 大写W/A/D(Shift或大写锁产生)=快速
         """
         self._key_states[key] = True
+        if key in ("w", "a", "d", "W", "A", "D", "Shift+W", "Shift+A", "Shift+D", "s", "S", "Space"):
+            if self._experiment is not None:
+                self._experiment = None
+                if hasattr(self, "_experiment_label"):
+                    self._experiment_label.setText("实验状态：键盘接管")
+                self.status_changed.emit("自动实验已由键盘接管")
 
         # 方向控制 - 按一次切换状态并保持
         if key == "w":
@@ -460,15 +543,33 @@ class KeyboardController(ControllerBase):
         if not self._active:
             return
 
+        experiment = self._experiment
+        if experiment is not None:
+            elapsed = time.monotonic() - experiment["started"]
+            if elapsed >= experiment["straight"] + experiment["turn"]:
+                self._experiment = None
+                self._motion_state = "stop"
+                self.status_changed.emit(f"自动实验完成，地面站时间 {time.time():.3f}")
+                if hasattr(self, "_experiment_label"):
+                    self._experiment_label.setText("实验状态：完成并停止")
+                experiment = None
+            elif elapsed >= experiment["straight"] and experiment["stage"] == "straight":
+                experiment["stage"] = "turn"
+                self._motion_state = experiment["speed"] + ("_left" if experiment["direction"] < 0 else "_right")
+                self.status_changed.emit(f"自动实验切换转弯，地面站时间 {time.time():.3f}")
+            if experiment is not None and hasattr(self, "_experiment_label"):
+                stage = "直游" if experiment["stage"] == "straight" else "转弯"
+                self._experiment_label.setText(f"实验状态：{stage}，已运行 {elapsed:.1f} s")
+
         # Q/E 控制胸鳍脉宽（增量式，长按生效）。仅按键调节时才回写输入框，
         # 避免 100 ms 控制定时器覆盖用户尚未提交的手动输入。
         pec_adjusted_by_key = self._update_pectoral_control()
         
         # 基于运动状态设置参数
-        p = self._keyboard_params
+        p = experiment["params"] if experiment is not None else self._keyboard_params
         motion_label_text = "停止"
         self._current_command.tail_phase_diff = p.get("tail_phase_diff", 1.57)
-        self._current_command.tail_kappa = p.get("tail_kappa", 0.5) if self._enable_kappa else 0.5
+        self._current_command.tail_kappa = 0.5
         
         if self._motion_state == "stop":
             self._current_command.tail_frequency = 0.0
@@ -506,6 +607,24 @@ class KeyboardController(ControllerBase):
             self._current_command.tail_offset = p["base_bias"] + p["fast_turn_bias"]
             motion_label_text = "快速右转"
         
+        # 模式只作用于转弯；基础偏置用于机械校准，前进保持对称波形。
+        turning = self._motion_state in ("slow_left", "slow_right", "fast_left", "fast_right")
+        mode = p["turn_mode"] if self._enable_kappa else "bias"
+        if turning and mode == "kappa":
+            self._current_command.tail_offset = p["base_bias"]
+        if turning and mode in ("kappa", "combined"):
+            kappa = p["tail_kappa"]
+            self._current_command.tail_kappa = (kappa if self._motion_state.endswith("left")
+                                                else 1.0 - kappa)
+
+        if experiment is not None and experiment["stage"] == "turn":
+            if experiment["kind"] == "bias":
+                self._current_command.tail_kappa = 0.5
+                self._current_command.tail_offset = p["base_bias"] + experiment["direction"] * p[experiment["speed"] + "_turn_bias"]
+            else:
+                self._current_command.tail_offset = p["base_bias"]
+                self._current_command.tail_kappa = p["tail_kappa"]
+
         # 偏置限幅: ±0.5的转向范围以基础偏置为中位, 而不是绝对零位
         # (舵机摆幅围绕偏置中心, 因此合成偏置允许越过绝对±0.5, 最大到±1.0)
         turn_range = CONTROL_LIMITS["tail_offset"]["max"]

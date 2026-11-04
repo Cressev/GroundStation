@@ -47,7 +47,7 @@ def test_kappa_only_change_is_saved_emitted_and_visible(monkeypatch, tmp_path):
     widget = controller.get_control_widget()
     controller.activate()
     controller.set_keyboard_parameters(0, 1, .17, .1, 2, .3, .2, .785, .5)
-    controller.handle_key_press('w')
+    controller.handle_key_press('a')
     controller._update_control()
     sent = []
     controller.control_command_generated.connect(sent.append)
@@ -107,7 +107,7 @@ def test_depth_publication_cannot_replace_heading_kappa(axes):
     hub.set_connected(True)
     hub.set_heading_enabled(True)
     keyboard.set_keyboard_parameters(0, 1, .17, .1, 2, .3, .2, tail_kappa=.3)
-    keyboard.handle_key_press('w')
+    keyboard.handle_key_press('a')
     keyboard._update_control()
     assert outputs[-1].tail_kappa == .3
     hub.set_depth_enabled(True)

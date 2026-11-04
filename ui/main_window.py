@@ -26,11 +26,13 @@ from ui.keyboard_status import KeyboardStatusWidget
 from ui.video_display import VideoMonitorWidget
 from ui.stereo_camera_widget import StereoFishCameraWidget
 from ui.image_enhancement_widget import ImageEnhancementWidget
+from ui.top_camera_tracking import TopCameraTrackingWidget
 from ui.depth_panel import DepthPanel
 from ui.connection_store import ConnectionStore
 from ui.heartbeat_light import HeartbeatLight
 from ui.numeric_inputs import NoWheelComboBox
 from controllers.base import KeyboardController
+from controllers.autonomous import AutonomousController
 from controllers.depth import DepthController
 from controllers.remote_depth import RemoteDepthController as DepthAxisController
 from controllers.coordinator import ControlCoordinator
@@ -166,6 +168,8 @@ class MainWindow(QMainWindow):
         if self.variant == "dual":
             self.video_widget = StereoFishCameraWidget()
             center_tabs.addTab(self.video_widget, "双目测距（本地）")
+            self.top_camera_widget = TopCameraTrackingWidget()
+            center_tabs.addTab(self.top_camera_widget, "顶部相机跟踪")
             mock_video_path = os.environ.get("GROUNDSTATION_MOCK_VIDEO", "")
             self.enhancement_widget = ImageEnhancementWidget(
                 mock_video_path=mock_video_path or None)
@@ -355,6 +359,12 @@ class MainWindow(QMainWindow):
             self.controller_action_group.addAction(xbox_action)
             self.controller_actions["xbox"] = xbox_action
             control_menu.addAction(xbox_action)
+            autonomous_action = QAction('自主控制', self, checkable=True)
+            autonomous_action.triggered.connect(
+                lambda checked: checked and self._request_controller('autonomous'))
+            self.controller_action_group.addAction(autonomous_action)
+            self.controller_actions['autonomous'] = autonomous_action
+            control_menu.addAction(autonomous_action)
             control_menu.addSeparator()
             self.depth_control_action = QAction('启动深度控制（单闭环PID）', self, checkable=True)
             self.depth_control_action.toggled.connect(self._set_depth_control_armed)
@@ -507,6 +517,7 @@ class MainWindow(QMainWindow):
         self.controller_combo = NoWheelComboBox()
         self.controller_combo.addItem('键盘控制', 'keyboard')
         self.controller_combo.addItem('Xbox 控制', 'xbox')
+        self.controller_combo.addItem('自主控制', 'autonomous')
         self.controller_combo.currentIndexChanged.connect(self._on_controller_changed)
         heading_layout.addWidget(self.controller_combo)
         self.enable_control_checkbox = QCheckBox('启动航向控制')
@@ -553,8 +564,9 @@ class MainWindow(QMainWindow):
             self.controllers['depth'] = DepthAxisController()
             self.controllers['parallel_depth'] = ParallelDepthController()
             self.controllers['xbox'] = XboxController()
+            self.controllers['autonomous'] = AutonomousController()
             self.axis_coordinator = ControlCoordinator(
-                {name: self.controllers[name] for name in ('keyboard', 'xbox')},
+                {name: self.controllers[name] for name in ('keyboard', 'xbox', 'autonomous')},
                 self.controllers['depth'], self)
             depth_widget = self.controllers['depth'].get_control_widget()
             self._prepare_axis_widget(depth_widget)
@@ -1598,6 +1610,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """窗口关闭事件"""
         self._save_splitter_sizes()
+        if hasattr(self, 'top_camera_widget'):
+            self.top_camera_widget.shutdown()
         self.system_status_widget.status_timer.stop()
         self._stop_all_controls(send_stop=True)
         # 停用控制器

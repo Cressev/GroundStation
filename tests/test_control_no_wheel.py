@@ -9,6 +9,7 @@ from PyQt5.QtTest import QTest, QSignalSpy
 from PyQt5.QtWidgets import QApplication, QAbstractSpinBox, QScrollArea, QStyle, QStyleOptionSpinBox
 
 from controllers.base import KeyboardController
+from controllers.autonomous import AutonomousController
 from controllers.depth import DepthController
 from controllers.xbox import XboxController
 from test_ui_state_machine import ensure_app
@@ -25,7 +26,7 @@ def wheel(target, delta=120, pixels=0):
     return event
 
 
-@pytest.fixture(params=['keyboard', 'depth', 'xbox'])
+@pytest.fixture(params=['keyboard', 'depth', 'xbox', 'autonomous'])
 def panel(request, tmp_path):
     """Build inactive, offline panels without applying or saving parameter edits."""
     app = ensure_app()
@@ -33,16 +34,18 @@ def panel(request, tmp_path):
         controller = KeyboardController()
     elif request.param == 'depth':
         controller = DepthController(params_path=tmp_path/'depth.json')
-    else:
+    elif request.param == 'xbox':
         controller = XboxController(backend=Mock())
         controller._poll_timer.stop()
+    else:
+        controller = AutonomousController()
     widget = controller.get_control_widget()
     if request.param == 'depth':
         controller._parameter_unlock_checkbox.setChecked(True)
     widget.show()
     app.processEvents()
     spins = widget.findChildren(QAbstractSpinBox)
-    assert len(spins) == {'keyboard': 9, 'depth': 18, 'xbox': 13}[request.param]
+    assert len(spins) == {'keyboard': 12, 'depth': 21, 'xbox': 14, 'autonomous': 7}[request.param]
     assert all(isinstance(spin, (NoWheelSpinBox, NoWheelDoubleSpinBox)) for spin in spins)
     yield app, widget, spins
     controller._update_timer.stop() if hasattr(controller, '_update_timer') else None
@@ -50,7 +53,7 @@ def panel(request, tmp_path):
 
 
 def test_every_numeric_parameter_ignores_wheel_with_or_without_focus(panel):
-    """All 40 controls ignore wheel/notches/trackpad input, including focused editors."""
+    """All controller controls ignore wheel input, including focused editors."""
     app, widget, spins = panel
     for spin in spins:
         spy = QSignalSpy(spin.valueChanged)

@@ -32,6 +32,7 @@ from ui.connection_store import ConnectionStore
 from ui.heartbeat_light import HeartbeatLight
 from ui.numeric_inputs import NoWheelComboBox
 from controllers.base import KeyboardController
+from controllers.autonomous import AutonomousController
 from controllers.depth import DepthController
 from controllers.remote_depth import RemoteDepthController as DepthAxisController
 from controllers.coordinator import ControlCoordinator
@@ -358,6 +359,12 @@ class MainWindow(QMainWindow):
             self.controller_action_group.addAction(xbox_action)
             self.controller_actions["xbox"] = xbox_action
             control_menu.addAction(xbox_action)
+            autonomous_action = QAction('自主控制', self, checkable=True)
+            autonomous_action.triggered.connect(
+                lambda checked: checked and self._request_controller('autonomous'))
+            self.controller_action_group.addAction(autonomous_action)
+            self.controller_actions['autonomous'] = autonomous_action
+            control_menu.addAction(autonomous_action)
             control_menu.addSeparator()
             self.depth_control_action = QAction('启动深度控制（单闭环PID）', self, checkable=True)
             self.depth_control_action.toggled.connect(self._set_depth_control_armed)
@@ -510,6 +517,7 @@ class MainWindow(QMainWindow):
         self.controller_combo = NoWheelComboBox()
         self.controller_combo.addItem('键盘控制', 'keyboard')
         self.controller_combo.addItem('Xbox 控制', 'xbox')
+        self.controller_combo.addItem('自主控制', 'autonomous')
         self.controller_combo.currentIndexChanged.connect(self._on_controller_changed)
         heading_layout.addWidget(self.controller_combo)
         self.enable_control_checkbox = QCheckBox('启动航向控制')
@@ -556,8 +564,9 @@ class MainWindow(QMainWindow):
             self.controllers['depth'] = DepthAxisController()
             self.controllers['parallel_depth'] = ParallelDepthController()
             self.controllers['xbox'] = XboxController()
+            self.controllers['autonomous'] = AutonomousController()
             self.axis_coordinator = ControlCoordinator(
-                {name: self.controllers[name] for name in ('keyboard', 'xbox')},
+                {name: self.controllers[name] for name in ('keyboard', 'xbox', 'autonomous')},
                 self.controllers['depth'], self)
             depth_widget = self.controllers['depth'].get_control_widget()
             self._prepare_axis_widget(depth_widget)

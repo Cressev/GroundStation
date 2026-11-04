@@ -257,7 +257,7 @@ def test_successful_activation_uses_longer_confirmation_vibration():
 )
 def test_x_or_b_emits_immediate_zero_tail_vibrates_then_requests_disarm(
         button_mask):
-    """X/B 紧停须先发零摆幅、启动短震，再通知主界面撤销控制权。"""
+    """X/B 紧停须请求优先锁存、发零摆幅，并启动短震。"""
     ensure_app()
     connected = XboxInputState(connected=True, controller_index=0, left_y=1.0)
     emergency = XboxInputState(
@@ -272,8 +272,11 @@ def test_x_or_b_emits_immediate_zero_tail_vibrates_then_requests_disarm(
     controller._poll_timer.stop()
     commands = []
     events = []
+    order = []
     controller.control_command_generated.connect(commands.append)
     controller.emergency_stop_requested.connect(events.append)
+    controller.control_command_generated.connect(lambda command: order.append('command'))
+    controller.emergency_stop_requested.connect(lambda message: order.append('emergency'))
 
     assert controller.activate() is True
     controller._stop_vibration()
@@ -287,7 +290,8 @@ def test_x_or_b_emits_immediate_zero_tail_vibrates_then_requests_disarm(
     assert backend.vibration_calls == [(0, 0.75, 1.0)]
     assert controller._vibration_timer.isActive()
     assert controller._vibration_timer.interval() == EMERGENCY_VIBRATION_MS
-    assert events == ["X/B 紧急停止：尾鳍已立即停止，手柄短震提示"]
+    assert events == ["X/B 紧急停止：已请求尾鳍立即停止，手柄短震提示"]
+    assert order == ['emergency', 'command']
 
     controller._stop_vibration()
     assert backend.vibration_calls[-1] == (0, 0.0, 0.0)
@@ -318,7 +322,7 @@ def test_disconnect_emits_immediate_zero_tail_and_latches_stop():
     assert commands[0].tail_frequency == pytest.approx(0.0)
     assert commands[0].tail_amplitude == pytest.approx(0.0)
     assert commands[0].pec_angle == 1500
-    assert events == ["Xbox 手柄断开，尾鳍已立即停止"]
+    assert events == ["Xbox 手柄断开，已请求尾鳍立即停止"]
     assert controller._emergency_latched
 
 

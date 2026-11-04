@@ -13,6 +13,7 @@ def recording_widget(tmp_path, monkeypatch):
     from PyQt5.QtCore import QSettings
     from ui import stereo_camera_widget as module
     ensure_app()
+    monkeypatch.setattr(module.tempfile, 'tempdir', str(tmp_path))
     widget = module.StereoFishCameraWidget(QSettings(str(tmp_path/'settings.ini'), QSettings.IniFormat))
     widget._stream_state, widget._camera_state = 'connected', 'on'
     widget.current_frame = np.zeros((80, 60, 3), np.uint8)
@@ -20,6 +21,21 @@ def recording_widget(tmp_path, monkeypatch):
     writer = Mock()
     writer.isOpened.return_value = True
     monkeypatch.setattr(module.cv2, 'VideoWriter', Mock(return_value=writer))
+    class ImmediateRecorder:
+        """Isolate widget lifecycle tests from the separately tested encoder thread."""
+        def __init__(self, encoder, fps, start, initial_frame, clock):
+            self.encoder, self.error, self.output_count = encoder, None, 0
+            self.submit(initial_frame)
+
+        def submit(self, frame):
+            self.encoder.write(frame)
+            self.output_count += 1
+            return True
+
+        def stop(self, end_time):
+            self.encoder.release()
+            return True
+    monkeypatch.setattr(module, 'RealtimeVideoWriter', ImmediateRecorder)
     monkeypatch.setattr(module.QFileDialog, 'getSaveFileName', lambda *args: (str(tmp_path/'saved.mp4'), ''))
     monkeypatch.setattr(module.QMessageBox, 'information', lambda *args: None)
     clock = [100.]
@@ -141,3 +157,86 @@ def test_recording_without_new_frames_creates_no_empty_video(recording_widget, t
     assert not temporary.exists()
     assert not (tmp_path/'saved.mp4').exists()
     writer.write.assert_not_called()
+
+
+def test_background_encoder_failure_without_new_frame_is_reported(recording_widget, monkeypatch):
+    """A timer reports failure even if no later source frame arrives."""
+    from pathlib import Path
+    from ui import stereo_camera_widget as module
+    widget, writer, clock = recording_widget
+
+    class FailedRecorder:
+        def __init__(self, encoder, fps, start, initial_frame, clock):
+            self.encoder, self.error, self.output_count = encoder, 'disk failure', 0
+
+        def stop(self, end_time):
+            self.encoder.release()
+            return True
+
+    monkeypatch.setattr(module, 'RealtimeVideoWriter', FailedRecorder)
+    widget._toggle_recording()
+    temp = Path(widget.recording_path)
+    widget._record_frame(widget.current_frame)
+    widget._update_recording_stats()
+    assert not widget.recording
+    assert widget._rec_status == '录制失败'
+    assert 'disk failure' in widget.record_stats_label.toolTip()
+    assert str(temp) in widget.record_stats_label.toolTip()
+    assert temp.exists()
+
+
+def test_timed_out_encoder_preserves_file_in_place(recording_widget, monkeypatch):
+    """A still-writing encoder's temporary file is not moved or deleted."""
+    from pathlib import Path
+    from ui import stereo_camera_widget as module
+    widget, writer, clock = recording_widget
+
+    class SlowRecorder:
+        def __init__(self, encoder, fps, start, initial_frame, clock):
+            self.error, self.output_count = None, 1
+
+        def stop(self, end_time):
+            return False
+
+    monkeypatch.setattr(module, 'RealtimeVideoWriter', SlowRecorder)
+    widget._toggle_recording()
+    temp = Path(widget.recording_path)
+    widget._record_frame(widget.current_frame)
+    widget._stop_recording()
+    assert not widget.recording
+    assert widget._rec_status == '录制失败'
+    assert temp.exists()
+    assert str(temp) in widget.record_stats_label.toolTip()
+
+def test_recording_stitches_right_eye_and_pads_black_when_missing(recording_widget):
+    """Relay frames record left|right side by side; a missing right eye pads black."""
+    from ui import stereo_camera_widget as module
+    widget, writer, clock = recording_widget
+    left = np.full((80, 60, 3), 40, np.uint8)
+    right = np.full((80, 60, 3), 200, np.uint8)
+    widget._toggle_recording()
+    widget._record_frame(left, right)
+    assert module.cv2.VideoWriter.call_args.args[3] == (120, 80)
+    frames = [call.args[0] for call in writer.write.call_args_list]
+    assert frames[0].shape == (80, 120, 3)
+    assert int(frames[0][:, :60].mean()) == 40 and int(frames[0][:, 60:].mean()) == 200
+    # 右目中途缺失：补黑保持编码器尺寸，布局不回落单目
+    widget._record_frame(left, None)
+    frames = [call.args[0] for call in writer.write.call_args_list]
+    assert frames[1].shape == (80, 120, 3)
+    assert int(frames[1][:, 60:].mean()) == 0
+    widget._stop_recording()
+    assert writer.write.call_count == 2
+
+
+def test_recording_single_eye_layout_locks_when_right_missing_first(recording_widget):
+    """First frame without a right eye locks the session to single-eye width."""
+    widget, writer, clock = recording_widget
+    left = np.full((80, 60, 3), 40, np.uint8)
+    right = np.full((80, 60, 3), 200, np.uint8)
+    widget._toggle_recording()
+    widget._record_frame(left, None)
+    widget._record_frame(left, right)
+    frames = [call.args[0] for call in writer.write.call_args_list]
+    assert [f.shape for f in frames] == [(80, 60, 3), (80, 60, 3)]
+    widget._stop_recording()

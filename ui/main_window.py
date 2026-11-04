@@ -998,7 +998,18 @@ class MainWindow(QMainWindow):
         if self.axis_coordinator is not None:
             self.axis_coordinator.set_connected(bool(self._fish_connection_state == 'connected'
                 and self.communication and self.communication.connected))
+            previous = self.axis_coordinator.heading_enabled
             result = self.axis_coordinator.set_heading_enabled(armed, send=send_stop)
+            if result and armed and not previous:
+                arm = getattr(self.communication, 'send_control_arm', None)
+                if callable(arm):
+                    if not arm():
+                        self.axis_coordinator.set_heading_enabled(False, send=False)
+                        self._log_message('控制重新启动请求发送失败，航向控制未启用')
+                        result = False
+                    else:
+                        # 初始安全帧可能在板端仍锁存时被拒绝，重启后重发当前组合。
+                        self.axis_coordinator._publish(force=True)
             self._apply_main_ui_state()
             return result
         armed = bool(armed)
@@ -1041,6 +1052,12 @@ class MainWindow(QMainWindow):
         self.axis_coordinator.set_connected(bool(self._fish_connection_state == 'connected'
             and self.communication and self.communication.connected))
         previous = self.axis_coordinator.depth_enabled
+        if armed and not previous and self.axis_coordinator.connected:
+            arm = getattr(self.communication, 'send_control_arm', None)
+            if callable(arm) and not arm():
+                self._log_message('控制重新启动请求发送失败，深度控制未启用')
+                self._apply_main_ui_state()
+                return False
         result = self.axis_coordinator.set_depth_enabled(armed)
         self._apply_main_ui_state()
         if result and previous != self.axis_coordinator.depth_enabled:
@@ -1469,6 +1486,9 @@ class MainWindow(QMainWindow):
         if self.axis_coordinator is not None:
             if not (self.axis_coordinator.heading_enabled or self.axis_coordinator.depth_enabled):
                 return
+            emergency = getattr(self.communication, 'send_emergency_stop', None)
+            if callable(emergency) and not emergency():
+                self._log_message('紧停标记发送失败，不能确认 Pico 已收到；请勿依赖软件紧停')
             self.axis_coordinator.emergency_stop()
             self._log_message(message)
             self.status_bar.showMessage(message)

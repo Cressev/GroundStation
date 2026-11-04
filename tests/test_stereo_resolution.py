@@ -134,7 +134,7 @@ def test_size_mismatch_previews_single_eye_without_wrong_distance(view, tmp_path
     view._render_local_result(record=True)
     path = str(tmp_path/'one-eye.png')
     assert view.save_snapshot(path) == path
-    assert cv2.imdecode(np.fromfile(path, np.uint8), cv2.IMREAD_COLOR).shape == (320, 48, 3)
+    assert cv2.imdecode(np.fromfile(path, np.uint8), cv2.IMREAD_COLOR).shape == (48, 320, 3)
     assert view.distance_label.text().endswith('--')
 
 

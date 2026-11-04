@@ -62,10 +62,10 @@ def test_calibration_hash_and_size():
         model.process(np.zeros((48, 256, 3), np.uint8), {'calibration_sha256': digest})
 
 
-def test_rotated_click_and_invalid_measurement():
-    """Invert clockwise rotation and ignore label letterboxing."""
-    assert display_to_rectified(10, 20, (10, 20, 480, 640), 640, 480) == (0, 479)
-    assert display_to_rectified(489, 659, (10, 20, 480, 640), 640, 480) == (639, 0)
+def test_click_mapping_direct_and_invalid_measurement():
+    """Map clicks straight onto image pixels (no display rotation); ignore letterboxing."""
+    assert display_to_rectified(10, 20, (10, 20, 480, 640), 640, 480) == (0, 0)
+    assert display_to_rectified(489, 659, (10, 20, 480, 640), 640, 480) == (639, 479)
     assert display_to_rectified(9, 20, (10, 20, 480, 640), 640, 480) is None
     disp = np.zeros((4, 5), np.float32)
     points = np.ones((4, 5, 3), np.float32)
@@ -129,7 +129,7 @@ def test_widget_single_view_marker_save_and_no_board_depth(tmp_path):
     path = tmp_path/'single.png'
     assert widget.save_snapshot(str(path)) == str(path)
     image = cv2.imdecode(np.fromfile(path, np.uint8), cv2.IMREAD_COLOR)
-    assert image.shape == (640, 480, 3)
+    assert image.shape == (480, 640, 3)
     assert np.any(image[:, :, 1] != image[:, :, 0]), 'Visible green marker missing'
     result['disparity'][:] = 0
     widget._render_local_result(record=False)
@@ -145,33 +145,86 @@ def test_widget_single_view_marker_save_and_no_board_depth(tmp_path):
     widget.close()
 
 
+def test_stereo_pair_render_right_eye_display_and_left_only_clicks():
+    """Both eyes render side by side; only the left label turns clicks into measurements."""
+    from test_ui_state_machine import ensure_app
+    from ui.stereo_camera_widget import StereoFishCameraWidget, FAST_PREVIEW_LUT
+    from PyQt5.QtCore import Qt, QPointF
+    from PyQt5.QtGui import QMouseEvent
+    app = ensure_app()
+    widget = StereoFishCameraWidget()
+    try:
+        widget._stream_state, widget._camera_state = 'connected', 'on'
+        widget._local_model = object()
+        left_eye = np.full((480, 640, 3), 60, np.uint8)
+        right_eye = np.full((480, 640, 3), 180, np.uint8)
+        widget._local_result = dict(frame_id=9, image=left_eye, image_right=right_eye,
+                                    disparity=None, points=None, scale=1.0, offset=0.0,
+                                    compute_ms=1, metadata={})
+        widget.show()
+        app.processEvents()
+
+        def mean_pixmap_red(label):
+            """Sample one displayed pixmap on a sparse grid; returns mean red value."""
+            image = label.pixmap().toImage()
+            assert not image.isNull(), 'label must display a pixmap after rendering'
+            total = count = 0
+            for x in range(0, image.width(), 37):
+                for y in range(0, image.height(), 37):
+                    total += image.pixelColor(x, y).red()
+                    count += 1
+            return total/count
+
+        widget._render_local_result(record=False)
+        app.processEvents()
+        assert abs(mean_pixmap_red(widget.video_label)-float(FAST_PREVIEW_LUT[60])) < 3
+        assert abs(mean_pixmap_red(widget.video_label_right)-float(FAST_PREVIEW_LUT[180])) < 3
+        # 右目仅显示：点击右画面不产生测点、不发测距命令
+        right_rect = widget.video_label_right.image_rectangle()
+        point = QPointF(right_rect[0]+right_rect[2]*.5, right_rect[1]+right_rect[3]*.5)
+        event = QMouseEvent(QMouseEvent.MouseButtonPress, point,
+                            Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        app.sendEvent(widget.video_label_right, event)
+        assert widget._selected_point is None
+    finally:
+        widget.shutdown()
+        widget.close()
+
+
 @pytest.mark.parametrize('width', [480, 720, 1100])
-def test_single_view_image_center_tracks_viewport_without_horizontal_overflow(width):
-    """A portrait image centers in the visible page, not in a wider hidden content widget."""
+def test_stereo_pair_views_center_in_own_labels_without_horizontal_overflow(width):
+    """Each eye centers in its own label; the pair fills the page with no overflow."""
     from test_ui_state_machine import ensure_app
     from ui.stereo_camera_widget import StereoFishCameraWidget
-    from PyQt5.QtCore import QPoint
     app = ensure_app()
     widget = StereoFishCameraWidget()
     try:
         widget.resize(width, 760)
         widget.show()
         widget.video_label.set_frame(np.full((640, 480, 3), 120, np.uint8))
+        widget.video_label_right.set_frame(np.full((640, 480, 3), 120, np.uint8))
         app.processEvents()
         app.processEvents()
         viewport = widget.page_scroll.viewport()
         assert widget.page_scroll.horizontalScrollBar().maximum() == 0
-        x, y, w, h = widget.video_label.image_rectangle()
-        origin = widget.video_label.mapTo(viewport, QPoint(0, 0))
-        assert abs(origin.x()+x+w/2.-viewport.width()/2.) <= 2.
-        assert abs(y+h/2.-widget.video_label.contentsRect().center().y()) <= 1.
+        # 左右两个画面并排铺满页面宽度，不再有整页水平方向的居中单画面
+        left = widget.video_label.geometry()
+        right = widget.video_label_right.geometry()
+        assert left.right() < right.left()
+        assert left.left() >= 0 and right.right() <= viewport.width()
+        assert left.width() > 0 and abs(left.width()-right.width()) <= 2
+        for label in (widget.video_label, widget.video_label_right):
+            x, y, w, h = label.image_rectangle()
+            rect = label.contentsRect()
+            assert abs(x+w/2.-rect.center().x()) <= 2.
+            assert abs(y+h/2.-rect.center().y()) <= 1.
     finally:
         widget.shutdown()
         widget.close()
 
 
-def test_stereo_canvas_default_height_is_larger_and_adjustable_without_camera_commands():
-    """Height controls enlarge the image only, preserving capture and result identity."""
+def test_stereo_canvas_camera_on_resets_compact_and_adjustable_without_camera_commands():
+    """Camera-on resets both canvases to the compact default; height changes stay display-only."""
     from test_ui_state_machine import ensure_app
     from ui.stereo_camera_widget import StereoFishCameraWidget
     app = ensure_app()
@@ -181,25 +234,37 @@ def test_stereo_canvas_default_height_is_larger_and_adjustable_without_camera_co
     try:
         widget.resize(1100, 900)
         widget.show()
-        frame = np.full((1600, 1200, 3), 120, np.uint8)
+        frame = np.full((1280, 720, 3), 120, np.uint8)
         widget.video_label.set_frame(frame)
         widget.current_frame = frame
         app.processEvents()
-        assert widget.video_height_input.value() == 720
-        assert widget.video_label.height() == 720
+        assert widget.video_height_input.value() == 320
+        assert widget.video_label.height() == 320
         initial = widget.video_label.image_rectangle()
-        assert initial[2] >= 525  # Old 320-high canvas displayed about 230px width.
+        # 双画面布局每个画面只占约半页宽，320 高下宽受限约 170px
+        assert initial[2] >= 150
+        assert abs(initial[2]/initial[3]-720/1280) < .003
         generation = widget.worker.generation
         widget.video_height_input.setValue(960)
         app.processEvents()
         enlarged = widget.video_label.image_rectangle()
         assert widget.video_label.height() == 960 and enlarged[2] > initial[2]
-        assert abs(enlarged[2]/enlarged[3]-.75) < .003
+        assert abs(enlarged[2]/enlarged[3]-720/1280) < .003
+        assert widget.video_label_right.height() == 960
         assert widget.current_frame is frame and widget.worker.generation == generation
         assert widget.page_scroll.verticalScrollBar().maximum() > 0
         widget.video_height_reset_btn.click()
         app.processEvents()
-        assert widget.video_label.height() == 720 and not commands
+        assert widget.video_label.height() == 320
+        assert widget.video_label_right.height() == 320 and not commands
+        # 相机开启消息把画布复位到紧凑默认，左右两目同步
+        widget.video_height_input.setValue(960)
+        widget._stream_state = 'connected'
+        widget._on_message('{"type": "camera", "enabled": true}')
+        app.processEvents()
+        assert widget.video_height_input.value() == 320
+        assert widget.video_label.height() == 320
+        assert widget.video_label_right.height() == 320
     finally:
         widget.close()
 
@@ -235,7 +300,7 @@ def test_canvas_resizing_keeps_click_mapping_and_source_snapshot_dimensions(tmp_
         assert max(p[1] for p in points)-min(p[1] for p in points) <= 1
         path = tmp_path/'native-single.png'
         widget.save_snapshot(str(path))
-        assert cv2.imdecode(np.fromfile(path, np.uint8), 1).shape == (640, 480, 3)
+        assert cv2.imdecode(np.fromfile(path, np.uint8), 1).shape == (480, 640, 3)
     finally:
         widget.close()
 
@@ -258,7 +323,7 @@ def test_canvas_height_wheel_scrolls_page_without_changing_number():
             QPoint(), QPoint(0, -120), Qt.NoButton, Qt.NoModifier, Qt.ScrollUpdate, False)
         app.sendEvent(editor, event)
         app.processEvents()
-        assert editor.value() == 720 and widget.video_label.height() == 720
+        assert editor.value() == 320 and widget.video_label.height() == 320
         assert widget.page_scroll.verticalScrollBar().value() > 0
     finally:
         widget.close()

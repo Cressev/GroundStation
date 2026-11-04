@@ -36,6 +36,7 @@ class SocketCommunication(FishCommunicationInterface):
     """基于Socket的通信实现，用于实时数据传输"""
     
     def __init__(self, ip_address: str = None, port: int = None):
+        """初始化连接状态、互斥发送锁和接收回调。"""
         super().__init__()
         self.fish_ip = ip_address if ip_address else FISH_IP
         self.port = port if port else SOCKET_PORT
@@ -162,6 +163,26 @@ class SocketCommunication(FishCommunicationInterface):
             return True
         except (OSError, ValueError, TypeError):
             return False
+
+    def _send_control_event(self, event_type):
+        """在同一 TCP 连接发送紧停/显式重启标记，保持消息写入互斥。"""
+        if not self._connected or self.socket is None:
+            return False
+        try:
+            payload = (json.dumps({'type': event_type}) + '\n').encode('utf-8')
+            with self._send_lock:
+                self.socket.sendall(payload)
+            return True
+        except (OSError, ValueError, TypeError):
+            return False
+
+    def send_emergency_stop(self):
+        """请求板端锁存紧停；成功仅表示本地 socket 已接受数据。"""
+        return self._send_control_event('emergency_stop')
+
+    def send_control_arm(self):
+        """用户明确重新启动控制时，请求板端撤销紧停锁存。"""
+        return self._send_control_event('control_arm')
     
     def is_alive(self) -> bool:
         """检查连接是否存活"""

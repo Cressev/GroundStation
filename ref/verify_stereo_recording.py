@@ -37,7 +37,7 @@ def button_color(button, path):
 
 
 def main():
-    """Record 30 generated frames without sockets, then decode and compare the count."""
+    """Record generated frames and verify decoded wall-time duration, without sockets."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True)
     output = Path(parser.parse_args().output).resolve()
@@ -97,8 +97,43 @@ def main():
                 sizes.add(tuple(image.shape))
         finally:
             video.release()
-        assert count == 30 and sizes == {(320, 240, 3)}, (count, sizes)
+        assert abs(count/15.0-view._rec_elapsed) <= 2/15.0, (count, view._rec_elapsed)
+        assert count >= 30 and sizes == {(320, 240, 3)}, (count, sizes)
         assert (output/'single.mp4').stat().st_size > 0
+        # 第二轮：喂入左右目帧，验证并排拼接录制（解码为320x480）
+        view.record_btn.click()
+        assert view.recording
+        right = np.zeros((320, 240, 3), np.uint8)
+        right[:, :, 2] = 170
+        for index in range(30):
+            image = frame.copy()
+            cv2.putText(image, f'L{index+1}', (15, 70), cv2.FONT_HERSHEY_SIMPLEX, .6, (255, 255, 255), 1)
+            pair_right = right.copy()
+            cv2.putText(pair_right, f'R{index+1}', (15, 70), cv2.FONT_HERSHEY_SIMPLEX, .6, (255, 255, 255), 1)
+            view._update_frame(image, pair_right)
+            QTest.qWait(75)
+        QTest.qWait(300)
+        assert view._rec_count == 30, view.record_stats_label.text()
+        with patch('ui.stereo_camera_widget.QFileDialog.getSaveFileName', return_value=(str(output/'pair.mp4'), '')), \
+             patch('ui.stereo_camera_widget.QMessageBox.information'):
+            view.record_btn.click()
+        assert not view.recording
+        pair_video = cv2.VideoCapture(str(output/'pair.mp4'))
+        pair_count, pair_sizes, pair_right_means = 0, set(), []
+        try:
+            assert pair_video.isOpened()
+            while True:
+                ok, image = pair_video.read()
+                if not ok:
+                    break
+                pair_count += 1
+                pair_sizes.add(tuple(image.shape))
+                pair_right_means.append(int(image[:, 240:, 2].mean()))
+        finally:
+            pair_video.release()
+        assert abs(pair_count/15.0-view._rec_elapsed) <= 2/15.0, (pair_count, view._rec_elapsed)
+        assert pair_count >= 30 and pair_sizes == {(320, 480, 3)}, (pair_count, pair_sizes)
+        assert all(mean > 100 for mean in pair_right_means), pair_right_means[:5]
         view.resize(480, 850)
         settle(app)
         assert view.page_scroll.horizontalScrollBar().maximum() == 0
@@ -112,6 +147,8 @@ def main():
             qt_platform=app.platformName(), start_color=start_color, stop_color=stop_color,
             live_status=live_status, stopped_status=frozen, decoded_frames=count,
             decoded_shapes=sorted(sizes), mp4_bytes=(output/'single.mp4').stat().st_size,
+            pair_decoded_frames=pair_count, pair_decoded_shapes=sorted(pair_sizes),
+            pair_mp4_bytes=(output/'pair.mp4').stat().st_size,
             personal_files_unchanged=True)
         (output/'summary.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
         print(json.dumps(result, ensure_ascii=True))

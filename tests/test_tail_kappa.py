@@ -97,6 +97,9 @@ def test_xbox_sends_fraction_and_deduplicates_it(monkeypatch, tmp_path):
     controller._emit_output(output)
     controller._parameters['tail_kappa'] = .7
     controller._emit_output(output)
+    assert len(sent) == 1  # 仍服从普通 Xbox 10 Hz 限频
+    controller._last_poll_time += .1
+    controller._emit_output(output)
     assert len(sent) == 2 and sent[-1].tail_kappa == .7
     controller._vibration_timer.stop()
 

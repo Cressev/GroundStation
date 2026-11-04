@@ -265,7 +265,7 @@ def bridge():
     cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'GroundStationBridgeNode')
     methods = [node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name in
                ('_on_imu', '_on_depth', '_sample_stamp', '_feedback_payload', '_send_feedback', '_push_imu', '_push_depth',
-                '_publish_control', '_publish_control_locked', '_handle_depth_control')]
+                '_publish_control', '_publish_control_locked', '_handle_depth_control', '_control_marker')]
     selected = ast.Module(body=[ast.ClassDef(name='Bridge', bases=[], keywords=[], body=methods, decorator_list=[])], type_ignores=[])
     namespace = dict(math=math, time=time, json=json,
                      clamp=lambda value, bounds: max(bounds[0], min(bounds[1], float(value))),
@@ -275,6 +275,9 @@ def bridge():
     exec(compile(ast.fix_missing_locations(selected), str(source), 'exec'), namespace)
     obj = namespace['Bridge']()
     obj._sensor_epoch = 'test-boot'
+    obj._control_session = 'a' * 32
+    obj._control_epoch = 0
+    obj._emergency_latched = False
     obj._sensor_sequences = dict(imu=0, depth=0)
     obj._imu_cache = obj._depth_cache = None
     obj._tcp_clients_lock = threading.Lock()

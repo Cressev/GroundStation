@@ -215,24 +215,24 @@ def test_stereo_camera_waits_for_confirmed_state_and_recovers_after_failure():
     widget.close()
 
 
-def test_single_camera_preview_rotates_one_eye_and_enhances_full_frame():
-    """原生单目和旧双目兼容流都只输出一目，实时增强处理整张单目帧。"""
+def test_single_camera_preview_shows_one_eye_upright_and_enhances_full_frame():
+    """原生单目和旧双目兼容流都只输出一目且不再旋转，实时增强处理整张单目帧。"""
     single = np.zeros((4, 6, 3), dtype=np.uint8)
     single[:, :, 1] = 64
     prepared_single = prepare_stereo_display_frame(single, "raw_single")
-    assert prepared_single.shape == (6, 4, 3)
+    assert prepared_single.shape == (4, 6, 3)
 
     legacy_dual = np.zeros((4, 12, 3), dtype=np.uint8)
     legacy_dual[:, :6, 1] = 64
     legacy_dual[:, 6:, 2] = 255
     prepared_legacy = prepare_stereo_display_frame(legacy_dual, "raw_sbs")
-    assert prepared_legacy.shape == (6, 4, 3)
+    assert prepared_legacy.shape == (4, 6, 3)
     assert np.array_equal(prepared_single, prepared_legacy)
 
     processed = np.zeros((960, 1280, 3), dtype=np.uint8)
     assert prepare_stereo_display_frame(processed, "processed") is processed
     assert EnhancementWorker._region_height(
-        prepared_single, {"region": "auto", "source_mode": "live"}) == 6
+        prepared_single, {"region": "auto", "source_mode": "live"}) == 4
     assert EnhancementWorker._region_height(
         processed, {"region": "auto", "source_mode": "mock"}) == 480
 

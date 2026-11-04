@@ -35,14 +35,14 @@ def measure_depth(disparity, points, x, y, scale=1.0, offset=0.0, win=4):
 
 
 def display_to_rectified(x, y, rectangle, width, height):
-    """Map the actual pixmap rectangle through inverse clockwise rotation."""
+    """Map the shown pixmap rectangle straight onto image pixels (no display rotation)."""
     left, top, shown_width, shown_height = rectangle
     if not (shown_width > 0 and shown_height > 0 and
             left <= x < left+shown_width and top <= y < top+shown_height):
         return None
-    dx = min(height-1, int((x-left)*height/shown_width))
-    dy = min(width-1, int((y-top)*width/shown_height))
-    return dy, height-1-dx
+    dx = max(0, min(width-1, int(round((x-left)*width/shown_width))))
+    dy = max(0, min(height-1, int(round((y-top)*height/shown_height))))
+    return dx, dy
 
 
 class StereoCalculator:
@@ -105,7 +105,7 @@ class StereoCalculator:
         self.wls.setSigmaColor(1.3)
 
     def process(self, pair, metadata, enabled=True):
-        """Return one rectified left image and its exact-frame depth snapshot."""
+        """Return one rectified left image, its right-eye view and depth snapshot."""
         if metadata.get('calibration_sha256') != self.source_sha256:
             raise ValueError('Frame/capture source mismatch')
         if pair.shape != (self.height, self.width*2, 3):
@@ -114,7 +114,7 @@ class StereoCalculator:
         first, second = pair[:, :self.width], pair[:, self.width:]
         left, right = (second, first) if self.swap else (first, second)
         rect_left = cv2.remap(left, *self.maps[:2], cv2.INTER_LINEAR)
-        disparity, points = None, None
+        disparity, points, rect_right = None, None, None
         if enabled:
             rect_right = cv2.remap(right, *self.maps[2:], cv2.INTER_LINEAR)
             gray_left = cv2.cvtColor(rect_left, cv2.COLOR_BGR2GRAY)
@@ -123,7 +123,10 @@ class StereoCalculator:
             dr = self.right.compute(gray_right, gray_left)
             disparity = self.wls.filter(dl, gray_left, None, dr).astype(np.float32)/16.0
             points = cv2.reprojectImageTo3D(disparity, self.Q)
-        return dict(frame_id=metadata.get('frame_id'), image=rect_left, disparity=disparity,
+        # 测距开时显示校正后的右目，关时回退原始右目；拷贝脱离 pair 生命周期。
+        image_right = rect_right if rect_right is not None else right.copy()
+        return dict(frame_id=metadata.get('frame_id'), image=rect_left, image_right=image_right,
+                    disparity=disparity,
                     points=points, scale=self.scale, offset=self.offset,
                     calibration_sha256=self.sha256, source_sha256=self.source_sha256,
                     compute_ms=(time.perf_counter()-start)*1000, metadata=metadata)
@@ -141,7 +144,7 @@ class StereoCalculator:
 
 
 class StereoPreview:
-    """Display only the raw first eye when no matching calibration is available."""
+    """Return both raw eyes without matching calibration; no distances."""
 
     def __init__(self, source):
         """Bind preview geometry and source identity without constructing a matcher."""
@@ -158,6 +161,7 @@ class StereoPreview:
         if pair is None:
             raise ValueError('Invalid JPEG frame')
         return dict(frame_id=metadata.get('frame_id'), image=pair[:, :self.width].copy(),
+                    image_right=pair[:, self.width:].copy(),
                     disparity=None, points=None, scale=1.0, offset=0.0, compute_ms=0.0,
                     metadata=metadata, uncalibrated=True)
 

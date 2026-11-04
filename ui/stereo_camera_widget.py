@@ -4,8 +4,8 @@
 双尾双目鱼机载双目视频组件
 Stereo Fish Onboard Camera Widget
 
-接收同帧双目JPEG与绑定标定，电脑后台执行SGBM/WLS，只显示左校正图。
-点击只读取当前显示帧的点云，不发送板端测距命令；截图/视频只保存单目。
+接收同帧双目JPEG与绑定标定，电脑后台执行SGBM/WLS，左右目并排显示。
+测距点击只作用于左目画面，不发送板端测距命令；截图/视频只保存左目。
 旧单目流仍可预览，但没有双目和标定时禁止测距。
 """
 
@@ -38,13 +38,16 @@ from stereo.transport import (MAX_PACKET, STEREO_FRAME, CALIBRATION,
 from stereo.calculation import (StereoCalculator, StereoPreview, display_to_rectified,
                                 measure_depth, MAX_CALIBRATION_BYTES)
 from stereo.worker import StereoWorker
+from stereo.recording import RealtimeVideoWriter
 from ui.numeric_inputs import NoWheelSpinBox
 
 # 画布布局常量（与 pico_stereo.stereo_lib 保持一致）
 CANVAS_W, CANVAS_H = 1280, 960
 LEFT_RECT_W, LEFT_RECT_H = 640, 480
 FAST_PREVIEW_GAMMA = 2.0
-DEFAULT_VIDEO_CANVAS_HEIGHT = 720
+# 相机开启时画布自动复位到该紧凑高度（双画面横排下宽受限，太高只增加页面滚动）
+DEFAULT_VIDEO_CANVAS_HEIGHT = 320
+RIGHT_VIDEO_PLACEHOLDER = "右目画面\n连接后与左目同步刷新"
 FAST_PREVIEW_LUT = np.array([
     ((value / 255.0) ** (1.0 / FAST_PREVIEW_GAMMA)) * 255.0
     for value in range(256)
@@ -52,7 +55,7 @@ FAST_PREVIEW_LUT = np.array([
 
 
 def prepare_stereo_display_frame(frame, layout=STEREO_PREVIEW_LAYOUT):
-    """把板端原始单目帧转正提亮；旧双目横拼流只取第一目。"""
+    """把板端原始帧提亮显示；相机横装画面方向即原样，不做旋转（仅旧服务路径使用）。"""
     height, width = frame.shape[:2]
     if layout == "processed":
         return frame
@@ -60,8 +63,7 @@ def prepare_stereo_display_frame(frame, layout=STEREO_PREVIEW_LAYOUT):
             layout not in ("raw_single", "processed") and
             width >= height * 2 and width % 2 == 0):
         frame = frame[:, :width // 2]
-    single = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-    return cv2.LUT(single, FAST_PREVIEW_LUT)
+    return cv2.LUT(frame, FAST_PREVIEW_LUT)
 
 
 class SingleViewLabel(QLabel):
@@ -248,7 +250,7 @@ class StereoVideoClient(QThread):
 class StereoFishCameraWidget(QWidget):
     """双尾双目鱼视频/测距组件。
 
-    电脑测距、单目显示、同帧点击标点，保留主连接与相机状态门闩。
+    电脑测距、左右目并排显示、同帧点击标点（仅左目），保留主连接与相机状态门闩。
     """
 
     state_changed = pyqtSignal()
@@ -287,6 +289,9 @@ class StereoFishCameraWidget(QWidget):
         self.current_frame = None
         self.recording = False
         self.writer = None
+        self._record_worker = None
+        self._encoded_count = 0
+        self._rec_stitched = None
         self.recording_path = None
         self._rec_count = 0
         self._rec_started_at = None
@@ -310,7 +315,7 @@ class StereoFishCameraWidget(QWidget):
         content = QWidget()
         layout = QVBoxLayout(content)
 
-        title = QLabel("双目传输 · 电脑测距 · 单目显示（点击画面测距）")
+        title = QLabel("双目测距（点击左侧画面测距）")
         title.setAlignment(Qt.AlignCenter)
         title.setWordWrap(True)
         title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
@@ -344,7 +349,7 @@ class StereoFishCameraWidget(QWidget):
             }
         ''')
         self.record_btn.setToolTip(
-            "录制当前单目画面；停止后弹出对话框选择 mp4 保存位置")
+            "录制左右目并排画面（右目缺失时补黑或只录左目，首帧锁定布局）；停止后弹出对话框选择 mp4 保存位置")
         self.record_btn.clicked.connect(self._toggle_recording)
         self.snapshot_btn = QPushButton("保存图像")
         self.snapshot_btn.clicked.connect(self._choose_snapshot)
@@ -373,7 +378,7 @@ class StereoFishCameraWidget(QWidget):
         self.record_stats_label.setAccessibleName('本次录制时长和帧数')
         self.record_stats_label.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self.record_stats_label.setToolTip(
-            '本次实际经过时间与送入编码器的单目帧数；停止后保留，下次开始清零。'
+            '本次实际经过时间与送入编码器的帧数（左右目并排画面）；停止后保留，下次开始清零。'
             'MP4使用固定15FPS，播放时长可能不同；编码器无逐帧落盘回执。')
         action_layout.addWidget(self.record_stats_label)
         self.action_scroll = QScrollArea()
@@ -387,7 +392,7 @@ class StereoFishCameraWidget(QWidget):
         self._update_action_bar_height(0, 0)
         control_layout.addWidget(self.action_scroll)
 
-        self.mode_label = QLabel("模式: 电脑测距 · 显示左校正图")
+        self.mode_label = QLabel("模式: 电脑测距 · 左右目并排显示")
         self.mode_label.setWordWrap(True)
         self.mode_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         control_layout.addWidget(self.mode_label)
@@ -453,7 +458,7 @@ class StereoFishCameraWidget(QWidget):
         range_layout.addWidget(self.calibration_status_label)
         layout.addWidget(range_group)
 
-        video_group = QGroupBox("单目实时画面")
+        video_group = QGroupBox("双目实时画面（点击左目测距）")
         video_layout = QVBoxLayout(video_group)
         canvas_controls = QHBoxLayout()
         canvas_controls.addWidget(QLabel('画布高度'))
@@ -462,7 +467,7 @@ class StereoFishCameraWidget(QWidget):
         self.video_height_input.setSingleStep(80)
         self.video_height_input.setValue(DEFAULT_VIDEO_CANVAS_HEIGHT)
         self.video_height_input.setSuffix(' px')
-        self.video_height_input.setAccessibleName('单目显示画布高度')
+        self.video_height_input.setAccessibleName('双目显示画布高度')
         self.video_height_input.setToolTip('界面逻辑像素；只调整显示大小，不改变相机分辨率、测距或保存尺寸。可输入、用方向键或按钮调整，滚轮只滚动页面。')
         canvas_controls.addWidget(self.video_height_input)
         self.video_height_reset_btn = QPushButton('恢复默认大小')
@@ -478,17 +483,29 @@ class StereoFishCameraWidget(QWidget):
         self.video_label.setFixedHeight(DEFAULT_VIDEO_CANVAS_HEIGHT)
         self.video_height_input.valueChanged.connect(self._set_video_canvas_height)
         self.video_label.setCursor(Qt.CrossCursor)
-        self.video_label.setStyleSheet("""
+        video_style = """
             QLabel {
                 border: 2px solid #ccc;
                 background-color: #202020;
                 color: #eeeeee;
                 border-radius: 5px;
             }
-        """)
-        self.video_label.setText("未连接到机器鱼相机\n点击'连接视频'开始单目实时画面")
+        """
+        self.video_label.setStyleSheet(video_style)
+        self.video_label.setText("未连接到机器鱼相机\n点击'连接视频'开始双目实时画面")
+        # 测距点击只绑定左目；右目仅显示。
         self.video_label.mousePressEvent = self._on_video_click
-        video_layout.addWidget(self.video_label)
+        self.video_label_right = SingleViewLabel()
+        self.video_label_right.setAlignment(Qt.AlignCenter)
+        self.video_label_right.setMinimumWidth(160)
+        self.video_label_right.setFixedHeight(DEFAULT_VIDEO_CANVAS_HEIGHT)
+        self.video_label_right.setStyleSheet(video_style)
+        self.video_label_right.setText(RIGHT_VIDEO_PLACEHOLDER)
+        video_row = QHBoxLayout()
+        video_row.setSpacing(8)
+        video_row.addWidget(self.video_label, 1)
+        video_row.addWidget(self.video_label_right, 1)
+        video_layout.addLayout(video_row)
         layout.addWidget(video_group)
 
         measure_group = QGroupBox("测距结果")
@@ -511,7 +528,8 @@ class StereoFishCameraWidget(QWidget):
         self.status_label = QLabel("连接状态: 未连接")
         self.camera_state_label = QLabel("摄像头: 未连接")
         self.camera_state_label.setFont(QFont("Arial", 11, QFont.Bold))
-        self.fps_label = QLabel("帧率: --")
+        self.fps_label = QLabel("显示帧率: --")
+        self.fps_label.setToolTip('地面站处理后刷新的画面帧率，不等于网络接收帧率或相机采集帧率。')
         self.resolution_label = QLabel("分辨率: --")
         for label in (self.status_label, self.camera_state_label, self.fps_label, self.resolution_label):
             label.setWordWrap(True)
@@ -544,6 +562,16 @@ class StereoFishCameraWidget(QWidget):
     def _set_video_canvas_height(self, height):
         """Resize only the display canvas, preserving image identity and click mapping."""
         self.video_label.setFixedHeight(height)
+        self.video_label_right.setFixedHeight(height)
+
+    def _reset_canvas_height_for_camera_on(self):
+        """相机开启时画布回到紧凑默认高度；之后仍可手动调大，复位按钮同值。"""
+        self.video_height_input.setValue(DEFAULT_VIDEO_CANVAS_HEIGHT)
+
+    def _set_video_placeholder(self, text):
+        """清掉左右两目的旧画面：左目显示提示文字，右目恢复占位。"""
+        self.video_label.setText(text)
+        self.video_label_right.setText(RIGHT_VIDEO_PLACEHOLDER)
 
     def _update_action_bar_height(self, minimum, maximum):
         """Keep one compact action row, adding scrollbar height only on narrow pages."""
@@ -795,13 +823,16 @@ class StereoFishCameraWidget(QWidget):
             fd, self.recording_path = tempfile.mkstemp(suffix=".mp4")
             os.close(fd)
             self.writer = None  # 首帧到达时按实际尺寸创建
+            self._record_worker = None
+            self._encoded_count = 0
+            self._rec_stitched = None  # 首帧确立本次录制布局：双目拼接或单目
             self.recording = True
             self._rec_count = 0
             self._rec_started_at = time.monotonic()
             self._rec_elapsed = 0.0
             self._rec_status = '录制中'
             self.record_stats_label.setToolTip(
-                '本次实际经过时间与送入编码器的单目帧数；MP4固定15FPS，播放时长可能不同。')
+                '本次实际经过时间与输入帧数（左右目为一对）；MP4按真实时间补帧，补帧不代表收到新画面。')
             self._update_recording_stats()
             self._record_stats_timer.start()
             self._apply_ui_state()
@@ -812,10 +843,25 @@ class StereoFishCameraWidget(QWidget):
         """停止录制并弹出保存对话框（仅 mp4）；取消则存到默认位置。"""
         if not self.recording:
             return
-        if self.writer is not None:
+        end_time = time.monotonic()
+        self.recording = False
+        worker = self._record_worker
+        self._record_worker = None
+        error = None
+        if worker is not None:
+            complete = worker.stop(end_time)
+            self._encoded_count = worker.output_count
+            error = worker.error
+            if not complete:
+                self._finish_recording_stats('录制失败', end_time)
+                self._apply_ui_state()
+                self.record_stats_label.setToolTip(
+                    f'编码器停止超时，临时文件保留在: {self.recording_path}')
+                return
+        elif self.writer is not None:
             self.writer.release()
-            self.writer = None
-        self._finish_recording_stats('已停止')
+        self.writer = None
+        self._finish_recording_stats('录制失败' if error else '已停止', end_time)
         self._apply_ui_state()
         temp_path = self.recording_path
         self.recording_path = None
@@ -824,6 +870,10 @@ class StereoFishCameraWidget(QWidget):
         if self._rec_count == 0:
             os.remove(temp_path)
             self.record_stats_label.setToolTip('本次未写入视频帧，未生成空视频文件。')
+            return
+        if worker is not None and self._encoded_count == 0:
+            self.record_stats_label.setToolTip(
+                f'录制失败，未编码任何帧；临时文件保留在: {temp_path}\n原因: {error or "未知"}')
             return
         default_name = f"stereo_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
         path = ""
@@ -837,12 +887,23 @@ class StereoFishCameraWidget(QWidget):
         os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
         shutil.move(temp_path, path)
         self.record_stats_label.setToolTip(
-            f'已保存: {os.path.abspath(path)}\n本次实际经过时间与单目写帧数；MP4为固定15FPS。')
+            f'已保存: {os.path.abspath(path)}\n输入{self._rec_count}帧，'
+            f'视频{self._encoded_count}帧（含按时间补帧）；固定15FPS。'
+            + (f'\n编码异常: {error}' if error else ''))
         if prompt_for_path:
-            QMessageBox.information(self, "录制完成", f"视频已保存到:\n{path}")
+            if error:
+                QMessageBox.warning(self, "录制失败", f"编码中断，已保留部分视频:\n{path}\n{error}")
+            else:
+                QMessageBox.information(self, "录制完成", f"视频已保存到:\n{path}")
 
     def _update_recording_stats(self):
-        """Show monotonic wall duration separately from actual encoder write count."""
+        """Show elapsed time/input count and surface background encoder errors."""
+        if self.recording and self._record_worker and self._record_worker.error:
+            error = self._record_worker.error
+            self._stop_recording(prompt_for_path=False)
+            existing = self.record_stats_label.toolTip()
+            self.record_stats_label.setToolTip(existing+'\n录制失败: '+error)
+            return
         elapsed = self._rec_elapsed
         if self.recording and self._rec_started_at is not None:
             elapsed = max(0.0, time.monotonic()-self._rec_started_at)
@@ -851,21 +912,29 @@ class StereoFishCameraWidget(QWidget):
         self.record_stats_label.setText(
             f'{self._rec_status} {hours:02d}:{minutes:02d}:{seconds:02d} · {self._rec_count}帧')
 
-    def _finish_recording_stats(self, status):
+    def _finish_recording_stats(self, status, end_time=None):
         """Freeze one session on all stop paths, including encoder failures."""
         if self._rec_started_at is not None:
-            self._rec_elapsed = max(0.0, time.monotonic()-self._rec_started_at)
+            now = time.monotonic() if end_time is None else end_time
+            self._rec_elapsed = max(0.0, now-self._rec_started_at)
         self._rec_started_at = None
         self.recording = False
         self._rec_status = status
         self._record_stats_timer.stop()
         self._update_recording_stats()
 
-    def _record_frame(self, frame):
-        """Count a submitted single-view frame only after its encoder write returns."""
+    def _record_frame(self, left, right=None):
+        """录制左右目并排画面；首帧锁定本次布局，右目缺失补黑保持编码尺寸。"""
         if not self.recording:
             return
         try:
+            if self._rec_stitched is None:
+                self._rec_stitched = bool(right is not None and right.shape == left.shape)
+            frame = left
+            if self._rec_stitched:
+                filler = right if (right is not None and right.shape == left.shape) \
+                    else np.zeros_like(left)
+                frame = np.ascontiguousarray(np.hstack((left, filler)))
             if self.writer is None:
                 h, w = frame.shape[:2]
                 self.writer = cv2.VideoWriter(
@@ -873,13 +942,21 @@ class StereoFishCameraWidget(QWidget):
                     15.0, (w, h))
                 if not self.writer.isOpened():
                     raise RuntimeError('编码器不可用')
-            self.writer.write(frame)
+                self._record_worker = RealtimeVideoWriter(
+                    self.writer, 15.0, self._rec_started_at,
+                    frame.copy(), clock=time.monotonic)
+            else:
+                if self._record_worker.error:
+                    raise RuntimeError(self._record_worker.error)
+                if not self._record_worker.submit(frame.copy()):
+                    raise RuntimeError(self._record_worker.error or '视频编码线程已停止')
             self._rec_count += 1
         except Exception as exc:
             self._stop_recording(prompt_for_path=False)
             self._rec_status = '录制失败'
             self._update_recording_stats()
-            self.record_stats_label.setToolTip('录制失败: '+str(exc))
+            existing = self.record_stats_label.toolTip()
+            self.record_stats_label.setToolTip(existing+'\n录制失败: '+str(exc))
 
     def _toggle_ranging(self):
         """仅切换本地算法；不发送RANGE_ON或任何板端测距命令。"""
@@ -1009,11 +1086,13 @@ class StereoFishCameraWidget(QWidget):
             self._camera_state = "on" if enabled else "off"
             self.camera_state_label.setText(
                 f"摄像头: {'已开启' if enabled else '已关闭'}")
+            if enabled:
+                self._reset_canvas_height_for_camera_on()
             if not enabled:
                 self._clear_local_frames()
                 self._stream_seen = False
                 self.current_frame = None
-                self.video_label.setText("摄像头已关闭\n点击'开启摄像头'恢复画面")
+                self._set_video_placeholder("摄像头已关闭\n点击'开启摄像头'恢复画面")
             self._apply_ui_state()
         elif msg_type == "point_set":
             self.measure_point_label.setText(f"测点: ({info.get('u')},{info.get('v')})")
@@ -1042,14 +1121,16 @@ class StereoFishCameraWidget(QWidget):
             self._update_resolution_state(info)
             self.camera_state_label.setText(
                 f"摄像头: {'已开启' if enabled else '关闭——点击开启摄像头出画面'}")
+            if enabled:
+                self._reset_canvas_height_for_camera_on()
             if enabled and self.current_frame is None:
-                self.video_label.setText("摄像头已开启——等待画面…")
+                self._set_video_placeholder("摄像头已开启——等待画面…")
             elif not enabled:
                 self._clear_local_frames()
-                self.video_label.setText(
+                self._set_video_placeholder(
                     "摄像头处于关闭状态\n点击'开启摄像头'按钮开始回传")
-            self.mode_label.setText(('模式: Pico只传双目 · 电脑SGBM/WLS · 显示左校正图'
-                if self._local_model else '模式: 仅预览原始第一目 · 未启用测距')
+            self.mode_label.setText(('模式: Pico只传双目 · 电脑SGBM/WLS · 显示左右校正图'
+                if self._local_model else '模式: 仅预览原始左右目 · 未启用测距')
                 if self._relay_mode else '旧视频服务: 仅预览，不启动板端测距')
             if not self._relay_mode:
                 self.range_state_label.setText('本地测距: 旧服务未提供同步双目和标定')
@@ -1084,8 +1165,8 @@ class StereoFishCameraWidget(QWidget):
         self.mode_label.setText(f"电脑测距 · {source} · 有效点: {info.get('valid_count', info.get('valid', 0))}")
 
     @pyqtSlot(np.ndarray)
-    def _update_frame(self, frame):
-        """刷新视频帧并统计帧率。"""
+    def _update_frame(self, frame, right_frame=None):
+        """刷新左右两目画面并统计帧率；录制与增强页仍只取左目。"""
         try:
             if self._stream_state != 'connected' or self._camera_state in ('turning_off', 'off', 'unavailable'):
                 return
@@ -1102,18 +1183,20 @@ class StereoFishCameraWidget(QWidget):
             now = time.time()
             if now - self._fps_t0 >= 1.0:
                 fps = self._fps_count / (now - self._fps_t0)
-                self.fps_label.setText(f"帧率: {fps:.1f} FPS")
+                self.fps_label.setText(f"显示帧率: {fps:.1f} FPS")
                 self._fps_count = 0
                 self._fps_t0 = now
 
             h, w = frame.shape[:2]
             source = self._source_descriptor
             self.resolution_label.setText(
-                f"采集双目: {source['width']}×{source['height']} · 显示单目: {w}×{h}"
+                f"采集双目: {source['width']}×{source['height']} · 显示左右目: 每目 {w}×{h}"
                 if source else f"分辨率: {w}×{h}")
             self.video_label.set_frame(frame)
+            if right_frame is not None:
+                self.video_label_right.set_frame(right_frame)
             self.single_frame_ready.emit(frame)
-            self._record_frame(frame)
+            self._record_frame(frame, right_frame)
             if first_frame:
                 self._apply_ui_state()
         except Exception as exc:
@@ -1132,7 +1215,7 @@ class StereoFishCameraWidget(QWidget):
             self._stream_seen = False
             # 不猜测板上状态：向节点查询真实相机/测距状态（GET_STATE 应答）
             self.camera_state_label.setText("摄像头: 查询中…")
-            self.video_label.setText("已连接到视频服务\n正在查询摄像头状态…")
+            self._set_video_placeholder("已连接到视频服务\n正在查询摄像头状态…")
             self.stream_client.send_command("GET_STATE")
             if not self._calibration_path:
                 self.stream_client.send_command("GET_CALIBRATION")
@@ -1150,12 +1233,11 @@ class StereoFishCameraWidget(QWidget):
                 f"连接状态: {'连接失败' if failed else '未连接'}")
             self.camera_state_label.setText("摄像头: 未连接")
             self.resolution_label.setText("分辨率: --")
-            self.video_label.clear()
-            self.video_label.setText(f"连接已断开\n{message}")
+            self._set_video_placeholder(f"连接已断开\n{message}")
             self._apply_ui_state()
 
     def save_snapshot(self, filename=None):
-        """保存当前单目画面；无画面时返回 None。"""
+        """保存当前左目画面；无画面时返回 None。"""
         if self.current_frame is None:
             return None
         if filename is None:
@@ -1186,7 +1268,7 @@ class StereoFishCameraWidget(QWidget):
         """Choose a PNG path and save only the displayed single-camera frame."""
         if self.current_frame is None:
             return
-        path, _ = QFileDialog.getSaveFileName(self, '保存当前单目图像', 'fish.png', 'PNG图像 (*.png)')
+        path, _ = QFileDialog.getSaveFileName(self, '保存当前左目图像', 'fish.png', 'PNG图像 (*.png)')
         if path:
             self.save_snapshot(path if path.lower().endswith('.png') else path+'.png')
 
@@ -1208,8 +1290,8 @@ class StereoFishCameraWidget(QWidget):
         self.range_state_label.setText('本地测距: 摄像头已关闭' if self._camera_state == 'off'
                                        else '本地测距: 等待有效新帧')
         if self._relay_mode:
-            self.mode_label.setText('模式: Pico只传双目 · 电脑SGBM/WLS · 显示左校正图'
-                if self._local_model else '模式: 仅预览原始第一目 · 未启用测距')
+            self.mode_label.setText('模式: Pico只传双目 · 电脑SGBM/WLS · 显示左右校正图'
+                if self._local_model else '模式: 仅预览原始左右目 · 未启用测距')
         if self.recording:
             self._stop_recording(prompt_for_path=False)
 
@@ -1267,7 +1349,7 @@ class StereoFishCameraWidget(QWidget):
         preview = StereoPreview(self._source_descriptor) if model is None and self._source_descriptor else None
         self.worker.set_model(model if model is not None else preview)
         self.worker.invalidate(enabled=self._local_enabled)
-        self.video_label.setText('标定已切换，等待当前参数的新帧…' if model else '无匹配标定：仅预览原始第一目，不能测距')
+        self._set_video_placeholder('标定已切换，等待当前参数的新帧…' if model else '无匹配标定：仅预览原始左右目，不能测距')
         if model is None:
             self.range_state_label.setText('本地测距: 未启用，请加载匹配分辨率的NPZ')
         self._apply_ui_state()
@@ -1412,14 +1494,14 @@ class StereoFishCameraWidget(QWidget):
             return
         if 'error' in result:
             self._clear_local_frames()
-            self.video_label.setText('本地处理错误，等待有效新帧\n'+result['error'])
+            self._set_video_placeholder('本地处理错误，等待有效新帧\n'+result['error'])
             self.range_state_label.setText('本地测距错误: '+result['error'])
             return
         if self._local_result is None and not self._calibration_notice_error and not result.get('uncalibrated'):
             self._refresh_calibration_label('本地NPZ已生效' if self._chosen_calibration else '板端NPZ已生效')
         self._local_result = result
         self.ranging_on = result['disparity'] is not None
-        self.range_state_label.setText('仅预览原始第一目：NPZ与当前采集不匹配或尚未加载，不能测距'
+        self.range_state_label.setText('仅预览原始左右目：NPZ与当前采集不匹配或尚未加载，不能测距'
             if result.get('uncalibrated') else
             f"本地测距: {'开' if self.ranging_on else '暂停'} · 帧{result['frame_id']} · 计算{result['compute_ms']:.1f}ms")
         self._render_local_result(record=True)
@@ -1429,7 +1511,9 @@ class StereoFishCameraWidget(QWidget):
         result = self._local_result
         if result is None:
             return
-        image = cv2.LUT(cv2.rotate(result['image'], cv2.ROTATE_90_CLOCKWISE), FAST_PREVIEW_LUT)
+        image = cv2.LUT(result['image'], FAST_PREVIEW_LUT)
+        right = result.get('image_right')
+        right_view = cv2.LUT(right, FAST_PREVIEW_LUT) if right is not None else None
         if self._selected_point is not None:
             x, y = self._selected_point
             value = None
@@ -1438,17 +1522,19 @@ class StereoFishCameraWidget(QWidget):
                                       result['scale'], result['offset'])
             self._update_measurement(value or {})
             self.measure_point_label.setText(f"测点: ({x},{y}) · 帧{result['frame_id']}")
-            position = (result['image'].shape[0]-1-y, x)
+            position = (x, y)
             color = (0, 255, 0) if value else (0, 0, 255)
             cv2.drawMarker(image, position, color, cv2.MARKER_CROSS, 19, 2)
             cv2.circle(image, position, 8, color, 2)
             text = f"D={value['D']:.2f}cm" if value else 'invalid depth'
             cv2.putText(image, text, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, .6, color, 2)
         if record:
-            self._update_frame(image)
+            self._update_frame(image, right_view)
         else:
             self.current_frame = image
             self.video_label.set_frame(image)
+            if right_view is not None:
+                self.video_label_right.set_frame(right_view)
 
     @pyqtSlot(np.ndarray)
     def _on_legacy_frame(self, frame):

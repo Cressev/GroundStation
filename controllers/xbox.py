@@ -41,6 +41,7 @@ XINPUT_GAMEPAD_X = 0x4000
 XINPUT_GAMEPAD_Y = 0x8000
 ACTIVATION_VIBRATION_MS = 600
 EMERGENCY_VIBRATION_MS = 250
+ORDINARY_OUTPUT_INTERVAL_S = 0.1
 
 
 class _XInputGamepad(ctypes.Structure):
@@ -467,6 +468,7 @@ class XboxController(ControllerBase):
         self._emergency_latched = False
         self._external_emergency_monitor = False
         self._last_sent_command = None
+        self._last_sent_at = None
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(20)
         self._poll_timer.timeout.connect(self._poll_controller)
@@ -489,6 +491,7 @@ class XboxController(ControllerBase):
         self._emergency_latched = False
         self._previous_buttons = 0
         self._last_sent_command = None
+        self._last_sent_at = None
         self._last_poll_time = self._time_source()
         vibration_started = self._pulse_vibration(
             state.controller_index,
@@ -508,6 +511,7 @@ class XboxController(ControllerBase):
         self._model.reset_tail()
         self._previous_buttons = 0
         self._last_sent_command = None
+        self._last_sent_at = None
         self._refresh_status_labels(self._last_input, self._model.immediate_stop())
         self.status_changed.emit("Xbox 控制已停用")
         return True
@@ -843,8 +847,8 @@ class XboxController(ControllerBase):
         if self._active and was_connected and not state.connected:
             self._emergency_latched = True
             output = self._model.immediate_stop()
+            self.emergency_stop_requested.emit("Xbox 手柄断开，已请求尾鳍立即停止")
             self._emit_output(output, force=True)
-            self.emergency_stop_requested.emit("Xbox 手柄断开，尾鳍已立即停止")
             self._refresh_status_labels(state, output)
             return
 
@@ -862,11 +866,11 @@ class XboxController(ControllerBase):
         if newly_pressed & (XINPUT_GAMEPAD_X | XINPUT_GAMEPAD_B):
             self._emergency_latched = True
             output = self._model.immediate_stop()
-            self._emit_output(output, force=True)
-            self._pulse_emergency_vibration(state.controller_index)
             self.emergency_stop_requested.emit(
-                "X/B 紧急停止：尾鳍已立即停止，手柄短震提示"
+                "X/B 紧急停止：已请求尾鳍立即停止，手柄短震提示"
             )
+            self._pulse_emergency_vibration(state.controller_index)
+            self._emit_output(output, force=True)
             self._refresh_status_labels(state, output)
             return
 
@@ -879,7 +883,7 @@ class XboxController(ControllerBase):
         self._refresh_status_labels(state, output)
 
     def _emit_output(self, output, force=False):
-        """将模型输出转换为 ControlCommand，并按变化去重后发出。"""
+        """普通变化至多10Hz，轮询保留最新值；强制安全帧不受限频。"""
         self._pec_angle = int(output.pec_pwm)
         command_key = (
             round(output.tail_frequency, 3),
@@ -891,7 +895,12 @@ class XboxController(ControllerBase):
         )
         if not force and command_key == self._last_sent_command:
             return
+        now = self._last_poll_time
+        if (not force and self._last_sent_at is not None and
+                now - self._last_sent_at < ORDINARY_OUTPUT_INTERVAL_S - 1e-9):
+            return
         self._last_sent_command = command_key
+        self._last_sent_at = now
         command = ControlCommand(
             freq=output.tail_frequency,
             amp=output.tail_amplitude,

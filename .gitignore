@@ -2,3 +2,24 @@
 .agent
 __pycache__
 records
+# 双目/双尾鱼开发新增忽略
+fps_compare/
+*.avi
+*.mp4
+# 神经网络权重/转换产物体积大，只提交 models/README.md 和校验信息。
+models/**/*.onnx
+models/**/*.pth
+models/**/*.pt
+models/**/*.ckpt
+models/**/*.data-*
+models/**/*.index
+models/**/*.meta
+models/**/*.zip
+models/**/runtime/
+# 本地代码备份文件不入库（AGENTS.md 约束 #2：备份留在本地磁盘）
+*.backup_*
+# 深度 PID 参数由每台地面站本地调节，不提交个人标定值。
+depth_pid_params.json
+parallel_depth_pid_params.json
+parallel_depth_pid_params.tmp
+.runtime/

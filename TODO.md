@@ -4,7 +4,7 @@
 4. 【已解决】按键记录窗口太小，显示最下面的文字不全 
 ![alt text](image.png)
 5. 【已解决】机器鱼上需要启动很多节点  
-6. ui程序经常卡死，自动退出，内存需要优化
+6. 【已解决】ui程序经常卡死，自动退出，内存需要优化
 QObject::killTimer: Timers cannot be stopped from another thread
 7. 【已解决】保存数据出错
 [14:12:56] 数据更新异常: 'NoneType' object has no attribute 'tail_frequency'

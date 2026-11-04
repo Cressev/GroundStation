@@ -19,7 +19,8 @@
     <arg name="data_rate" default="50"/>
     
     <!-- IMU发布节点 -->
-    <node pkg="TransducerM_pkg" type="TMSerial" name="imu_pub" output="screen"/>
+    <rosparam file="$(find hipnuc_imu)/config/hipnuc_config.yaml" command="load" />
+    <node pkg="hipnuc_imu" type="serial_hipnuc_msg" name="hipnuc_imu" output="screen"/>
     
     <!-- UWB发布节点 -->
     <include file="$(find nlink_parser)/launch/linktrack.launch"/>

@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<!--
+  地面站开环键盘控制启动文件。
+  不启动 IMU/UWB/深度传感器闭环节点；只启动地面站 socket、舵机控制和机载相机。
+-->
+<launch>
+    <arg name="server_port" default="9999"/>
+    <arg name="data_rate" default="50"/>
+
+    <node pkg="fish_control" type="socket_server.py" name="fish_socket_server" output="screen">
+        <param name="server_port" value="$(arg server_port)"/>
+        <param name="data_rate" value="$(arg data_rate)"/>
+    </node>
+
+    <node pkg="fish_control" name="controller" type="servo_control" output="screen">
+        <param name="servo_time" value="200000"/>
+        <param name="mid_servo_bias" value="0.0"/>
+        <param name="tail_frequency" value="0.0"/>
+        <param name="tail_A" value="0.0"/>
+        <param name="tail_bias" value="0.0"/>
+        <param name="pec_angle" value="1500.0"/>
+    </node>
+
+    <node pkg="fish_control" type="camera_stream_server.py"
+          name="camera_stream_server" output="screen">
+        <param name="port" value="9998"/>
+        <param name="camera" value="0"/>
+        <!-- 摄像头采集参数 (高分辨率高帧率, 机上录制用) -->
+        <param name="width" value="1280"/>
+        <param name="height" value="960"/>
+        <param name="fps" value="30"/>
+        <!-- 实时流参数 (低分辨率低帧率, 给地面站显示用) -->
+        <param name="stream_width" value="640"/>
+        <param name="stream_height" value="480"/>
+        <param name="stream_fps" value="15"/>
+        <param name="quality" value="80"/>
+        <!-- 机上录制保存目录 -->
+        <param name="record_dir" value="/home/orangepi/catkin_ws/src/fish_control/data/video/"/>
+    </node>
+</launch>

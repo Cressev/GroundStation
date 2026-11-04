@@ -1,7 +1,7 @@
-# 机器鱼控制系统配置文件
+"""机器鱼地面站的网络、控制、视频与界面默认配置。"""
 
 # 网络配置
-FISH_IP = "192.168.137.241"  # 机器鱼IP地址
+FISH_IP = "192.168.137.215"  # 机器鱼IP地址
 SOCKET_PORT = 9999  # Socket通信端口
 SSH_PORT = 22
 SSH_USERNAME = "orangepi"
@@ -10,28 +10,96 @@ SSH_PASSWORD = "orangepi"
 # ROS配置
 ROS_MASTER_URI = f"http://{FISH_IP}:11311"
 
+# 双尾双目鱼（pico RK3588S）配置
+DUAL_FISH_CONFIG = {
+    "fish_ip": "10.77.77.2",       # pico 有线静态 IP（稳定；WiFi IP 会漂移）
+    "socket_port": 9999,           # 控制桥 gs_bridge 端口（JSON 控制命令）
+    "video_port": 9998,            # 双目视频/测距服务端口（pico_stereo depth_node）
+    "ssh_username": "root",
+    "ssh_password": "123456",
+}
+
+# 机器鱼版本（启动选择对话框使用）
+FISH_VARIANTS = {
+    "dual": {"name": "双尾双目鱼 (pico)", "description": "双尾关节 Hopf + 胸鳍 + 双目测距"},
+    "single": {"name": "单尾单目鱼 (orangepi)", "description": "单关节尾 + 胸鳍 + 鱼眼相机"},
+}
+
 # 控制参数（根据机器鱼舵机安全范围设定）
 CONTROL_LIMITS = {
     "tail_frequency": {
         "min": 0.0,
-        "max": 2.0,  # Hz
+        "max": 4.0,  # Hz
         "default": 0.0  # 静止启动
     },
     "tail_amplitude": {
         "min": 0.0,
-        "max": 0.4,  # rad (安全范围)
+        "max": 0.5,  # rad
         "default": 0.0  # 静止启动
     },
     "tail_offset": {
-        "min": -0.2,  # rad (安全范围)
-        "max": 0.2,   # rad
+        # ±0.5是以基础偏置为中心的左右转向范围, 不是绝对零位限幅;
+        # 合成偏置=基础偏置±转向量, 绝对范围可达±1.0 (Pi端socket_server已同步放宽)
+        "min": -0.5,  # rad
+        "max": 0.5,   # rad
         "default": 0.0
     },
     "pec_angle": {
-        "min": 1300,  # μs (PWM脉宽)
-        "max": 2000,  # μs
+        "min": 500,   # μs (PWM脉宽，STM32 胸鳍完整安全范围)
+        "max": 2500,  # μs
         "default": 1500
     }
+}
+
+# 键盘开环控制默认参数
+KEYBOARD_CONTROL_DEFAULTS = {
+    "base_bias": 0.0,
+    "slow_frequency": 1.5,
+    "slow_amplitude": 0.2,
+    "slow_turn_bias": 0.3,
+    "fast_frequency": 4.0,
+    "fast_amplitude": 0.5,
+    "fast_turn_bias": 0.5,
+    "tail_phase_diff": 1.57,
+    "tail_kappa": 0.5,
+}
+
+# Xbox 开环控制默认参数。前半圆负责方向、后半圆保持进入前状态，LT 在普通档与加速档之间连续插值。
+XBOX_CONTROL_DEFAULTS = {
+    "stick_deadzone": 0.15,
+    "trigger_deadzone": 0.05,
+    "normal_frequency": 1.5,
+    "normal_amplitude": 0.2,
+    "boost_frequency": 4.0,
+    "boost_amplitude": 0.5,
+    "maximum_turn_bias": 0.5,
+    "base_bias": 0.0,
+    "tail_phase_diff": 1.57,
+    "tail_kappa": 0.5,
+    "ramp_cycles": 2.0,
+    "pec_minimum_pwm": 500,
+    "pec_neutral_pwm": 1500,
+    "pec_maximum_pwm": 2500,
+    "pec_normal_rate": 100.0,
+    "pec_fast_rate": 400.0,
+}
+
+# 地面站深度闭环默认参数。深度单位为 cm，脉宽单位为 μs。
+# 深度以水面为 0，水下为正数且越深越大；误差=目标-当前。
+# 胸鳍脉宽减小会下潜，因此正增益配 direction=-1。
+# 首次闭环验证前保留窄限幅。
+DEPTH_CONTROL_DEFAULTS = {
+    "coordinate_convention": "positive_down_v2",
+    "target_depth": 15.0,
+    "kp": 20.0,
+    "ki": 0.0,
+    "kd": 0.0,
+    "integral_limit": 1000.0,
+    "neutral_pwm": 1500,
+    "minimum_pwm": 1300,
+    "maximum_pwm": 1700,
+    "sensor_timeout": 0.5,
+    "direction": -1,
 }
 
 # 传感器数据配置
@@ -63,7 +131,11 @@ KEYBOARD_MAPPING = {
 # 数据更新频率 (Hz)
 DATA_UPDATE_RATE = 50
 PLOT_UPDATE_RATE = 10
-PLOT_HISTORY_LENGTH = 500
+
+# 双目测距当前保持关闭：纯显示模式已验证，测距待后续单独恢复。
+STEREO_RANGING_UI_ENABLED = False
+# pico 当前发送 UVC 原生单目帧；旧板端双目横拼流仍可由协议标记兼容。
+STEREO_PREVIEW_LAYOUT = "raw_single"
 
 # UI配置
 UI_CONFIG = {

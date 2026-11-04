@@ -35,6 +35,7 @@ class RecordEntry:
     control_frequency: float
     control_amplitude: float
     control_offset: float
+    control_kappa: float = 0.5
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -53,7 +54,8 @@ class RecordEntry:
             orientation_yaw=fish_state.orientation['yaw'],
             control_frequency=control_command.tail_frequency,
             control_amplitude=control_command.tail_amplitude,
-            control_offset=control_command.tail_offset
+            control_offset=control_command.tail_offset,
+            control_kappa=getattr(control_command, 'tail_kappa', 0.5)
         )
 
 class DataRecorder(QObject):

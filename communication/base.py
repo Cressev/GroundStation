@@ -20,6 +20,13 @@ class FishState:
     def __init__(self):
         self.position = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.orientation = {"roll": 0.0, "pitch": 0.0, "yaw": 0.0}
+        # 双目鱼深度数据（gs_bridge depth JSON）：
+        # raw_1/filtered_1/raw_2/filtered_2/fused/calibrated，空 dict = 无数据
+        self.depth = {}
+        self.depth_sample = None
+        self.imu_sample = None
+        self.depth_control = None
+        self.depth_timestamp = None
         self.timestamp = time.time()
 
 @dataclass
@@ -28,12 +35,15 @@ class ControlCommand:
     tail_frequency: float  # 摆尾频率 (Hz)
     tail_amplitude: float  # 摆尾幅度 (rad)
     tail_offset: float     # 摆尾偏移角 (rad)
+    tail_kappa: float      # 最小角度到最大角度占完整周期的比例
     timestamp: float
     
     def __init__(self, freq=1.0, amp=0.5, offset=0.0):
         self.tail_frequency = freq
         self.tail_amplitude = amp
         self.tail_offset = offset
+        self.tail_phase_diff = 1.57  # 双关节相位差 rad（90°=历史默认步态）
+        self.tail_kappa = 0.5
         self.timestamp = time.time()
 
 class FishCommunicationInterface(ABC):

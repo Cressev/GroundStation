@@ -23,6 +23,7 @@ import shutil
 import tempfile
 import threading
 import hashlib
+import queue
 
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QGroupBox, QMessageBox, QGridLayout,
@@ -38,8 +39,9 @@ from stereo.transport import (MAX_PACKET, STEREO_FRAME, CALIBRATION,
 from stereo.calculation import (StereoCalculator, StereoPreview, display_to_rectified,
                                 measure_depth, MAX_CALIBRATION_BYTES)
 from stereo.worker import StereoWorker
-from stereo.recording import RealtimeVideoWriter
-from ui.numeric_inputs import NoWheelSpinBox
+from stereo.recording import RealtimeVideoWriter, TimestampedJpegWriter
+from ui.numeric_inputs import NoWheelSpinBox, NoWheelComboBox
+from ui.save_paths import default_export_path, validate_label
 
 # 画布布局常量（与 pico_stereo.stereo_lib 保持一致）
 CANVAS_W, CANVAS_H = 1280, 960
@@ -151,15 +153,18 @@ class StereoVideoClient(QThread):
         """阻塞收满 size 字节，连接断开返回 None。"""
         return receive_exact(self.socket, size, lambda: self._stop_requested)
 
-    def send_command(self, cmd):
-        """向板上发送一行文本命令（如 SET_POINT u v）。"""
-        if self.connected and self.socket:
-            try:
-                with self._send_lock:
-                    self.socket.sendall((cmd.strip() + "\n").encode('utf-8'))
-                return True
-            except Exception as exc:
-                print(f"发送命令失败: {exc}")
+    def send_command(self, cmd, expected_connection=None):
+        """Send on the intended video connection, never on a later reconnect."""
+        try:
+            with self._send_lock:
+                sock = self.socket
+                if (not self.connected or sock is None or
+                        (expected_connection is not None and expected_connection != self.connection_id)):
+                    return False
+                sock.sendall((cmd.strip() + "\n").encode('utf-8'))
+            return True
+        except Exception as exc:
+            print(f"发送命令失败: {exc}")
         return False
 
     def run(self):
@@ -255,6 +260,8 @@ class StereoFishCameraWidget(QWidget):
 
     state_changed = pyqtSignal()
     single_frame_ready = pyqtSignal(np.ndarray)
+    record_file_saved = pyqtSignal(object)
+    video_rate_failed = pyqtSignal(object)
 
     def __init__(self, settings=None):
         """初始化界面、连接与统计。"""
@@ -290,6 +297,17 @@ class StereoFishCameraWidget(QWidget):
         self.recording = False
         self.writer = None
         self._record_worker = None
+        self._raw_record_worker = None
+        self._raw_record_lock = threading.Lock()
+        self._record_label = ''
+        self._stream_fps = 15.0
+        self._fps_control_supported = False
+        self._previous_stream_fps = None
+        self._record_mode = 'display'
+        self._record_mode_user_selected = False
+        self._record_finalizing = False
+        self._rate_session = 0
+        self._rate_commands = queue.Queue(maxsize=8)
         self._encoded_count = 0
         self._rec_stitched = None
         self.recording_path = None
@@ -301,6 +319,11 @@ class StereoFishCameraWidget(QWidget):
         self._fps_t0 = time.time()
         self._init_ui()
         self._init_connections()
+        self.record_file_saved.connect(self._on_record_file_saved, Qt.QueuedConnection)
+        self.video_rate_failed.connect(self._on_video_rate_failed, Qt.QueuedConnection)
+        self._rate_thread = threading.Thread(target=self._video_rate_loop, daemon=True,
+                                             name='stereo-rate-commands')
+        self._rate_thread.start()
         self._record_stats_timer = QTimer(self)
         self._record_stats_timer.setInterval(250)
         self._record_stats_timer.timeout.connect(self._update_recording_stats)
@@ -351,6 +374,14 @@ class StereoFishCameraWidget(QWidget):
         self.record_btn.setToolTip(
             "录制左右目并排画面（右目缺失时补黑或只录左目，首帧锁定布局）；停止后弹出对话框选择 mp4 保存位置")
         self.record_btn.clicked.connect(self._toggle_recording)
+        self.record_name_input = QLineEdit()
+        self.record_name_input.setPlaceholderText('文件名（可选）')
+        self.record_name_input.setFixedWidth(135)
+        self.record_mode = NoWheelComboBox()
+        self.record_mode.addItem('显示画面录像', 'display')
+        self.record_mode.addItem('高速原始双目录像', 'raw')
+        self.record_mode.activated.connect(self._record_mode_was_selected)
+        self.record_mode.setToolTip('高速模式保存原始左右画面和实际时间戳，不含校正、亮度处理或测距标记。')
         self.snapshot_btn = QPushButton("保存图像")
         self.snapshot_btn.clicked.connect(self._choose_snapshot)
         self.cam_btn = QPushButton("开启摄像头")
@@ -373,6 +404,9 @@ class StereoFishCameraWidget(QWidget):
                        self.record_btn, self.snapshot_btn):
             button.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
             action_layout.addWidget(button)
+            if button is self.record_btn:
+                action_layout.addWidget(self.record_name_input)
+                action_layout.addWidget(self.record_mode)
         action_layout.addStretch(1)
         self.record_stats_label = QLabel('未录制 00:00:00 · 0帧')
         self.record_stats_label.setAccessibleName('本次录制时长和帧数')
@@ -694,13 +728,15 @@ class StereoFishCameraWidget(QWidget):
             self.resolution_combo.currentData() != actual)
         self.record_btn.setEnabled(
             stream_connected and camera_on and self.current_frame is not None and
-            not self.board_rec_on)
+            not self.board_rec_on and not self._record_finalizing)
         self.board_rec_btn.setEnabled(False)
         self.snapshot_btn.setEnabled(stream_connected and camera_on and self.current_frame is not None)
         self.range_btn.setEnabled(
             stream_connected and camera_on and self._local_model is not None)
         self.range_btn.setText("暂停本地测距" if self._local_enabled else "恢复本地测距")
         self.load_npz_btn.setEnabled(not self.recording and self._resolution_pending is None)
+        self.record_name_input.setEnabled(not self.recording and not self._record_finalizing)
+        self.record_mode.setEnabled(not self.recording and not self._record_finalizing)
         self.board_npz_btn.setEnabled(not self.recording and self._resolution_pending is None and bool(self._calibration_path))
 
         camera_text = {
@@ -813,6 +849,8 @@ class StereoFishCameraWidget(QWidget):
 
     def _toggle_recording(self):
         """开始/停止录制。停止后弹出对话框选择 mp4 保存位置与文件名。"""
+        if self._record_finalizing:
+            return
         if self._stream_state != "connected" or self._camera_state != "on":
             QMessageBox.warning(self, "录制失败", "请先连接视频服务并开启摄像头")
             return
@@ -820,10 +858,42 @@ class StereoFishCameraWidget(QWidget):
             QMessageBox.warning(self, "录制失败", "尚未收到视频画面")
             return
         if not self.recording:
-            fd, self.recording_path = tempfile.mkstemp(suffix=".mp4")
+            try:
+                self._record_label = validate_label(self.record_name_input.text())
+                default_path = default_export_path('videos', self._record_label, '.mp4')
+            except (ValueError, OSError) as exc:
+                QMessageBox.warning(self, '文件名无效', str(exc))
+                return
+            self._record_mode = self.record_mode.currentData()
+            if self._record_mode == 'raw' and (not self._relay_mode or not self._fps_control_supported):
+                QMessageBox.warning(self, '录像不可用', '当前视频服务不支持高速录像，请更新板端视频服务或选择显示画面录像。')
+                return
+            try:
+                fd, self.recording_path = tempfile.mkstemp(prefix='.stereo_', suffix='.mp4', dir=str(default_path.parent))
+            except OSError as exc:
+                QMessageBox.warning(self, '录制失败', f'无法创建录像文件：{exc}')
+                return
             os.close(fd)
             self.writer = None  # 首帧到达时按实际尺寸创建
             self._record_worker = None
+            if self._record_mode == 'raw':
+                try:
+                    recorder = TimestampedJpegWriter(self.recording_path)
+                except Exception as exc:
+                    os.remove(self.recording_path)
+                    self.recording_path = None
+                    QMessageBox.warning(self, '录像不可用', f'无法启动原始录像，请检查 PyAV：{exc}')
+                    return
+                self._rate_session += 1
+                if not self._queue_video_rate(30, self._rate_session):
+                    recorder.stop()
+                    os.remove(self.recording_path)
+                    self.recording_path = None
+                    QMessageBox.warning(self, '录像不可用', '视频帧率命令队列繁忙，请稍后再试')
+                    return
+                self._previous_stream_fps = self._stream_fps
+                with self._raw_record_lock:
+                    self._raw_record_worker = recorder
             self._encoded_count = 0
             self._rec_stitched = None  # 首帧确立本次录制布局：双目拼接或单目
             self.recording = True
@@ -832,6 +902,8 @@ class StereoFishCameraWidget(QWidget):
             self._rec_elapsed = 0.0
             self._rec_status = '录制中'
             self.record_stats_label.setToolTip(
+                '本次实际经过时间与输入帧数；高速模式按源时间戳保存接收的原始 JPEG，不人为补帧。'
+                if self._record_mode == 'raw' else
                 '本次实际经过时间与输入帧数（左右目为一对）；MP4按真实时间补帧，补帧不代表收到新画面。')
             self._update_recording_stats()
             self._record_stats_timer.start()
@@ -845,10 +917,23 @@ class StereoFishCameraWidget(QWidget):
             return
         end_time = time.monotonic()
         self.recording = False
+        with self._raw_record_lock:
+            raw_worker, self._raw_record_worker = self._raw_record_worker, None
         worker = self._record_worker
         self._record_worker = None
         error = None
-        if worker is not None:
+        if raw_worker is not None:
+            raw_worker.stop(timeout=0)
+            if self._previous_stream_fps is not None:
+                if not self._queue_video_rate(self._previous_stream_fps, self._rate_session):
+                    self.status_label.setText('视频帧率恢复命令繁忙；断开视频后会恢复默认值')
+                self._previous_stream_fps = None
+            self._record_finalizing = True
+            self._finish_recording_stats('正在保存', end_time)
+            self._apply_ui_state()
+            self._finish_raw_later(raw_worker, end_time, prompt_for_path, time.monotonic()+10)
+            return
+        elif worker is not None:
             complete = worker.stop(end_time)
             self._encoded_count = worker.output_count
             error = worker.error
@@ -860,6 +945,25 @@ class StereoFishCameraWidget(QWidget):
                 return
         elif self.writer is not None:
             self.writer.release()
+        self._finish_recorded_file(worker, raw_worker, error, end_time, prompt_for_path)
+
+    def _finish_raw_later(self, worker, end_time, prompt_for_path, deadline):
+        """Poll the encoder without blocking the GUI or control event loop."""
+        if not worker.finished.is_set():
+            if time.monotonic() < deadline:
+                QTimer.singleShot(50, lambda: self._finish_raw_later(worker, end_time, prompt_for_path, deadline))
+                return
+            self._rec_status = '录制失败'
+            self._apply_ui_state()
+            self.record_stats_label.setToolTip(f'录像线程仍在退出，暂不能开始新录像；临时文件保留在: {self.recording_path}')
+            QTimer.singleShot(500, lambda: self._finish_raw_later(worker, end_time, False, deadline))
+            return
+        self._rec_count, self._encoded_count, error = worker.snapshot()
+        self._record_finalizing = False
+        self._finish_recorded_file(None, worker, error, end_time, prompt_for_path)
+
+    def _finish_recorded_file(self, worker, raw_worker, error, end_time, prompt_for_path):
+        """Persist an already-closed recording; errors retain partial output."""
         self.writer = None
         self._finish_recording_stats('录制失败' if error else '已停止', end_time)
         self._apply_ui_state()
@@ -871,24 +975,46 @@ class StereoFishCameraWidget(QWidget):
             os.remove(temp_path)
             self.record_stats_label.setToolTip('本次未写入视频帧，未生成空视频文件。')
             return
-        if worker is not None and self._encoded_count == 0:
+        if (worker is not None or raw_worker is not None) and self._encoded_count == 0:
             self.record_stats_label.setToolTip(
                 f'录制失败，未编码任何帧；临时文件保留在: {temp_path}\n原因: {error or "未知"}')
             return
-        default_name = f"stereo_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
+        try:
+            default_name = str(default_export_path('videos', self._record_label, '.mp4'))
+        except (ValueError, OSError) as exc:
+            self.record_stats_label.setToolTip(f'保存目录不可用，临时文件保留在: {temp_path}\n{exc}')
+            return
         path = ""
         if prompt_for_path:
             path, _ = QFileDialog.getSaveFileName(
                 self, "保存录制视频", default_name, "MP4 视频 (*.mp4)")
         if not path:
-            path = os.path.join("records", default_name)
+            path = default_name
         if not path.lower().endswith(".mp4"):
             path += ".mp4"
-        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
-        shutil.move(temp_path, path)
+        if raw_worker is not None:
+            self._record_finalizing = True
+            self._rec_status = '正在保存'
+            self._update_recording_stats()
+            self._apply_ui_state()
+            thread = threading.Thread(target=self._move_raw_file,
+                                      args=(temp_path, path, error, prompt_for_path),
+                                      daemon=True, name='stereo-file-save')
+            thread.start()
+            return
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+            shutil.move(temp_path, path)
+        except OSError as exc:
+            self._rec_status = '录制失败'
+            self._update_recording_stats()
+            self.record_stats_label.setToolTip(f'保存失败，临时文件保留在: {temp_path}\n{exc}')
+            if prompt_for_path:
+                QMessageBox.warning(self, '保存失败', self.record_stats_label.toolTip())
+            return
         self.record_stats_label.setToolTip(
             f'已保存: {os.path.abspath(path)}\n输入{self._rec_count}帧，'
-            f'视频{self._encoded_count}帧（含按时间补帧）；固定15FPS。'
+            f'视频{self._encoded_count}帧' + ('（原始 JPEG，按采集时间戳保存）。' if raw_worker else '（含按时间补帧）；固定15FPS。')
             + (f'\n编码异常: {error}' if error else ''))
         if prompt_for_path:
             if error:
@@ -896,8 +1022,84 @@ class StereoFishCameraWidget(QWidget):
             else:
                 QMessageBox.information(self, "录制完成", f"视频已保存到:\n{path}")
 
+    def _move_raw_file(self, temp_path, path, recording_error, prompt_for_path):
+        """Move/copy a potentially large file outside the GUI/control event loop."""
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(path)) or '.', exist_ok=True)
+            shutil.move(temp_path, path)
+            result = dict(path=path, temp_path=temp_path, error=recording_error,
+                          prompt=prompt_for_path, move_error=None)
+        except Exception as exc:
+            result = dict(path=path, temp_path=temp_path, error=recording_error,
+                          prompt=prompt_for_path, move_error=str(exc))
+        try:
+            self.record_file_saved.emit(result)
+        except RuntimeError:
+            pass  # The window closed; a failed move still leaves the temporary file.
+
+    def _queue_video_rate(self, fps, session):
+        """Enqueue a video-only rate change without waiting for a congested socket."""
+        try:
+            self._rate_commands.put_nowait((fps, session, self.stream_client.connection_id))
+            return True
+        except queue.Full:
+            return False
+
+    def _video_rate_loop(self):
+        """Serialize start/restore commands off the GUI and control event loop."""
+        while True:
+            item = self._rate_commands.get()
+            if item is None:
+                return
+            fps, session, connection_id = item
+            if not self.stream_client.send_command(f'SET_STREAM_FPS {fps:g}',
+                                                   expected_connection=connection_id):
+                try:
+                    self.video_rate_failed.emit((fps, session))
+                except RuntimeError:
+                    return
+
+    @pyqtSlot(object)
+    def _on_video_rate_failed(self, result):
+        """Report an asynchronous command failure without changing fish controls."""
+        fps, session = result
+        if session != self._rate_session:
+            return
+        self.status_label.setText('视频帧率命令发送失败；断开视频后会恢复默认值')
+        if fps == 30 and self.recording and self._record_mode == 'raw':
+            self._stop_recording(prompt_for_path=False)
+            self.record_stats_label.setToolTip('视频帧率命令发送失败，录像已停止')
+
+    @pyqtSlot(object)
+    def _on_record_file_saved(self, result):
+        """Publish the asynchronous file-save result on the GUI thread."""
+        self._record_finalizing = False
+        error = result['move_error'] or result['error']
+        self._rec_status = '录制失败' if error else '已停止'
+        self._update_recording_stats()
+        self._apply_ui_state()
+        if result['move_error']:
+            message = f"保存失败，临时文件保留在: {result['temp_path']}\n{result['move_error']}"
+        else:
+            message = (f"已保存: {os.path.abspath(result['path'])}\n输入{self._rec_count}帧，"
+                       f"视频{self._encoded_count}帧（原始 JPEG，按采集时间戳保存）。")
+            if result['error']:
+                message += '\n编码异常: '+result['error']
+        self.record_stats_label.setToolTip(message)
+        if result['prompt']:
+            if error:
+                QMessageBox.warning(self, '录像保存不完整', message)
+            else:
+                QMessageBox.information(self, '录制完成', message)
+
     def _update_recording_stats(self):
         """Show elapsed time/input count and surface background encoder errors."""
+        if self.recording and self._raw_record_worker:
+            self._rec_count, self._encoded_count, error = self._raw_record_worker.snapshot()
+            if error:
+                self._stop_recording(prompt_for_path=False)
+                self.record_stats_label.setToolTip(self.record_stats_label.toolTip()+'\n录制失败: '+error)
+                return
         if self.recording and self._record_worker and self._record_worker.error:
             error = self._record_worker.error
             self._stop_recording(prompt_for_path=False)
@@ -925,7 +1127,7 @@ class StereoFishCameraWidget(QWidget):
 
     def _record_frame(self, left, right=None):
         """录制左右目并排画面；首帧锁定本次布局，右目缺失补黑保持编码尺寸。"""
-        if not self.recording:
+        if not self.recording or self._record_mode == 'raw':
             return
         try:
             if self._rec_stitched is None:
@@ -1066,6 +1268,9 @@ class StereoFishCameraWidget(QWidget):
             return
         if msg_type == 'error':
             self.status_label.setText('视频服务: '+str(info.get('message', '未知错误')))
+            if info.get('command') == 'SET_STREAM_FPS' and self.recording and self._record_mode == 'raw':
+                self._stop_recording(prompt_for_path=False)
+                self.record_stats_label.setToolTip('视频帧率设置失败，录像已停止：'+str(info.get('message', '未知错误')))
             pending = self._resolution_pending
             if (pending and info.get('command') == 'SET_RESOLUTION' and
                     info.get('request_id') == pending['id']):
@@ -1111,6 +1316,13 @@ class StereoFishCameraWidget(QWidget):
             if layout in ("raw_single", "raw_sbs", "processed"):
                 self.stream_client.preview_layout = layout
             self._relay_mode = info.get('protocol') == 'stereo-relay-v1'
+            self._fps_control_supported = info.get('fps_switch') is True
+            if not self.recording and not self._record_finalizing and not self._record_mode_user_selected:
+                mode = 'raw' if self._relay_mode and self._fps_control_supported else 'display'
+                self.record_mode.setCurrentIndex(self.record_mode.findData(mode))
+            fps = info.get('stream_fps')
+            if isinstance(fps, (int, float)) and 1 <= fps <= 60:
+                self._stream_fps = float(fps)
             if self._relay_mode:
                 self._update_source_descriptor(info)
             enabled = bool(info.get("camera_on", info.get("camera_enabled", False)))
@@ -1121,7 +1333,7 @@ class StereoFishCameraWidget(QWidget):
             self._update_resolution_state(info)
             self.camera_state_label.setText(
                 f"摄像头: {'已开启' if enabled else '关闭——点击开启摄像头出画面'}")
-            if enabled:
+            if enabled and info.get('command') != 'SET_STREAM_FPS':
                 self._reset_canvas_height_for_camera_on()
             if enabled and self.current_frame is None:
                 self._set_video_placeholder("摄像头已开启——等待画面…")
@@ -1263,12 +1475,21 @@ class StereoFishCameraWidget(QWidget):
         self._result_timer.stop()
         self._disconnect(prompt_for_recording=False)
         self.worker.close()
+        try:
+            self._rate_commands.put_nowait(None)
+        except queue.Full:
+            pass
 
     def _choose_snapshot(self):
         """Choose a PNG path and save only the displayed single-camera frame."""
         if self.current_frame is None:
             return
-        path, _ = QFileDialog.getSaveFileName(self, '保存当前左目图像', 'fish.png', 'PNG图像 (*.png)')
+        try:
+            suggested = str(default_export_path('images', self.record_name_input.text(), '.png'))
+        except (ValueError, OSError) as exc:
+            QMessageBox.warning(self, '文件名无效', str(exc))
+            return
+        path, _ = QFileDialog.getSaveFileName(self, '保存当前左目图像', suggested, 'PNG图像 (*.png)')
         if path:
             self.save_snapshot(path if path.lower().endswith('.png') else path+'.png')
 
@@ -1485,7 +1706,15 @@ class StereoFishCameraWidget(QWidget):
                 self._resolution_pending is None and
                 metadata.get('connection_id') == self.stream_client.connection_id and
                 (self._source_epoch is None or metadata.get('camera_epoch') == self._source_epoch)):
+            with self._raw_record_lock:
+                recorder = self._raw_record_worker
+            if recorder is not None:
+                recorder.submit(metadata, jpeg)
             self.worker.submit(metadata, jpeg)
+
+    def _record_mode_was_selected(self, _index):
+        """Keep an explicit user choice when subsequent state packets arrive."""
+        self._record_mode_user_selected = True
 
     def _poll_local_result(self):
         """Pull a latest-only result without queued per-frame Qt signals."""

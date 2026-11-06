@@ -12,7 +12,9 @@ def recording_widget(tmp_path, monkeypatch):
     from test_ui_state_machine import ensure_app
     from PyQt5.QtCore import QSettings
     from ui import stereo_camera_widget as module
+    from ui import save_paths
     ensure_app()
+    monkeypatch.setattr(save_paths, 'ROOT', tmp_path/'saved_data')
     monkeypatch.setattr(module.tempfile, 'tempdir', str(tmp_path))
     widget = module.StereoFishCameraWidget(QSettings(str(tmp_path/'settings.ini'), QSettings.IniFormat))
     widget._stream_state, widget._camera_state = 'connected', 'on'
@@ -142,7 +144,7 @@ def test_recording_write_failure_does_not_count_rejected_frame(recording_widget,
     assert not widget.recording and not widget._record_stats_timer.isActive()
     assert widget.record_stats_label.text() == '录制失败 00:00:04 · 1帧'
     assert 'write failed' in widget.record_stats_label.toolTip()
-    assert len(list((tmp_path/'records').glob('*.mp4'))) == 1
+    assert len(list((tmp_path/'saved_data'/'videos').glob('*.mp4'))) == 1
 
 
 def test_recording_without_new_frames_creates_no_empty_video(recording_widget, tmp_path):
@@ -240,3 +242,214 @@ def test_recording_single_eye_layout_locks_when_right_missing_first(recording_wi
     frames = [call.args[0] for call in writer.write.call_args_list]
     assert [f.shape for f in frames] == [(80, 60, 3), (80, 60, 3)]
     widget._stop_recording()
+
+
+def test_invalid_filename_never_starts_recording(recording_widget, monkeypatch):
+    """A path-like label cannot create a recording or send any command."""
+    from ui import stereo_camera_widget as module
+    widget, writer, _ = recording_widget
+    warnings = Mock()
+    monkeypatch.setattr(module.QMessageBox, 'warning', warnings)
+    widget.record_name_input.setText('../unsafe')
+    widget._toggle_recording()
+    assert not widget.recording and widget.recording_path is None
+    assert warnings.called
+    writer.write.assert_not_called()
+
+
+def test_new_relay_defaults_to_raw_but_respects_user_mode(recording_widget):
+    """A capable relay enables the requested default without overriding a user choice."""
+    import json
+    widget, _, _ = recording_widget
+    widget._update_source_descriptor = Mock()
+    widget._update_resolution_state = Mock()
+    state = dict(type='node_state', protocol='stereo-relay-v1', camera_on=True,
+                 fps_switch=True, stream_fps=15)
+    widget._on_message(json.dumps(state))
+    assert widget.record_mode.currentData() == 'raw'
+    widget.record_mode.setCurrentIndex(widget.record_mode.findData('display'))
+    widget.record_mode.activated.emit(widget.record_mode.currentIndex())
+    widget.video_height_input.setValue(840)
+    widget._on_message(json.dumps(dict(state, command='SET_STREAM_FPS', stream_fps=30)))
+    assert widget.record_mode.currentData() == 'display'
+    assert widget.video_height_input.value() == 840
+
+
+def test_raw_recording_saves_timestamps_and_restores_rate(recording_widget, tmp_path, monkeypatch):
+    """Raw mode saves exactly received packets without blocking the GUI on close."""
+    import cv2
+    av = pytest.importorskip('av')
+    from PyQt5.QtTest import QTest
+    widget, _, _ = recording_widget
+    widget._relay_mode = widget._fps_control_supported = True
+    widget._stream_fps = 15
+    widget.record_mode.setCurrentIndex(widget.record_mode.findData('raw'))
+    widget.record_name_input.setText('水下测试')
+    widget.stream_client.send_command = Mock(return_value=True)
+    widget.worker.submit = Mock()
+    widget._toggle_recording()
+    assert widget.recording
+    for index, delta in enumerate((0, 33_000_000, 100_000_000)):
+        ok, jpeg = cv2.imencode('.jpg', np.full((80, 120, 3), index*50, np.uint8))
+        assert ok
+        widget._submit_stereo(dict(connection_id=widget.stream_client.connection_id,
+                                   camera_epoch=1, source_width=120, source_height=80,
+                                   capture_monotonic_ns=1_000_000_000+delta), jpeg.tobytes())
+    widget._stop_recording()
+    for _ in range(200):
+        if not widget._record_finalizing and widget.stream_client.send_command.call_count >= 2:
+            break
+        QTest.qWait(10)
+    assert not widget._record_finalizing
+    assert widget.stream_client.send_command.call_args_list[0].args[0] == 'SET_STREAM_FPS 30'
+    assert widget.stream_client.send_command.call_args_list[-1].args[0] == 'SET_STREAM_FPS 15'
+    with av.open(str(tmp_path/'saved.mp4')) as container:
+        frames = list(container.decode(video=0))
+    assert len(frames) == 3
+    assert [float(frame.time) for frame in frames] == pytest.approx([0, .033, .1], abs=.002)
+
+
+def test_raw_stop_does_not_block_gui_timer(recording_widget, monkeypatch):
+    """An unfinished encoder must not block the event loop used by controls."""
+    import threading
+    import time
+    from PyQt5.QtCore import QTimer
+    from PyQt5.QtTest import QTest
+    from ui import stereo_camera_widget as module
+    widget, _, _ = recording_widget
+    widget._relay_mode = widget._fps_control_supported = True
+    widget.record_mode.setCurrentIndex(widget.record_mode.findData('raw'))
+    widget.stream_client.send_command = Mock(return_value=True)
+
+    class SlowRaw:
+        """Keep finalization pending until the test explicitly releases it."""
+        def __init__(self, _path):
+            self.finished = threading.Event()
+        def stop(self, timeout=10):
+            return self.finished.wait(timeout)
+        def snapshot(self):
+            return 0, 0, None
+
+    monkeypatch.setattr(module, 'TimestampedJpegWriter', SlowRaw)
+    widget._toggle_recording()
+    worker = widget._raw_record_worker
+    ticks = []
+    timer = QTimer()
+    timer.setInterval(5)
+    timer.timeout.connect(lambda: ticks.append(1))
+    timer.start()
+    started = time.perf_counter()
+    widget._stop_recording(prompt_for_path=False)
+    assert time.perf_counter()-started < .2
+    assert widget._record_finalizing and not widget.record_btn.isEnabled()
+    QTest.qWait(40)
+    assert ticks
+    worker.finished.set()
+    QTest.qWait(100)
+    assert not widget._record_finalizing
+    timer.stop()
+
+
+def test_raw_cross_volume_save_does_not_block_gui(recording_widget, monkeypatch):
+    """Even a slow final file move cannot stall the control event loop."""
+    import threading
+    from PyQt5.QtCore import QTimer
+    from PyQt5.QtTest import QTest
+    from ui import stereo_camera_widget as module
+    widget, _, _ = recording_widget
+    widget._relay_mode = widget._fps_control_supported = True
+    widget.record_mode.setCurrentIndex(widget.record_mode.findData('raw'))
+    widget.stream_client.send_command = Mock(return_value=True)
+
+    class CompleteRaw:
+        """Provide a finished recorder with one captured frame."""
+        def __init__(self, _path):
+            self.finished = threading.Event()
+            self.finished.set()
+        def stop(self, timeout=10):
+            return True
+        def snapshot(self):
+            return 1, 1, None
+
+    release = threading.Event()
+    original_move = module.shutil.move
+    def slow_move(source, destination):
+        """Emulate slow cross-volume storage without blocking the test thread."""
+        assert release.wait(3)
+        return original_move(source, destination)
+    monkeypatch.setattr(module, 'TimestampedJpegWriter', CompleteRaw)
+    monkeypatch.setattr(module.shutil, 'move', slow_move)
+    widget._toggle_recording()
+    ticks = []
+    timer = QTimer()
+    timer.setInterval(5)
+    timer.timeout.connect(lambda: ticks.append(1))
+    timer.start()
+    widget._stop_recording(prompt_for_path=False)
+    assert widget._record_finalizing
+    QTest.qWait(40)
+    assert ticks and widget._record_finalizing
+    release.set()
+    for _ in range(100):
+        if not widget._record_finalizing:
+            break
+        QTest.qWait(10)
+    assert not widget._record_finalizing and widget._rec_status == '已停止'
+    timer.stop()
+
+
+def test_slow_video_rate_command_does_not_block_controls(recording_widget, monkeypatch):
+    """A congested video socket must not stall the GUI's control timers."""
+    import threading
+    import time
+    from PyQt5.QtCore import QTimer
+    from PyQt5.QtTest import QTest
+    from ui import stereo_camera_widget as module
+    widget, _, _ = recording_widget
+    widget._relay_mode = widget._fps_control_supported = True
+    widget.record_mode.setCurrentIndex(widget.record_mode.findData('raw'))
+    release = threading.Event()
+    started = threading.Event()
+    def slow_send(_command, **_kwargs):
+        """Emulate a blocked socket without affecting the main thread."""
+        started.set()
+        return release.wait(3)
+    widget.stream_client.send_command = slow_send
+    class EmptyRaw:
+        """Return a completed empty recorder for this command-queue test."""
+        def __init__(self, _path):
+            self.finished = threading.Event()
+            self.finished.set()
+        def stop(self, timeout=10):
+            return True
+        def snapshot(self):
+            return 0, 0, None
+    monkeypatch.setattr(module, 'TimestampedJpegWriter', EmptyRaw)
+    ticks = []
+    timer = QTimer()
+    timer.setInterval(5)
+    timer.timeout.connect(lambda: ticks.append(1))
+    timer.start()
+    before = time.perf_counter()
+    widget._toggle_recording()
+    assert time.perf_counter()-before < .2 and widget.recording
+    assert started.wait(1)
+    QTest.qWait(40)
+    assert ticks
+    release.set()
+    widget._stop_recording(prompt_for_path=False)
+    QTest.qWait(100)
+    timer.stop()
+
+
+def test_stale_rate_command_is_not_sent_to_new_video_connection():
+    """An old queued command must not affect a newly reconnected video service."""
+    from ui.stereo_camera_widget import StereoVideoClient
+    client = StereoVideoClient()
+    client.connected = True
+    client.connection_id = 2
+    client.socket = Mock()
+    assert not client.send_command('SET_STREAM_FPS 30', expected_connection=1)
+    client.socket.sendall.assert_not_called()
+    assert client.send_command('SET_STREAM_FPS 15', expected_connection=2)
+    client.socket.sendall.assert_called_once_with(b'SET_STREAM_FPS 15\n')

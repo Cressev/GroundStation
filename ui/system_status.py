@@ -11,8 +11,9 @@ import pyqtgraph as pg
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QRadioButton,
                              QButtonGroup, QPushButton, QFileDialog, QMessageBox, QGridLayout,
-                             QScrollArea, QSplitter, QFrame, QSizePolicy)
+                             QScrollArea, QSplitter, QFrame, QSizePolicy, QLineEdit)
 from ui.numeric_inputs import NoWheelSpinBox
+from ui.save_paths import default_export_path
 
 
 class SystemStatusWidget(QWidget):
@@ -78,6 +79,11 @@ class SystemStatusWidget(QWidget):
             button.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
             self.action_buttons[key] = button
             action_row.addWidget(button)
+        self.export_name = QLineEdit()
+        self.export_name.setPlaceholderText('文件名（可选）')
+        self.export_name.setMinimumWidth(110)
+        self.export_name.setMaximumWidth(150)
+        action_row.addWidget(self.export_name)
         layout.addWidget(self.toolbar)
         self._select_export_plot('cpu_percent')
         self.status_label = QLabel('未连接；数据源为机器鱼控制板，不是本地电脑')
@@ -346,8 +352,12 @@ class SystemStatusWidget(QWidget):
 
     def _save_data(self):
         """Ask for a path/type before exporting the current visible telemetry interval."""
-        path, kind = QFileDialog.getSaveFileName(self, '保存当前系统状态数据',
-            '系统状态_'+datetime.now().strftime('%Y%m%d_%H%M%S')+'.csv',
+        try:
+            suggested = str(default_export_path('system_status', self.export_name.text(), '.csv'))
+        except (ValueError, OSError) as exc:
+            QMessageBox.warning(self, '文件名无效', str(exc))
+            return
+        path, kind = QFileDialog.getSaveFileName(self, '保存当前系统状态数据', suggested,
             'CSV 文件 (*.csv);;Excel 工作簿 (*.xlsx)')
         if not path:
             return
@@ -361,8 +371,13 @@ class SystemStatusWidget(QWidget):
 
     def _save_image(self):
         """Ask for a PNG path and report any write error without changing live history."""
+        try:
+            suggested = str(default_export_path('system_status', self.export_name.text(), '.png'))
+        except (ValueError, OSError) as exc:
+            QMessageBox.warning(self, '文件名无效', str(exc))
+            return
         path, _ = QFileDialog.getSaveFileName(self, '保存当前系统状态画布',
-            '系统状态_'+datetime.now().strftime('%Y%m%d_%H%M%S')+'.png', 'PNG 图像 (*.png)')
+            suggested, 'PNG 图像 (*.png)')
         if path:
             try:
                 self.export_png(path)

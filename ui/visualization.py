@@ -15,7 +15,7 @@ from pyqtgraph.graphicsItems.LegendItem import ItemSample
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
                              QLabel, QGroupBox, QGridLayout, QSizePolicy,
                              QPushButton, QRadioButton, QButtonGroup, QSpinBox,
-                             QFileDialog, QMessageBox, QScrollArea)
+                             QFileDialog, QMessageBox, QScrollArea, QLineEdit)
 from PyQt5.QtCore import QTimer, pyqtSignal, Qt, QRectF
 from PyQt5.QtGui import QFont
 import time
@@ -26,6 +26,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from communication.base import FishState
 from ui.system_status import SystemStatusWidget
+from ui.save_paths import default_export_path
 from config import PLOT_UPDATE_RATE, UI_CONFIG
 
 
@@ -200,6 +201,11 @@ class DataVisualizationWidget(QWidget):
         action_row.addWidget(reset_view_btn)
         action_row.addWidget(self.save_time_data_btn)
         action_row.addWidget(self.save_time_image_btn)
+        self.time_export_name = QLineEdit()
+        self.time_export_name.setPlaceholderText('文件名（可选）')
+        self.time_export_name.setMinimumWidth(110)
+        self.time_export_name.setMaximumWidth(160)
+        action_row.addWidget(self.time_export_name)
         action_row.addStretch()
         layout.addLayout(action_row)
 
@@ -929,8 +935,11 @@ class DataVisualizationWidget(QWidget):
 
     def _save_visible_time_data(self):
         """弹出资源管理器，选择路径和 CSV/Excel 格式后保存可见数据。"""
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        default_path = str(Path.cwd() / f"时间序列_{timestamp}.csv")
+        try:
+            default_path = str(default_export_path('time_series', self.time_export_name.text(), '.csv'))
+        except (ValueError, OSError) as exc:
+            QMessageBox.warning(self, '文件名无效', str(exc))
+            return
         filepath, selected_filter = QFileDialog.getSaveFileName(
             self, "保存当前时间范围数据", default_path,
             "CSV 文件 (*.csv);;Excel 工作簿 (*.xlsx)")
@@ -964,8 +973,11 @@ class DataVisualizationWidget(QWidget):
 
     def _save_time_series_image(self):
         """弹出资源管理器，把当前可见画布保存为 PNG。"""
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        default_path = str(Path.cwd() / f"时间序列画布_{timestamp}.png")
+        try:
+            default_path = str(default_export_path('time_series', self.time_export_name.text(), '.png'))
+        except (ValueError, OSError) as exc:
+            QMessageBox.warning(self, '文件名无效', str(exc))
+            return
         filepath, _ = QFileDialog.getSaveFileName(
             self, "保存当前时序画布", default_path, "PNG 图像 (*.png)")
         if not filepath:

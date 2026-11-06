@@ -383,7 +383,7 @@ class StereoFishCameraWidget(QWidget):
         self.record_mode.addItem('显示画面录像', 'display')
         self.record_mode.addItem('高速原始双目录像', 'raw')
         self.record_mode.activated.connect(self._record_mode_was_selected)
-        self.record_mode.setToolTip('高速模式保存原始左右画面及时间戳，停止后后台生成 H.264 兼容副本；不含校正、亮度处理或测距标记。')
+        self.record_mode.setToolTip('高速模式保存原始左右画面及时间戳，停止后后台生成 H.264；成功校验后删除本次原始临时文件，失败时保留。')
         self.snapshot_btn = QPushButton("保存图像")
         self.snapshot_btn.clicked.connect(self._choose_snapshot)
         self.cam_btn = QPushButton("开启摄像头")
@@ -1026,9 +1026,10 @@ class StereoFishCameraWidget(QWidget):
                 QMessageBox.information(self, "录制完成", f"视频已保存到:\n{path}")
 
     def _move_raw_file(self, temp_path, path, recording_error, prompt_for_path):
-        """Keep original video and generate a compatible copy away from the GUI."""
+        """Keep the source until a validated compatible video is safely published."""
         raw_path = None
         conversion_error = None
+        cleanup_error = None
         try:
             os.makedirs(os.path.dirname(os.path.abspath(path)) or '.', exist_ok=True)
             stem, extension = os.path.splitext(path)
@@ -1046,17 +1047,21 @@ class StereoFishCameraWidget(QWidget):
                     if os.path.exists(path):
                         raise FileExistsError('目标视频已存在，未覆盖')
                     os.rename(converted, path)
+                    try:
+                        os.remove(raw_path)
+                    except OSError as exc:
+                        cleanup_error = str(exc)
                 except Exception as exc:
                     conversion_error = str(exc)
                     if os.path.exists(converted):
                         os.remove(converted)
             result = dict(path=path, temp_path=temp_path, error=recording_error,
                           prompt=prompt_for_path, move_error=None, raw_path=raw_path,
-                          conversion_error=conversion_error)
+                          conversion_error=conversion_error, cleanup_error=cleanup_error)
         except Exception as exc:
             result = dict(path=path, temp_path=temp_path, error=recording_error,
                           prompt=prompt_for_path, move_error=str(exc), raw_path=raw_path,
-                          conversion_error=None)
+                          conversion_error=None, cleanup_error=cleanup_error)
         try:
             self.record_file_saved.emit(result)
         except RuntimeError:
@@ -1106,17 +1111,22 @@ class StereoFishCameraWidget(QWidget):
         if result['move_error']:
             message = f"保存失败，临时文件保留在: {result['temp_path']}\n{result['move_error']}"
         else:
-            message = (f"原始录像: {os.path.abspath(result['raw_path'])}\n输入{self._rec_count}帧，"
-                       f"视频{self._encoded_count}帧（按采集时间戳保存）。")
+            message = (f"输入{self._rec_count}帧，视频{self._encoded_count}帧"
+                       f"（按采集时间戳保存）。")
             if result.get('conversion_error'):
-                message += '\n兼容视频转换失败，原始录像已保留: '+result['conversion_error']
+                message += (f"\n兼容视频转换失败，原始录像已保留: {os.path.abspath(result['raw_path'])}"
+                            f"\n{result['conversion_error']}")
             elif not result['error']:
                 message += f"\n兼容视频: {os.path.abspath(result['path'])}"
+                if result.get('cleanup_error'):
+                    message += (f"\n原始文件清理失败，已保留: {os.path.abspath(result['raw_path'])}"
+                                f"\n{result['cleanup_error']}")
             if result['error']:
-                message += '\n编码异常: '+result['error']
+                message += (f"\n编码异常，原始录像已保留: {os.path.abspath(result['raw_path'])}"
+                            f"\n{result['error']}")
         self.record_stats_label.setToolTip(message)
         if result['prompt']:
-            if error:
+            if error or result.get('cleanup_error'):
                 QMessageBox.warning(self, '录像保存不完整', message)
             else:
                 QMessageBox.information(self, '录制完成', message)

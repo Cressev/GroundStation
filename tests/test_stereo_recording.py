@@ -307,6 +307,7 @@ def test_raw_recording_saves_timestamps_and_restores_rate(recording_widget, tmp_
         frames = list(container.decode(video=0))
     assert len(frames) == 3
     assert [float(frame.time) for frame in frames] == pytest.approx([0, .033, .1], abs=.002)
+    assert not (tmp_path/'saved_原始.mp4').exists()
 
 
 def test_raw_stop_does_not_block_gui_timer(recording_widget, monkeypatch):
@@ -415,6 +416,53 @@ def test_conversion_failure_keeps_original_video(recording_widget, tmp_path, mon
     assert not target.exists()
     assert (tmp_path/'compatible_原始.mp4').read_bytes() == b'original recording'
     assert 'encode failed' in widget.record_stats_label.toolTip()
+
+
+def test_existing_output_keeps_both_existing_output_and_source(recording_widget, tmp_path, monkeypatch):
+    """An existing destination is never overwritten and the raw source remains recoverable."""
+    from ui import stereo_camera_widget as module
+    widget, _, _ = recording_widget
+    source, target = tmp_path/'capture.tmp', tmp_path/'existing.mp4'
+    source.write_bytes(b'original recording')
+    target.write_bytes(b'previous recording')
+    monkeypatch.setattr(module, 'convert_to_h264', lambda source, destination: None)
+    widget._move_raw_file(str(source), str(target), None, False)
+    assert target.read_bytes() == b'previous recording'
+    assert (tmp_path/'existing_原始.mp4').read_bytes() == b'original recording'
+
+
+def test_incomplete_recording_is_preserved_without_conversion(recording_widget, tmp_path, monkeypatch):
+    """A capture error keeps the partial original instead of claiming success."""
+    from ui import stereo_camera_widget as module
+    widget, _, _ = recording_widget
+    source, target = tmp_path/'partial.tmp', tmp_path/'partial.mp4'
+    source.write_bytes(b'partial recording')
+    converter = Mock()
+    monkeypatch.setattr(module, 'convert_to_h264', converter)
+    widget._move_raw_file(str(source), str(target), 'capture failed', False)
+    converter.assert_not_called()
+    assert not target.exists()
+    assert (tmp_path/'partial_原始.mp4').read_bytes() == b'partial recording'
+
+
+def test_cleanup_failure_reports_preserved_source(recording_widget, tmp_path, monkeypatch):
+    """If source removal fails, the converted file and source both remain and are reported."""
+    from PyQt5.QtWidgets import QApplication
+    from ui import stereo_camera_widget as module
+    widget, _, _ = recording_widget
+    source, target = tmp_path/'capture.tmp', tmp_path/'compatible.mp4'
+    source.write_bytes(b'original recording')
+    monkeypatch.setattr(module, 'convert_to_h264', lambda source, destination: None)
+    original_remove = module.os.remove
+    def fail_source_cleanup(path):
+        if str(path).endswith('_原始.mp4'):
+            raise PermissionError('source locked')
+        return original_remove(path)
+    monkeypatch.setattr(module.os, 'remove', fail_source_cleanup)
+    widget._move_raw_file(str(source), str(target), None, False)
+    QApplication.instance().processEvents()
+    assert target.exists() and (tmp_path/'compatible_原始.mp4').exists()
+    assert 'source locked' in widget.record_stats_label.toolTip()
 
 
 def test_slow_video_rate_command_does_not_block_controls(recording_widget, monkeypatch):

@@ -137,8 +137,7 @@ def main():
         view.resize(480, 850)
         settle(app)
         assert view.page_scroll.horizontalScrollBar().maximum() == 0
-        assert view.action_scroll.horizontalScrollBar().maximum() > 0
-        view.action_scroll.ensureWidgetVisible(view.record_stats_label)
+        assert not hasattr(view, 'action_scroll')
         settle(app)
         view.grab().save(str(output/'narrow-status.png'))
         assert not commands and not view.stream_client.isRunning()

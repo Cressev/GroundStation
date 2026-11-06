@@ -58,7 +58,7 @@ def test_sidebar_scroll_reaches_system_info_after_feedback(connected_layout):
     ensure_app().processEvents()
     scroll = window.right_sidebar_scroll
     assert scroll.widget() is window.right_sidebar_content
-    scroll.ensureWidgetVisible(window.info_text)
+    scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum())
     ensure_app().processEvents()
     center = window.info_text.mapTo(scroll.viewport(), window.info_text.rect().center())
     assert scroll.viewport().rect().contains(center)

@@ -330,8 +330,8 @@ def test_canvas_height_wheel_scrolls_page_without_changing_number():
 
 
 @pytest.mark.parametrize('width', [1100, 480])
-def test_stereo_action_buttons_are_compact_one_row_without_page_overflow(width):
-    """Five actions share one line; only the toolbar scrolls on very narrow pages."""
+def test_stereo_action_buttons_are_two_rows_without_page_overflow(width):
+    """Connection and recording controls have separate rows, without a scrollbar."""
     from test_ui_state_machine import ensure_app
     from ui.stereo_camera_widget import StereoFishCameraWidget
     from PyQt5.QtCore import QPoint
@@ -340,23 +340,18 @@ def test_stereo_action_buttons_are_compact_one_row_without_page_overflow(width):
     try:
         widget.resize(width, 800)
         widget.show()
-        if width == 480:
-            widget.action_scroll.setMaximumWidth(220)
         app.processEvents()
         app.processEvents()
         buttons = [widget.connect_btn, widget.disconnect_btn, widget.cam_btn,
                    widget.record_btn, widget.snapshot_btn]
         centers = [button.mapTo(widget, button.rect().center()).y() for button in buttons]
-        assert max(centers)-min(centers) <= 1
-        assert all(button.width() <= button.sizeHint().width()+2 for button in buttons)
+        assert max(centers[:3])-min(centers[:3]) <= 1
+        assert abs(centers[3]-centers[4]) <= 1 and centers[3] > centers[0]
+        assert all(button.width() <= max(button.minimumWidth(), button.sizeHint().width())+2 for button in buttons)
         assert widget.page_scroll.horizontalScrollBar().maximum() == 0
         assert not widget.board_rec_btn.isVisible()
         assert not widget.cam_btn.isEnabled() and not widget.connect_btn.isEnabled()
-        if width == 480:
-            assert widget.action_scroll.horizontalScrollBar().maximum() > 0
-            widget.action_scroll.ensureWidgetVisible(widget.snapshot_btn)
-            app.processEvents()
-            origin = widget.snapshot_btn.mapTo(widget.action_scroll.viewport(), QPoint())
-            assert origin.x()+widget.snapshot_btn.width() <= widget.action_scroll.viewport().width()
+        origin = widget.snapshot_btn.mapTo(widget.action_bar, QPoint())
+        assert origin.x()+widget.snapshot_btn.width() <= widget.action_bar.width()
     finally:
         widget.close()

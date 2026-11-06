@@ -50,7 +50,7 @@ def main():
     try:
         window = make_window()
         window.main_splitter.setSizes([420, 600, 300])
-        window.right_tabs.setCurrentIndex(1)
+        window.right_tabs.setCurrentIndex(0)
         window.info_text.setPlainText('离线验收：收起侧栏不关闭服务，展开后保留当前页和日志。')
         app.processEvents()
         expanded = window.main_splitter.sizes()

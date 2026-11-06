@@ -245,21 +245,28 @@ class MainWindow(QMainWindow):
             self.depth_panel = DepthPanel(DUAL_FISH_CONFIG["fish_ip"])
             self.right_tabs.addTab(self.depth_panel, "深度")
 
-        # 按键状态标签页
+        # 保留快捷键处理和清除曲线信号，不再占用一个标签页。
         self.keyboard_status_widget = KeyboardStatusWidget()
-        self.right_tabs.addTab(self.keyboard_status_widget, "按键状态")
+        self.keyboard_status_widget.update_timer.stop()
+        self.keyboard_status_widget.hide()
         
-        right_layout.addWidget(self.right_tabs, 1)
+        right_layout.addWidget(self.right_tabs)
+        if not self.right_tabs.count():
+            self.right_tabs.hide()
         self.system_info_group = QGroupBox('系统信息')
         info_layout = QVBoxLayout(self.system_info_group)
+        self._pressed_keys = set()
+        self.key_status_label = QLabel('当前按键：无')
+        self.key_status_label.setWordWrap(True)
+        info_layout.addWidget(self.key_status_label)
         self.info_text = QTextEdit()
         self.info_text.setReadOnly(True)
         self.info_text.setMinimumHeight(100)
-        self.info_text.setMaximumHeight(180)
+        self.info_text.setMaximumHeight(260)
         info_layout.addWidget(self.info_text)
-        right_layout.addWidget(self.system_info_group)
+        right_layout.addWidget(self.system_info_group, 1)
         # 拖窄时内容自适应面板宽度，而不是被 sizeHint 顶住
-        self.right_tabs.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        self.right_tabs.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self.main_splitter.addWidget(right_panel)
         self.main_splitter.setCollapsible(2, False)
 
@@ -1007,6 +1014,9 @@ class MainWindow(QMainWindow):
 
     def _set_control_armed(self, armed, send_stop=True):
         """幂等地启用/停用当前控制器，停用前优先发安全停止帧。"""
+        if not armed and hasattr(self, '_pressed_keys'):
+            self._pressed_keys.clear()
+            self.key_status_label.setText('当前按键：无')
         if self.axis_coordinator is not None:
             self.axis_coordinator.set_connected(bool(self._fish_connection_state == 'connected'
                 and self.communication and self.communication.connected))
@@ -1588,6 +1598,8 @@ class MainWindow(QMainWindow):
                 self.current_controller.handle_key_press(key_text)
                 # 更新按键状态显示(状态面板统一用大写键名)
                 self.keyboard_status_widget.update_key_state(key_text.upper(), True)
+                self._pressed_keys.add(key_text.upper())
+                self.key_status_label.setText('当前按键：' + '、'.join(sorted(self._pressed_keys)))
                 # 处理特殊功能键
                 self.keyboard_status_widget.handle_special_keys(key_text.upper(), True)
 
@@ -1604,6 +1616,9 @@ class MainWindow(QMainWindow):
                 self.current_controller.handle_key_release(key_text)
                 # 更新按键状态显示
                 self.keyboard_status_widget.update_key_state(key_text.upper(), False)
+                if not event.isAutoRepeat():
+                    self._pressed_keys.discard(key_text.upper())
+                    self.key_status_label.setText('当前按键：' + ('、'.join(sorted(self._pressed_keys)) or '无'))
 
         super().keyReleaseEvent(event)
     

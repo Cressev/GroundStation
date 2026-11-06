@@ -376,8 +376,10 @@ class StereoFishCameraWidget(QWidget):
         self.record_btn.clicked.connect(self._toggle_recording)
         self.record_name_input = QLineEdit()
         self.record_name_input.setPlaceholderText('文件名（可选）')
-        self.record_name_input.setFixedWidth(135)
+        self.record_name_input.setMinimumWidth(65)
         self.record_mode = NoWheelComboBox()
+        self.record_mode.setMinimumWidth(110)
+        self.record_mode.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.record_mode.addItem('显示画面录像', 'display')
         self.record_mode.addItem('高速原始双目录像', 'raw')
         self.record_mode.activated.connect(self._record_mode_was_selected)
@@ -397,34 +399,40 @@ class StereoFishCameraWidget(QWidget):
         self.board_rec_btn.hide()
 
         self.action_bar = QWidget()
-        action_layout = QHBoxLayout(self.action_bar)
+        action_layout = QVBoxLayout(self.action_bar)
         action_layout.setContentsMargins(0, 0, 0, 0)
         action_layout.setSpacing(6)
+        connection_row = QHBoxLayout()
+        recording_row = QHBoxLayout()
         for button in (self.connect_btn, self.disconnect_btn, self.cam_btn,
                        self.record_btn, self.snapshot_btn):
-            button.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
-            action_layout.addWidget(button)
-            if button is self.record_btn:
-                action_layout.addWidget(self.record_name_input)
-                action_layout.addWidget(self.record_mode)
-        action_layout.addStretch(1)
+            button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            button.setMinimumWidth(80)
+            button.setMaximumWidth(button.sizeHint().width())
+        for button in (self.connect_btn, self.disconnect_btn, self.cam_btn):
+            connection_row.addWidget(button)
         self.record_stats_label = QLabel('未录制 00:00:00 · 0帧')
         self.record_stats_label.setAccessibleName('本次录制时长和帧数')
-        self.record_stats_label.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        self.record_stats_label.setWordWrap(True)
+        self.record_stats_label.setMinimumWidth(100)
+        self.record_stats_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.record_stats_label.setToolTip(
             '本次实际经过时间与送入编码器的帧数（左右目并排画面）；停止后保留，下次开始清零。'
-            'MP4使用固定15FPS，播放时长可能不同；编码器无逐帧落盘回执。')
-        action_layout.addWidget(self.record_stats_label)
-        self.action_scroll = QScrollArea()
-        self.action_scroll.setWidget(self.action_bar)
-        self.action_scroll.setWidgetResizable(True)
-        self.action_scroll.setFrameShape(QFrame.NoFrame)
-        self.action_scroll.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        self.action_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.action_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.action_scroll.horizontalScrollBar().rangeChanged.connect(self._update_action_bar_height)
-        self._update_action_bar_height(0, 0)
-        control_layout.addWidget(self.action_scroll)
+            '显示画面录像按15 FPS输出；高速原始录像按真实时间戳保存。')
+        for control in (self.connect_btn, self.disconnect_btn, self.cam_btn,
+                        self.record_btn, self.record_name_input, self.record_mode,
+                        self.snapshot_btn, self.record_stats_label):
+            font = control.font()
+            font.setPointSize(9)
+            control.setFont(font)
+        connection_row.addWidget(self.record_stats_label, 1)
+        recording_row.addWidget(self.record_btn)
+        recording_row.addWidget(self.record_name_input, 1)
+        recording_row.addWidget(self.record_mode)
+        recording_row.addWidget(self.snapshot_btn)
+        action_layout.addLayout(connection_row)
+        action_layout.addLayout(recording_row)
+        control_layout.addWidget(self.action_bar)
 
         self.mode_label = QLabel("模式: 电脑测距 · 左右目并排显示")
         self.mode_label.setWordWrap(True)
@@ -606,12 +614,6 @@ class StereoFishCameraWidget(QWidget):
         """清掉左右两目的旧画面：左目显示提示文字，右目恢复占位。"""
         self.video_label.setText(text)
         self.video_label_right.setText(RIGHT_VIDEO_PLACEHOLDER)
-
-    def _update_action_bar_height(self, minimum, maximum):
-        """Keep one compact action row, adding scrollbar height only on narrow pages."""
-        scrollbar = self.action_scroll.horizontalScrollBar()
-        self.action_scroll.setFixedHeight(self.action_bar.sizeHint().height()+
-                                         (scrollbar.sizeHint().height() if maximum > minimum else 0))
 
     def set_fish_connection_available(self, available):
         """设置主控连接门闩；断开主连接时同步收拢视频连接。"""
@@ -882,7 +884,8 @@ class StereoFishCameraWidget(QWidget):
                 except Exception as exc:
                     os.remove(self.recording_path)
                     self.recording_path = None
-                    QMessageBox.warning(self, '录像不可用', f'无法启动原始录像，请检查 PyAV：{exc}')
+                    QMessageBox.warning(self, '录像不可用',
+                        f'无法启动原始录像：{exc}\n请运行 python ref/install_local_pyav_runtime.py 安装项目专用 PyAV 后重启地面站。')
                     return
                 self._rate_session += 1
                 if not self._queue_video_rate(30, self._rate_session):

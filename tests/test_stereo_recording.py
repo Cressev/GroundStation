@@ -113,7 +113,7 @@ def test_encoder_open_failure_stops_stats(recording_widget):
 
 
 def test_recording_status_stays_in_compact_action_row(recording_widget):
-    """Status follows the snapshot button, with no page horizontal overflow."""
+    """Two rows keep status and recording controls visible without horizontal scrolling."""
     from PyQt5.QtCore import QPoint
     from PyQt5.QtWidgets import QApplication
     widget, writer, clock = recording_widget
@@ -123,13 +123,13 @@ def test_recording_status_stays_in_compact_action_row(recording_widget):
     app.processEvents()
     app.processEvents()
     label = widget.record_stats_label
-    assert label.mapTo(widget.action_bar, QPoint()).x() >= widget.snapshot_btn.geometry().right()
-    assert abs(label.geometry().center().y()-widget.record_btn.geometry().center().y()) <= 1
+    assert label.mapTo(widget, QPoint()).y() < widget.record_btn.mapTo(widget, QPoint()).y()
     widget.resize(480, 800)
     app.processEvents()
     app.processEvents()
     assert widget.page_scroll.horizontalScrollBar().maximum() == 0
-    assert widget.action_scroll.horizontalScrollBar().maximum() > 0
+    assert not hasattr(widget, 'action_scroll')
+    assert widget.snapshot_btn.mapTo(widget.action_bar, QPoint()).x() + widget.snapshot_btn.width() <= widget.action_bar.width()
 
 
 def test_recording_write_failure_does_not_count_rejected_frame(recording_widget, tmp_path, monkeypatch):

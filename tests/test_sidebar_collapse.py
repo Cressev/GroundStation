@@ -5,6 +5,7 @@ from unittest.mock import Mock
 import pytest
 from PyQt5.QtCore import Qt
 from PyQt5.QtTest import QTest
+from PyQt5.QtGui import QKeyEvent
 
 from test_last_connection import windows
 from test_ui_state_machine import ensure_app
@@ -17,6 +18,28 @@ def show_window(make, variant='dual'):
     window.show()
     ensure_app().processEvents()
     return window
+
+
+def test_system_info_contains_keyboard_state_and_keeps_shortcuts(windows):
+    """The removed tab keeps key handling without touching a real connection."""
+    make, _, _ = windows
+    window = show_window(make)
+    assert [window.right_tabs.tabText(i) for i in range(window.right_tabs.count())] == ['深度']
+    assert window.system_info_group.geometry().top() >= window.right_tabs.geometry().bottom()
+    assert not window.keyboard_status_widget.update_timer.isActive()
+    window._control_armed = True
+    window.current_controller.handle_key_press = Mock()
+    window.current_controller.handle_key_release = Mock()
+    special = Mock(wraps=window.keyboard_status_widget.handle_special_keys)
+    window.keyboard_status_widget.handle_special_keys = special
+    window.keyPressEvent(QKeyEvent(QKeyEvent.KeyPress, Qt.Key_W, Qt.NoModifier, 'w'))
+    assert 'W' in window.key_status_label.text()
+    window.keyReleaseEvent(QKeyEvent(QKeyEvent.KeyRelease, Qt.Key_W, Qt.NoModifier, 'w'))
+    assert window.key_status_label.text() == '当前按键：无'
+    window.keyPressEvent(QKeyEvent(QKeyEvent.KeyPress, Qt.Key_P, Qt.NoModifier, 'p'))
+    special.assert_any_call('P', True)
+    window._set_control_armed(False, send_stop=False)
+    assert window.key_status_label.text() == '当前按键：无'
 
 
 @pytest.mark.parametrize('variant', ['dual', 'single'])
@@ -47,7 +70,7 @@ def test_repeated_requests_keep_tabs_logs_and_connection_untouched(windows):
     window = show_window(make)
     communication = Mock()
     window.communication = communication
-    window.right_tabs.setCurrentIndex(1)
+    window.right_tabs.setCurrentIndex(0)
     window.info_text.setPlainText('sidebar state marker')
     depth = window.depth_panel
     before = window.main_splitter.sizes()
@@ -59,7 +82,7 @@ def test_repeated_requests_keep_tabs_logs_and_connection_untouched(windows):
         window.set_right_sidebar_collapsed(False)
         assert window.main_splitter.sizes() == before
     assert window.depth_panel is depth
-    assert window.right_tabs.currentIndex() == 1
+    assert window.right_tabs.currentIndex() == 0
     assert window.info_text.toPlainText() == 'sidebar state marker'
     assert window.communication is communication
     assert communication.mock_calls == []

@@ -23,3 +23,6 @@ def test_timestamp_and_collision(tmp_path, monkeypatch):
     p.touch()
     assert paths.default_export_path('videos', '水下测试', '.mp4', now).stem.endswith('_2')
     assert paths.default_export_path('images', '', '.png', now).name == '20261106_123456.png'
+    stereo = paths.default_export_path('stereo_videos', '试验', '.mp4', now)
+    top = paths.default_export_path('top_camera_videos', '试验', '.mp4', now)
+    assert stereo.parent != top.parent

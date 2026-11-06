@@ -144,7 +144,7 @@ def test_recording_write_failure_does_not_count_rejected_frame(recording_widget,
     assert not widget.recording and not widget._record_stats_timer.isActive()
     assert widget.record_stats_label.text() == '录制失败 00:00:04 · 1帧'
     assert 'write failed' in widget.record_stats_label.toolTip()
-    assert len(list((tmp_path/'saved_data'/'videos').glob('*.mp4'))) == 1
+    assert len(list((tmp_path/'saved_data'/'stereo_videos').glob('*.mp4'))) == 1
 
 
 def test_recording_without_new_frames_creates_no_empty_video(recording_widget, tmp_path):
@@ -378,6 +378,7 @@ def test_raw_cross_volume_save_does_not_block_gui(recording_widget, monkeypatch)
         assert release.wait(3)
         return original_move(source, destination)
     monkeypatch.setattr(module, 'TimestampedJpegWriter', CompleteRaw)
+    monkeypatch.setattr(module, 'convert_to_h264', lambda source, destination: None)
     monkeypatch.setattr(module.shutil, 'move', slow_move)
     widget._toggle_recording()
     ticks = []
@@ -396,6 +397,24 @@ def test_raw_cross_volume_save_does_not_block_gui(recording_widget, monkeypatch)
         QTest.qWait(10)
     assert not widget._record_finalizing and widget._rec_status == '已停止'
     timer.stop()
+
+
+def test_conversion_failure_keeps_original_video(recording_widget, tmp_path, monkeypatch):
+    """A failed compatibility conversion never destroys the original recording."""
+    from ui import stereo_camera_widget as module
+    widget, _, _ = recording_widget
+    original = tmp_path/'capture.tmp'
+    original.write_bytes(b'original recording')
+    target = tmp_path/'compatible.mp4'
+    def fail_conversion(source, destination):
+        raise RuntimeError('encode failed')
+    monkeypatch.setattr(module, 'convert_to_h264', fail_conversion)
+    widget._move_raw_file(str(original), str(target), None, False)
+    from PyQt5.QtWidgets import QApplication
+    QApplication.instance().processEvents()
+    assert not target.exists()
+    assert (tmp_path/'compatible_原始.mp4').read_bytes() == b'original recording'
+    assert 'encode failed' in widget.record_stats_label.toolTip()
 
 
 def test_slow_video_rate_command_does_not_block_controls(recording_widget, monkeypatch):

@@ -39,7 +39,7 @@ from stereo.transport import (MAX_PACKET, STEREO_FRAME, CALIBRATION,
 from stereo.calculation import (StereoCalculator, StereoPreview, display_to_rectified,
                                 measure_depth, MAX_CALIBRATION_BYTES)
 from stereo.worker import StereoWorker
-from stereo.recording import RealtimeVideoWriter, TimestampedJpegWriter
+from stereo.recording import RealtimeVideoWriter, TimestampedJpegWriter, convert_to_h264
 from ui.numeric_inputs import NoWheelSpinBox, NoWheelComboBox
 from ui.save_paths import default_export_path, validate_label
 
@@ -383,7 +383,7 @@ class StereoFishCameraWidget(QWidget):
         self.record_mode.addItem('显示画面录像', 'display')
         self.record_mode.addItem('高速原始双目录像', 'raw')
         self.record_mode.activated.connect(self._record_mode_was_selected)
-        self.record_mode.setToolTip('高速模式保存原始左右画面和实际时间戳，不含校正、亮度处理或测距标记。')
+        self.record_mode.setToolTip('高速模式保存原始左右画面及时间戳，停止后后台生成 H.264 兼容副本；不含校正、亮度处理或测距标记。')
         self.snapshot_btn = QPushButton("保存图像")
         self.snapshot_btn.clicked.connect(self._choose_snapshot)
         self.cam_btn = QPushButton("开启摄像头")
@@ -862,7 +862,7 @@ class StereoFishCameraWidget(QWidget):
         if not self.recording:
             try:
                 self._record_label = validate_label(self.record_name_input.text())
-                default_path = default_export_path('videos', self._record_label, '.mp4')
+                default_path = default_export_path('stereo_videos', self._record_label, '.mp4')
             except (ValueError, OSError) as exc:
                 QMessageBox.warning(self, '文件名无效', str(exc))
                 return
@@ -983,7 +983,7 @@ class StereoFishCameraWidget(QWidget):
                 f'录制失败，未编码任何帧；临时文件保留在: {temp_path}\n原因: {error or "未知"}')
             return
         try:
-            default_name = str(default_export_path('videos', self._record_label, '.mp4'))
+            default_name = str(default_export_path('stereo_videos', self._record_label, '.mp4'))
         except (ValueError, OSError) as exc:
             self.record_stats_label.setToolTip(f'保存目录不可用，临时文件保留在: {temp_path}\n{exc}')
             return
@@ -997,7 +997,7 @@ class StereoFishCameraWidget(QWidget):
             path += ".mp4"
         if raw_worker is not None:
             self._record_finalizing = True
-            self._rec_status = '正在保存'
+            self._rec_status = '正在转码'
             self._update_recording_stats()
             self._apply_ui_state()
             thread = threading.Thread(target=self._move_raw_file,
@@ -1026,15 +1026,37 @@ class StereoFishCameraWidget(QWidget):
                 QMessageBox.information(self, "录制完成", f"视频已保存到:\n{path}")
 
     def _move_raw_file(self, temp_path, path, recording_error, prompt_for_path):
-        """Move/copy a potentially large file outside the GUI/control event loop."""
+        """Keep original video and generate a compatible copy away from the GUI."""
+        raw_path = None
+        conversion_error = None
         try:
             os.makedirs(os.path.dirname(os.path.abspath(path)) or '.', exist_ok=True)
-            shutil.move(temp_path, path)
+            stem, extension = os.path.splitext(path)
+            raw_path = stem + '_原始' + extension
+            number = 2
+            while os.path.exists(raw_path):
+                raw_path = stem + '_原始_' + str(number) + extension
+                number += 1
+            shutil.move(temp_path, raw_path)
+            if not recording_error:
+                fd, converted = tempfile.mkstemp(prefix='.h264_', suffix='.mp4', dir=os.path.dirname(os.path.abspath(path)))
+                os.close(fd)
+                try:
+                    convert_to_h264(raw_path, converted)
+                    if os.path.exists(path):
+                        raise FileExistsError('目标视频已存在，未覆盖')
+                    os.rename(converted, path)
+                except Exception as exc:
+                    conversion_error = str(exc)
+                    if os.path.exists(converted):
+                        os.remove(converted)
             result = dict(path=path, temp_path=temp_path, error=recording_error,
-                          prompt=prompt_for_path, move_error=None)
+                          prompt=prompt_for_path, move_error=None, raw_path=raw_path,
+                          conversion_error=conversion_error)
         except Exception as exc:
             result = dict(path=path, temp_path=temp_path, error=recording_error,
-                          prompt=prompt_for_path, move_error=str(exc))
+                          prompt=prompt_for_path, move_error=str(exc), raw_path=raw_path,
+                          conversion_error=None)
         try:
             self.record_file_saved.emit(result)
         except RuntimeError:
@@ -1077,15 +1099,19 @@ class StereoFishCameraWidget(QWidget):
     def _on_record_file_saved(self, result):
         """Publish the asynchronous file-save result on the GUI thread."""
         self._record_finalizing = False
-        error = result['move_error'] or result['error']
+        error = result['move_error'] or result['error'] or result.get('conversion_error')
         self._rec_status = '录制失败' if error else '已停止'
         self._update_recording_stats()
         self._apply_ui_state()
         if result['move_error']:
             message = f"保存失败，临时文件保留在: {result['temp_path']}\n{result['move_error']}"
         else:
-            message = (f"已保存: {os.path.abspath(result['path'])}\n输入{self._rec_count}帧，"
-                       f"视频{self._encoded_count}帧（原始 JPEG，按采集时间戳保存）。")
+            message = (f"原始录像: {os.path.abspath(result['raw_path'])}\n输入{self._rec_count}帧，"
+                       f"视频{self._encoded_count}帧（按采集时间戳保存）。")
+            if result.get('conversion_error'):
+                message += '\n兼容视频转换失败，原始录像已保留: '+result['conversion_error']
+            elif not result['error']:
+                message += f"\n兼容视频: {os.path.abspath(result['path'])}"
             if result['error']:
                 message += '\n编码异常: '+result['error']
         self.record_stats_label.setToolTip(message)

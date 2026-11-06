@@ -23,7 +23,7 @@ def validate_label(value):
 
 def default_export_path(category, label, suffix, now=None):
     """Generate an unused timestamped path beneath the fixed project export directory."""
-    if category not in ('videos', 'time_series', 'system_status', 'images'):
+    if category not in ('videos', 'stereo_videos', 'top_camera_videos', 'time_series', 'system_status', 'images'):
         raise ValueError('未知保存类别')
     label = validate_label(label)
     if not re.fullmatch(r'\.[a-z0-9]+', suffix):

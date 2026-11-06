@@ -13,10 +13,12 @@ import cv2
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QSettings, QStandardPaths
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QLabel,
-                             QPushButton, QSpinBox, QVBoxLayout, QWidget)
+                             QLineEdit, QMessageBox, QPushButton, QSpinBox, QVBoxLayout, QWidget)
 
 from vision.top_tracker import VelocityEstimator, candidates, follow_pair, nearest_marker, pose
 from vision import planar_calibration as calibration
+from stereo.recording import TimestampedH264Writer
+from ui.save_paths import default_export_path, validate_label
 
 
 class FrameReader:
@@ -149,6 +151,9 @@ class TopCameraTrackingWidget(QWidget):
         self.measurement_points = []
         self.calibration_busy = False
         self._generation = 0
+        self.record_worker = None
+        self.record_path = None
+        self.recording = False
         self._settings = QSettings('FishRobot', 'TopCameraTracking')
         layout = QVBoxLayout(self)
         row = QHBoxLayout()
@@ -169,6 +174,18 @@ class TopCameraTrackingWidget(QWidget):
         stop.clicked.connect(self.shutdown)
         row.addWidget(stop)
         layout.addLayout(row)
+        recording_row = QHBoxLayout()
+        self.record_btn = QPushButton('开始录制')
+        self.record_btn.setEnabled(False)
+        self.record_btn.clicked.connect(self._toggle_recording)
+        recording_row.addWidget(self.record_btn)
+        self.record_name_input = QLineEdit()
+        self.record_name_input.setPlaceholderText('文件名（可选）')
+        recording_row.addWidget(self.record_name_input, 1)
+        self.record_label = QLabel('未录制')
+        self.record_label.setWordWrap(True)
+        recording_row.addWidget(self.record_label)
+        layout.addLayout(recording_row)
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel('功能'))
         self.mode = QComboBox()
@@ -466,6 +483,8 @@ class TopCameraTrackingWidget(QWidget):
             self.open_source(path)
 
     def open_source(self, source):
+        if self.recording:
+            self._stop_recording()
         self._generation += 1
         self.pending_plane = None
         self.confirm_plane_btn.setEnabled(False)
@@ -540,11 +559,14 @@ class TopCameraTrackingWidget(QWidget):
             self.status.setText('已选择两点，开始跟踪')
 
     def refresh(self):
+        self._poll_recording()
         if not self.reader or not self.active:
             return
         seq, raw, timestamp = self.reader.latest()
         if seq == self.sequence or raw is None:
             if not self.reader.thread.is_alive():
+                if self.recording:
+                    self._stop_recording()
                 self.status.setText(self.reader.status)
                 self._gap = True
                 self.velocity.reset()
@@ -559,10 +581,12 @@ class TopCameraTrackingWidget(QWidget):
         self._last_frame_time = time.monotonic()
         height, width = raw.shape[:2]
         self.raw_frame = raw
+        self.record_btn.setEnabled(self.record_worker is None or self.recording)
         scale = min(1.0, 960.0 / width)
         self.frame = cv2.resize(raw, (round(width * scale), round(height * scale))) if scale < 1 else raw.copy()
         if self.mode.currentIndex() == 1:
             self.image.set_frame(self.frame)
+            self._record_display_frame(self.frame)
             return
         self.markers = candidates(self.frame, self.threshold.value(), self.min_area.value())
         if self.selecting is None:
@@ -595,6 +619,58 @@ class TopCameraTrackingWidget(QWidget):
             cv2.arrowedLine(display, tuple(round(v) for v in self.tail[:2]),
                             tuple(round(v) for v in self.head[:2]), (0, 255, 0), 2, tipLength=.25)
         self.image.set_frame(display)
+        self._record_display_frame(display)
+
+    def _toggle_recording(self):
+        """Record the displayed tracking view without touching the fish control path."""
+        if self.recording:
+            self._stop_recording()
+            return
+        if not self.active or self.raw_frame is None or self.record_worker is not None:
+            return
+        try:
+            label = validate_label(self.record_name_input.text())
+            self.record_path = default_export_path('top_camera_videos', label, '.mp4')
+            self.record_worker = TimestampedH264Writer(self.record_path)
+        except (ValueError, OSError, ImportError) as exc:
+            QMessageBox.warning(self, '录像不可用', str(exc))
+            return
+        self.recording = True
+        self.record_btn.setText('停止录制')
+        self.record_name_input.setEnabled(False)
+        self.record_label.setText('录制中：0 帧')
+        self.record_label.setToolTip('保存页面显示画面及跟踪标记，刷新频率最高约 10 次/秒。')
+
+    def _record_display_frame(self, image):
+        if self.recording and self.record_worker:
+            if not self.record_worker.submit(image, time.monotonic()):
+                self._stop_recording()
+            else:
+                count, _, _ = self.record_worker.snapshot()
+                self.record_label.setText(f'录制中：{count} 帧')
+
+    def _stop_recording(self):
+        if not self.recording:
+            return
+        self.recording = False
+        self.record_worker.stop()
+        self.record_btn.setText('开始录制')
+        self.record_btn.setEnabled(False)
+        self.record_label.setText('正在保存…')
+
+    def _poll_recording(self):
+        worker = self.record_worker
+        if not worker:
+            return
+        _, count, error = worker.snapshot()
+        if self.recording and error:
+            self._stop_recording()
+        if not self.recording and worker.finished.is_set():
+            self.record_worker = None
+            self.record_name_input.setEnabled(True)
+            self.record_btn.setEnabled(self.active and self.raw_frame is not None)
+            self.record_label.setText('录像失败' if error else (f'已保存：{count} 帧' if count else '没有录制帧'))
+            self.record_label.setToolTip(f'{self.record_path}\n{error or ""}')
 
     def _check_calibration_source(self, width, height):
         if not self.approve_calibration.isChecked():
@@ -633,6 +709,8 @@ class TopCameraTrackingWidget(QWidget):
             return f'米制坐标不可用：{exc}'
 
     def shutdown(self):
+        self._stop_recording()
+        self.record_btn.setEnabled(False)
         self._generation += 1
         self.active = False
         if self.reader:

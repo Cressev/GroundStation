@@ -12,6 +12,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 import cv2
 import numpy as np
+import pytest
 from PyQt5.QtWidgets import QApplication
 
 from vision.top_tracker import VelocityEstimator, candidates, follow_pair, nearest_marker, pose
@@ -45,6 +46,55 @@ class FakeReader:
 
     def stop(self):
         pass
+
+
+def test_top_camera_records_named_display_to_own_directory(tmp_path, monkeypatch):
+    """Recording uses processed display frames and an isolated named output."""
+    av = pytest.importorskip('av')
+    from ui import save_paths
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(save_paths, 'ROOT', tmp_path)
+    widget = TopCameraTrackingWidget()
+    reader = FakeReader(scene())
+    widget.reader, widget.active = reader, True
+    widget.refresh()
+    widget.record_name_input.setText('跟踪试验')
+    widget._toggle_recording()
+    assert widget.recording
+    for _ in range(3):
+        time.sleep(.03)
+        reader.sequence += 1
+        widget.refresh()
+    widget._stop_recording()
+    worker = widget.record_worker
+    assert worker.finished.wait(10)
+    widget._poll_recording()
+    assert '已保存' in widget.record_label.text()
+    assert widget.record_path.parent == tmp_path/'top_camera_videos'
+    assert '跟踪试验' in widget.record_path.name
+    with av.open(str(widget.record_path)) as video:
+        assert video.streams.video[0].codec_context.name == 'h264'
+        assert len(list(video.decode(video=0))) == 3
+    widget.shutdown()
+    widget.timer.stop()
+
+
+def test_top_camera_rejects_invalid_name_without_starting(tmp_path, monkeypatch):
+    """An invalid filename never creates a recorder or a video file."""
+    from ui import save_paths, top_camera_tracking
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(save_paths, 'ROOT', tmp_path)
+    warnings = []
+    monkeypatch.setattr(top_camera_tracking.QMessageBox, 'warning', lambda *args: warnings.append(args))
+    widget = TopCameraTrackingWidget()
+    widget.reader, widget.active = FakeReader(scene()), True
+    widget.refresh()
+    widget.record_name_input.setText('../bad')
+    widget._toggle_recording()
+    assert warnings and not widget.recording and widget.record_worker is None
+    assert not list(tmp_path.rglob('*.mp4'))
+    widget.shutdown()
+    widget.timer.stop()
 
 
 class TrackingTests(unittest.TestCase):

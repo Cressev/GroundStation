@@ -351,6 +351,21 @@ def test_raw_stop_does_not_block_gui_timer(recording_widget, monkeypatch):
     timer.stop()
 
 
+def test_configured_capture_rate_is_not_overridden_by_recording(recording_widget, monkeypatch):
+    """A new-protocol 120 FPS selection must not be replaced by legacy 30 FPS."""
+    widget, _, _ = recording_widget
+    widget._relay_mode = widget._fps_control_supported = True
+    widget._capture_mode_supported = True
+    widget._stream_fps = 120
+    widget.record_mode.setCurrentIndex(widget.record_mode.findData('raw'))
+    send = Mock()
+    monkeypatch.setattr(widget, '_queue_video_rate', send)
+    widget._toggle_recording()
+    assert widget.recording
+    widget._stop_recording(prompt_for_path=False)
+    send.assert_not_called()
+
+
 def test_raw_cross_volume_save_does_not_block_gui(recording_widget, monkeypatch):
     """Even a slow final file move cannot stall the control event loop."""
     import threading

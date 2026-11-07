@@ -194,3 +194,42 @@ def test_camera_off_clears_running_text_and_distance(view):
     state(view)
     assert not view.ranging_on and view.distance_label.text().endswith('--')
     assert '已关闭' in view.range_state_label.text()
+
+
+def test_reported_fps_choices_atomic_apply_and_busy_gate(view):
+    """Only per-size advertised frame rates are selectable and sent atomically."""
+    options = [dict(width=512, height=48, fps=[15, 30, 60, 120]),
+               dict(width=640, height=48, fps=[15, 30, 60])]
+    state(view, resolution_options=options, capture_mode_switch=True,
+          capture_fps=60, stream_fps=60)
+    view.resolution_combo.setCurrentIndex(1)
+    assert not view.capture_fps_combo.model().item(3).isEnabled()
+    assert view.capture_fps_combo.model().item(2).isEnabled()
+    view.capture_fps_combo.setCurrentIndex(view.capture_fps_combo.findData(30))
+    view._apply_resolution()
+    request = view.commands[-1].split()
+    assert request[:4] == ['SET_CAPTURE_MODE', '640', '48', '30']
+    assert not view.cam_btn.isEnabled() and not view.capture_fps_combo.isEnabled()
+    state(view, resolution_options=options, capture_mode_switch=True, capture_fps=60, stream_fps=60)
+    assert view._resolution_pending is not None
+    state(view, width=640, resolution_options=options, capture_mode_switch=True, capture_fps=30,
+          stream_fps=30, command='SET_CAPTURE_MODE', request_id=request[4])
+    assert view._resolution_pending is None and view.capture_fps_combo.currentData() == 30
+    state(view, width=640, camera_on=True, resolution_options=options, capture_mode_switch=True,
+          capture_fps=30, stream_fps=30)
+    assert not view.capture_fps_combo.isEnabled()
+
+
+@pytest.mark.parametrize('width', [480, 1100])
+def test_capture_controls_do_not_overlap_or_force_horizontal_scroll(view, width):
+    """Resolution, rate and apply stay separately visible on narrow pages."""
+    from PyQt5.QtCore import QPoint
+    view.resize(width, 850)
+    view.show()
+    ensure_app().processEvents()
+    ensure_app().processEvents()
+    fps = view.capture_fps_combo
+    button = view.resolution_apply_btn
+    fps_right = fps.mapTo(view, QPoint()).x() + fps.width()
+    assert fps_right <= button.mapTo(view, QPoint()).x()
+    assert view.page_scroll.horizontalScrollBar().maximum() == 0

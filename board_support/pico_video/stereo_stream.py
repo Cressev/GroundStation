@@ -22,24 +22,38 @@ from .stereo_transport import encode_packet, encode_blob, STEREO_FRAME, CALIBRAT
 STEREO_SBS_MODES = ((640, 240), (1280, 480), (1600, 600), (2560, 720), (3200, 1200))
 
 
-def discover_stereo_resolutions(camera_index):
-    """Read MJPG capabilities without streaming, intersecting known SBS layouts."""
+def discover_stereo_modes(camera_index):
+    """Return known SBS MJPEG sizes with device-reported discrete FPS values."""
     try:
         result = subprocess.run(['v4l2-ctl', '-d', f'/dev/video{int(camera_index)}',
                                  '--list-formats-ext'], capture_output=True, text=True,
                                 encoding='utf-8', errors='replace', timeout=3, check=False)
         if result.returncode:
-            return []
-        mjpg, sizes = False, set()
+            return {}
+        mjpg, size, modes = False, None, {}
         for line in result.stdout.splitlines():
             if re.search(r"\[\d+\]:\s*'", line):
                 mjpg = "'MJPG'" in line
+                size = None
             match = re.search(r'Size:\s*Discrete\s+(\d+)x(\d+)', line)
             if mjpg and match:
-                sizes.add(tuple(map(int, match.groups())))
-        return [size for size in STEREO_SBS_MODES if size in sizes]
+                size = tuple(map(int, match.groups()))
+                if size in STEREO_SBS_MODES:
+                    modes.setdefault(size, set())
+            fps = re.search(r'Interval:\s*Discrete.*\(([0-9.]+)\s*fps\)', line)
+            if mjpg and size in modes and fps:
+                value = float(fps.group(1))
+                for candidate in (15, 30, 60, 120):
+                    if abs(value-candidate) < .1:
+                        modes[size].add(candidate)
+        return {size: sorted(modes[size]) for size in STEREO_SBS_MODES if size in modes}
     except (OSError, subprocess.TimeoutExpired, ValueError):
-        return []
+        return {}
+
+
+def discover_stereo_resolutions(camera_index):
+    """Return camera-reported known stereo sizes, preserving the legacy API."""
+    return list(discover_stereo_modes(camera_index))
 
 
 def jpeg_dimensions(data):
@@ -73,7 +87,7 @@ class StereoRelay:
     """One camera and one controlling video client, with bounded latest-frame storage."""
 
     def __init__(self, calibration, port=9998, camera_index=17, stream_fps=15.0,
-                 capture_factory=None, logger=print, resolution_options=None):
+                 capture_factory=None, logger=print, resolution_options=None, fps_options=None):
         """Read calibration bytes only; never instantiate the depth algorithm."""
         self.calibration = Path(calibration).read_bytes()
         if len(self.calibration) > 8*1024*1024:
@@ -84,8 +98,11 @@ class StereoRelay:
         if not (192 < self.width <= 2560 and 0 < self.height <= 1440):
             raise ValueError('Unsupported calibration dimensions')
         self.port, self.camera_index = int(port), int(camera_index)
-        self.resolution_options = (discover_stereo_resolutions(self.camera_index)
-                                   if resolution_options is None else list(resolution_options))
+        modes = discover_stereo_modes(self.camera_index) if resolution_options is None else (fps_options or {})
+        self.resolution_options = list(modes) if resolution_options is None else list(resolution_options)
+        self.fps_options = {tuple(size): list(rates) for size, rates in modes.items()}
+        self.capture_fps = 60
+        self.actual_capture_fps = None
         self.interval = 1.0/max(1.0, min(float(stream_fps), 60.0))
         self.default_interval = self.interval
         self.capture_factory = capture_factory or self._open_capture
@@ -105,11 +122,12 @@ class StereoRelay:
     def _open_capture(self):
         """Request calibrated SBS MJPG with the original auto-exposure/gain controls."""
         try:
-            native = NativeMjpegCapture(self.camera_index, self.width*2, self.height)
+            native = NativeMjpegCapture(self.camera_index, self.width*2, self.height, fps=self.capture_fps)
             if jpeg_dimensions(native.first.tobytes()) != (self.width*2, self.height):
                 native.release()
                 raise ValueError('原生 MJPEG 实际分辨率不匹配')
             self.encoding = 'native-mjpg'
+            self.actual_capture_fps = native.actual_fps
             self.log(json.dumps(dict(event='camera_open', requested=[self.width*2, self.height],
                                      encoding=self.encoding)))
             return native
@@ -117,11 +135,16 @@ class StereoRelay:
             self.log(json.dumps(dict(event='native_mjpg_fallback', error=str(exc))))
         cap = open_stereo_capture(self.camera_index, self.width*2, self.height,
                                   exposure=0, gain=0, auto_gain=120)
-        cap.set(cv2.CAP_PROP_FPS, 60)
+        cap.set(cv2.CAP_PROP_FPS, self.capture_fps)
         actual = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
         if actual != (self.width*2, self.height):
             cap.release()
             raise RuntimeError(f'Actual capture {actual} differs from requested {(self.width*2, self.height)}')
+        actual_fps = cap.get(cv2.CAP_PROP_FPS)
+        if not actual_fps or abs(actual_fps-self.capture_fps) > .5:
+            cap.release()
+            raise RuntimeError(f'Actual capture FPS {actual_fps} differs from requested {self.capture_fps}')
+        self.actual_capture_fps = float(actual_fps)
         raw_ok = cap.set(cv2.CAP_PROP_FORMAT, -1)
         self.encoding = 'native-mjpg' if raw_ok else 'bgr-jpeg-fallback'
         self.log(json.dumps(dict(event='camera_open', requested=[self.width*2, self.height],
@@ -139,6 +162,7 @@ class StereoRelay:
             elif not enabled and self.cap is not None:
                 self.cap.release()
                 self.cap = None
+                self.actual_capture_fps = None
                 self.camera_epoch += 1
             if not enabled:
                 self.latest = None
@@ -150,8 +174,11 @@ class StereoRelay:
                         ranging_on=False, board_rec_on=False, layout='stereo_pair',
                         calibration_sha256=self.sha256, source_width=self.width*2,
                         source_height=self.height, stream_fps=1/self.interval,
-                        resolution_options=[dict(width=w, height=h) for w, h in self.resolution_options],
+                        resolution_options=[dict(width=w, height=h, fps=self.fps_options.get((w, h), []))
+                                            for w, h in self.resolution_options],
                         resolution_switch=bool(self.resolution_options),
+                        capture_mode_switch=bool(self.fps_options and any(self.fps_options.values())),
+                        capture_fps=self.capture_fps, actual_capture_fps=self.actual_capture_fps,
                         fps_switch=True,
                         encoding=self.encoding, error=self.error, camera_epoch=self.camera_epoch)
 
@@ -161,8 +188,8 @@ class StereoRelay:
             try:
                 parts = line.split()
                 fps = float(parts[1]) if len(parts) == 2 else 0.0
-                if not 1.0 <= fps <= 60.0:
-                    raise ValueError('帧率须在 1–60 FPS 范围内')
+                if not 1.0 <= fps <= 120.0:
+                    raise ValueError('帧率须在 1–120 FPS 范围内')
                 with self.lock:
                     self.interval = 1.0 / fps
                 result = self.state()
@@ -172,8 +199,16 @@ class StereoRelay:
                 return self._message(dict(type='error', command='SET_STREAM_FPS', message=str(exc)))
         if line.split(' ', 1)[0] == 'SET_RESOLUTION':
             return self._set_resolution(line)
+        if line.split(' ', 1)[0] == 'SET_CAPTURE_MODE':
+            return self._set_capture_mode(line)
         if line == 'CAM_ON':
-            self.camera(True)
+            try:
+                self.camera(True)
+            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+                self.error = str(exc)
+                result = self.state()
+                result.update(command='CAM_ON', error=self.error)
+                return self._message(result)
         elif line == 'CAM_OFF':
             self.camera(False)
         elif line == 'GET_CALIBRATION':
@@ -183,6 +218,31 @@ class StereoRelay:
             return self._message(dict(type='error', command=line[:64],
                                       message='Relay only; depth and recording run on the computer'))
         return self._message(self.state())
+
+    def _set_capture_mode(self, line):
+        """Atomically configure a reported size/FPS pair while the camera is off."""
+        parts = line.split()
+        request_id = parts[4][:64] if len(parts) >= 5 else ''
+        try:
+            if len(parts) != 5 or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', request_id):
+                raise ValueError('Expected SET_CAPTURE_MODE width height fps request_id')
+            width, height, fps = map(int, parts[1:4])
+            with self.camera_io, self.lock:
+                if self.cap is not None:
+                    raise ValueError('Close camera before changing capture mode')
+                if (width, height) not in self.resolution_options or fps not in self.fps_options.get((width, height), []):
+                    raise ValueError('Unsupported camera size/FPS combination')
+                if (width, height, fps) != (self.width*2, self.height, self.capture_fps):
+                    self.width, self.height, self.capture_fps = width//2, height, fps
+                    self.latest = None
+                    self.camera_epoch += 1
+                    self.error = ''
+                self.interval = self.default_interval = 1.0/fps
+            result = self.state()
+            result.update(command='SET_CAPTURE_MODE', request_id=request_id)
+            return self._message(result)
+        except (ValueError, TypeError) as exc:
+            return self._message(dict(type='error', command='SET_CAPTURE_MODE', request_id=request_id, message=str(exc)))
 
     def _set_resolution(self, line):
         """Configure the next capture only when off; acknowledge exact request identity."""
@@ -278,6 +338,7 @@ class StereoRelay:
                         if self.cap is not None:
                             self.cap.release()
                             self.cap = None
+                            self.actual_capture_fps = None
                             self.camera_epoch += 1
                         self.latest = None
                         self.error = str(exc)

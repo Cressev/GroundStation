@@ -281,6 +281,9 @@ class StereoFishCameraWidget(QWidget):
         self._resolution_options = []
         self._resolution_supported = False
         self._resolution_pending = None
+        self._capture_mode_supported = False
+        self._capture_fps = None
+        self._fps_options = {}
         self._calibration_notice_error = False
         self._selected_point = None
         self._relay_mode = False
@@ -414,7 +417,8 @@ class StereoFishCameraWidget(QWidget):
         self.record_stats_label = QLabel('未录制 00:00:00 · 0帧')
         self.record_stats_label.setAccessibleName('本次录制时长和帧数')
         self.record_stats_label.setWordWrap(True)
-        self.record_stats_label.setMinimumWidth(100)
+        self.record_stats_label.setMinimumWidth(130)
+        self.record_stats_label.setMinimumHeight(42)
         self.record_stats_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.record_stats_label.setToolTip(
             '本次实际经过时间与送入编码器的帧数（左右目并排画面）；停止后保留，下次开始清零。'
@@ -425,6 +429,9 @@ class StereoFishCameraWidget(QWidget):
             font = control.font()
             font.setPointSize(9)
             control.setFont(font)
+        stats_font = self.record_stats_label.font()
+        stats_font.setPointSize(8)
+        self.record_stats_label.setFont(stats_font)
         connection_row.addWidget(self.record_stats_label, 1)
         recording_row.addWidget(self.record_btn)
         recording_row.addWidget(self.record_name_input, 1)
@@ -439,15 +446,34 @@ class StereoFishCameraWidget(QWidget):
         self.mode_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         control_layout.addWidget(self.mode_label)
         resolution_row = QHBoxLayout()
-        resolution_row.addWidget(QLabel('采集分辨率'))
+        resolution_row.addWidget(QLabel('分辨率'))
         self.resolution_combo = QComboBox()
         self.resolution_combo.setAccessibleName('双目采集分辨率')
         self.resolution_combo.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        self.resolution_combo.setMinimumWidth(100)
+        self.resolution_combo.setMinimumWidth(105)
+        compact_font = self.resolution_combo.font()
+        compact_font.setPointSize(9)
+        self.resolution_combo.setFont(compact_font)
         self.resolution_combo.setToolTip('每目是单个相机的尺寸；双目是实际传输的横拼尺寸。关闭摄像头后应用。')
         self.resolution_combo.currentIndexChanged.connect(self._resolution_selection_changed)
         resolution_row.addWidget(self.resolution_combo, 1)
-        self.resolution_apply_btn = QPushButton('应用分辨率')
+        resolution_row.addWidget(QLabel('FPS'))
+        self.capture_fps_combo = NoWheelComboBox()
+        self.capture_fps_combo.setAccessibleName('双目采集帧率')
+        self.capture_fps_combo.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.capture_fps_combo.setMinimumWidth(68)
+        self.capture_fps_combo.setMaximumWidth(75)
+        self.capture_fps_combo.setFont(compact_font)
+        for fps in (15, 30, 60, 120):
+            self.capture_fps_combo.addItem(str(fps), fps)
+            self.capture_fps_combo.model().item(self.capture_fps_combo.count()-1).setEnabled(False)
+        self.capture_fps_combo.setCurrentIndex(-1)
+        self.capture_fps_combo.currentIndexChanged.connect(lambda _: self._apply_ui_state())
+        self.capture_fps_combo.setToolTip('相机和上传目标帧率；实际接收、保存及显示帧率可能较低。关闭摄像头后应用。')
+        resolution_row.addWidget(self.capture_fps_combo)
+        self.resolution_apply_btn = QPushButton('应用设置')
+        self.resolution_apply_btn.setMinimumWidth(75)
+        self.resolution_apply_btn.setMaximumWidth(85)
         self.resolution_apply_btn.clicked.connect(self._apply_resolution)
         resolution_row.addWidget(self.resolution_apply_btn)
         control_layout.addLayout(resolution_row)
@@ -571,7 +597,7 @@ class StereoFishCameraWidget(QWidget):
         self.camera_state_label = QLabel("摄像头: 未连接")
         self.camera_state_label.setFont(QFont("Arial", 11, QFont.Bold))
         self.fps_label = QLabel("显示帧率: --")
-        self.fps_label.setToolTip('地面站处理后刷新的画面帧率，不等于网络接收帧率或相机采集帧率。')
+        self.fps_label.setToolTip('地面站实际显示帧率：预览最多约50次/秒，处理跟不上会取最新帧；不等于采集、接收或高速录像帧率。')
         self.resolution_label = QLabel("分辨率: --")
         for label in (self.status_label, self.camera_state_label, self.fps_label, self.resolution_label):
             label.setWordWrap(True)
@@ -698,7 +724,13 @@ class StereoFishCameraWidget(QWidget):
         self._resolution_pending = None
         self._resolution_options = []
         self._resolution_supported = False
+        self._capture_mode_supported = False
+        self._capture_fps = None
+        self._fps_options = {}
+        self._fps_control_supported = False
+        self._stream_fps = 15.0
         self.resolution_combo.clear()
+        self._refresh_fps_choices()
         self.resolution_hint.setText('连接视频后读取相机可用档位；关闭摄像头后可切换。')
         self._local_enabled = True
         self._clear_measurement()
@@ -720,14 +752,21 @@ class StereoFishCameraWidget(QWidget):
         self.disconnect_btn.setEnabled(can_disconnect)
         self.cam_btn.setEnabled(stream_connected and camera_ready and self._resolution_pending is None)
         resolution_ready = (stream_connected and self._camera_state == 'off' and
-                            not self.recording and self._resolution_supported and
+                            not self.recording and not self._record_finalizing and self._resolution_supported and
                             self._resolution_pending is None)
         self.resolution_combo.setEnabled(resolution_ready)
+        self.capture_fps_combo.setEnabled(resolution_ready and self._capture_mode_supported and
+            bool(self._fps_options.get(self.resolution_combo.currentData())))
         actual = ((self._source_descriptor['width'], self._source_descriptor['height'])
                   if self._source_descriptor else None)
+        selected_fps = self.capture_fps_combo.currentData()
+        mode_valid = selected_fps in self._fps_options.get(self.resolution_combo.currentData(), [])
+        changed = self.resolution_combo.currentData() != actual
+        if self._capture_mode_supported:
+            changed = changed or selected_fps != self._capture_fps or selected_fps != self._stream_fps
         self.resolution_apply_btn.setEnabled(resolution_ready and
-            self.resolution_combo.currentData() in self._resolution_options and
-            self.resolution_combo.currentData() != actual)
+            self.resolution_combo.currentData() in self._resolution_options and changed and
+            (not self._capture_mode_supported or mode_valid))
         self.record_btn.setEnabled(
             stream_connected and camera_on and self.current_frame is not None and
             not self.board_rec_on and not self._record_finalizing)
@@ -764,12 +803,27 @@ class StereoFishCameraWidget(QWidget):
     def _resolution_selection_changed(self, index):
         """Update the apply gate without issuing a network write on combo selection."""
         if hasattr(self, 'resolution_apply_btn'):
+            self._refresh_fps_choices()
             self._apply_ui_state()
+
+    def _refresh_fps_choices(self, preferred=None):
+        """Grey out unreported modes; never infer device capability from resolution."""
+        supported = self._fps_options.get(self.resolution_combo.currentData(), [])
+        current = self.capture_fps_combo.currentData() if preferred is None else preferred
+        self.capture_fps_combo.blockSignals(True)
+        for index in range(self.capture_fps_combo.count()):
+            fps = self.capture_fps_combo.itemData(index)
+            self.capture_fps_combo.model().item(index).setEnabled(fps in supported)
+        if current not in supported:
+            current = supported[0] if supported else None
+        self.capture_fps_combo.setCurrentIndex(self.capture_fps_combo.findData(current) if current else -1)
+        self.capture_fps_combo.blockSignals(False)
 
     def _update_resolution_state(self, info):
         """Accept server capabilities and exact acknowledgements, not guessed UI state."""
         options = info.get('resolution_options', [])
         valid = []
+        fps_options = {}
         if isinstance(options, list) and len(options) <= 32:
             for option in options:
                 if not isinstance(option, dict):
@@ -779,11 +833,22 @@ class StereoFishCameraWidget(QWidget):
                         384 < width <= 5120 and width % 2 == 0 and 0 < height <= 1440 and
                         (width, height) not in valid):
                     valid.append((width, height))
+                    rates = option.get('fps', [])
+                    if isinstance(rates, list):
+                        fps_options[(width, height)] = [fps for fps in (15, 30, 60, 120)
+                            if any(type(rate) is int and rate == fps for rate in rates)]
+        previous_capability = self._capture_mode_supported
+        self._fps_options = fps_options
+        self._capture_mode_supported = (info.get('capture_mode_switch') is True and
+                                        any(fps_options.values()))
+        reported_fps = info.get('capture_fps')
+        if type(reported_fps) is int and reported_fps in (15, 30, 60, 120):
+            self._capture_fps = reported_fps
         self._resolution_supported = (self._relay_mode and self._source_descriptor is not None and
                                       info.get('resolution_switch') is True and bool(valid))
         actual = (info.get('source_width'), info.get('source_height'))
         pending = self._resolution_pending
-        acknowledged = bool(pending and info.get('command') == 'SET_RESOLUTION' and
+        acknowledged = bool(pending and info.get('command') == pending.get('command', 'SET_RESOLUTION') and
                             info.get('request_id') == pending['id'])
         resolved = acknowledged or bool(pending and pending['querying'])
         if resolved:
@@ -793,7 +858,7 @@ class StereoFishCameraWidget(QWidget):
             self.resolution_combo.blockSignals(True)
             self.resolution_combo.clear()
             for width, height in valid:
-                self.resolution_combo.addItem(f'每目 {width//2}×{height} · 双目 {width}×{height}', (width, height))
+                self.resolution_combo.addItem(f'{width//2}×{height}', (width, height))
             self._resolution_options = valid
             self.resolution_combo.blockSignals(False)
             selected = None
@@ -801,14 +866,21 @@ class StereoFishCameraWidget(QWidget):
             self.resolution_combo.blockSignals(True)
             self.resolution_combo.setCurrentIndex(valid.index(actual) if actual in valid else -1)
             self.resolution_combo.blockSignals(False)
+        self._refresh_fps_choices(self._capture_fps if resolved or selected is None or not previous_capability else None)
         if self._resolution_pending:
             self.resolution_hint.setText('分辨率设置中，等待板端确认…')
         elif not self._resolution_supported:
             self.resolution_hint.setText('视频服务未提供可切换档位；请升级板端双目传输服务并检查相机枚举。')
         else:
             prefix = '已确认' if self._camera_state == 'on' else '下次采集'
-            self.resolution_hint.setText(f'{prefix}：每目 {actual[0]//2}×{actual[1]} · 双目 {actual[0]}×{actual[1]}。关闭摄像头后应用；测距须匹配NPZ。')
-            if resolved and actual != pending['size']:
+            fps_text = (f" · 采集目标 {self._capture_fps} FPS · 上传目标 {self._stream_fps:g} FPS"
+                        if self._capture_mode_supported and self._capture_fps else ' · 旧服务不支持采集帧率选择')
+            actual_fps = info.get('actual_capture_fps')
+            if type(actual_fps) in (int, float) and actual_fps > 0:
+                fps_text += f' · 驱动读回 {actual_fps:g} FPS'
+            self.resolution_hint.setText(f'{prefix}：每目 {actual[0]//2}×{actual[1]} · 双目 {actual[0]}×{actual[1]}{fps_text}。关闭摄像头后应用；测距须匹配NPZ。')
+            if resolved and (actual != pending['size'] or
+                             (pending.get('fps') is not None and pending['fps'] != self._capture_fps)):
                 self.resolution_hint.setText('设置未生效，已恢复板端实际档位。'+self.resolution_hint.text())
 
     def _apply_resolution(self):
@@ -818,12 +890,17 @@ class StereoFishCameraWidget(QWidget):
             return
         width, height = self.resolution_combo.currentData()
         request_id = f'{self.stream_client.connection_id}_{time.monotonic_ns()}'
-        self._resolution_pending = dict(id=request_id, size=(width, height), querying=False)
+        fps = self.capture_fps_combo.currentData() if self._capture_mode_supported else None
+        command = 'SET_CAPTURE_MODE' if fps is not None else 'SET_RESOLUTION'
+        self._resolution_pending = dict(id=request_id, size=(width, height), fps=fps,
+                                        command=command, querying=False)
         self._clear_local_frames()
         self._selected_point = None
         self.resolution_hint.setText('分辨率设置中，等待板端确认…')
         self._apply_ui_state()
-        if not self.stream_client.send_command(f'SET_RESOLUTION {width} {height} {request_id}'):
+        request = (f'{command} {width} {height} {fps} {request_id}' if fps is not None
+                   else f'{command} {width} {height} {request_id}')
+        if not self.stream_client.send_command(request):
             self._resolution_timeout(request_id)
         else:
             QTimer.singleShot(3000, lambda: self._resolution_timeout(request_id))
@@ -887,14 +964,16 @@ class StereoFishCameraWidget(QWidget):
                     QMessageBox.warning(self, '录像不可用',
                         f'无法启动原始录像：{exc}\n请运行 python ref/install_local_pyav_runtime.py 安装项目专用 PyAV 后重启地面站。')
                     return
-                self._rate_session += 1
-                if not self._queue_video_rate(30, self._rate_session):
-                    recorder.stop()
-                    os.remove(self.recording_path)
-                    self.recording_path = None
-                    QMessageBox.warning(self, '录像不可用', '视频帧率命令队列繁忙，请稍后再试')
-                    return
-                self._previous_stream_fps = self._stream_fps
+                self._previous_stream_fps = None
+                if not self._capture_mode_supported:
+                    self._rate_session += 1
+                    if not self._queue_video_rate(30, self._rate_session):
+                        recorder.stop()
+                        os.remove(self.recording_path)
+                        self.recording_path = None
+                        QMessageBox.warning(self, '录像不可用', '视频帧率命令队列繁忙，请稍后再试')
+                        return
+                    self._previous_stream_fps = self._stream_fps
                 with self._raw_record_lock:
                     self._raw_record_worker = recorder
             self._encoded_count = 0
@@ -1311,12 +1390,13 @@ class StereoFishCameraWidget(QWidget):
                 self._stop_recording(prompt_for_path=False)
                 self.record_stats_label.setToolTip('视频帧率设置失败，录像已停止：'+str(info.get('message', '未知错误')))
             pending = self._resolution_pending
-            if (pending and info.get('command') == 'SET_RESOLUTION' and
+            if (pending and info.get('command') == pending.get('command', 'SET_RESOLUTION') and
                     info.get('request_id') == pending['id']):
                 self._resolution_pending = None
                 actual = (self._source_descriptor['width'], self._source_descriptor['height'])
                 self.resolution_combo.setCurrentIndex(self._resolution_options.index(actual)
                     if actual in self._resolution_options else -1)
+                self._refresh_fps_choices(self._capture_fps)
                 self.resolution_hint.setText('分辨率设置失败，保留原档位：'+str(info.get('message', '未知错误')))
                 self._apply_ui_state()
         elif msg_type == "ranging":
@@ -1360,7 +1440,7 @@ class StereoFishCameraWidget(QWidget):
                 mode = 'raw' if self._relay_mode and self._fps_control_supported else 'display'
                 self.record_mode.setCurrentIndex(self.record_mode.findData(mode))
             fps = info.get('stream_fps')
-            if isinstance(fps, (int, float)) and 1 <= fps <= 60:
+            if isinstance(fps, (int, float)) and 1 <= fps <= 120:
                 self._stream_fps = float(fps)
             if self._relay_mode:
                 self._update_source_descriptor(info)
@@ -1372,6 +1452,8 @@ class StereoFishCameraWidget(QWidget):
             self._update_resolution_state(info)
             self.camera_state_label.setText(
                 f"摄像头: {'已开启' if enabled else '关闭——点击开启摄像头出画面'}")
+            if info.get('error'):
+                self.status_label.setText('视频服务: '+str(info['error']))
             if enabled and info.get('command') != 'SET_STREAM_FPS':
                 self._reset_canvas_height_for_camera_on()
             if enabled and self.current_frame is None:

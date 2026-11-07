@@ -1,5 +1,6 @@
 """Bounded native V4L2 MJPEG capture with no OpenCV decode/re-encode."""
 import os
+import re
 import select
 import subprocess
 import time
@@ -60,6 +61,12 @@ class NativeMjpegCapture:
                         '--set-fmt-video=width={},height={},pixelformat=MJPG'.format(width, height),
                         '--set-parm={}'.format(int(fps))],
                        capture_output=True, timeout=3, check=True)
+        readback = subprocess.run(['v4l2-ctl', '-d', device, '--get-parm'],
+                                  capture_output=True, text=True, timeout=3, check=True)
+        match = re.search(r'Frames per second:\s*([0-9.]+)', readback.stdout)
+        if not match or abs(float(match.group(1)) - fps) > 0.5:
+            raise ValueError('相机未确认所选采集帧率: ' + readback.stdout.strip())
+        self.actual_fps = float(match.group(1))
         self.process = subprocess.Popen(['v4l2-ctl', '-d', device,
                                          '--stream-mmap=4', '--stream-to=-'],
                                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,

@@ -86,19 +86,21 @@ def test_explicit_experiment_keeps_signed_values(kind, sign):
         controller.deactivate()
 
 
-def test_actual_dual_main_window_uses_correction_and_preserves_labels():
-    """The real window must opt in; a standalone old-platform controller stays unchanged."""
+def test_actual_dual_main_window_uses_shared_original_direction():
+    """Both fish use original keyboard polarity, with matching labels and kappa sides."""
     window, communication = make_connected_window()
     try:
         keyboard = window.controllers['keyboard']
         keyboard.set_keyboard_parameters(.1, 1., .2, .25, 2., .3, .4, tail_kappa=.7)
         assert window._set_control_armed(True)
-        for key, expected in [('a', .35), ('d', -.15)]:
+        for key, expected, kappa in [('a', -.15, .7), ('d', .35, .3),
+                                     ('A', -.3, .7), ('D', .5, .3)]:
             keyboard.handle_key_press(key)
             keyboard._update_control()
             assert communication.commands[-1].tail_offset == pytest.approx(expected)
-            assert ('左转' if key == 'a' else '右转') in keyboard._motion_label.text()
-        assert '左转使用 1−κ' in keyboard._turn_mode_input.toolTip()
+            assert communication.commands[-1].tail_kappa == pytest.approx(kappa)
+            assert ('左转' if key.lower() == 'a' else '右转') in keyboard._motion_label.text()
+        assert '左转使用设定 κ' in keyboard._turn_mode_input.toolTip()
     finally:
         window._stop_all_controls(send_stop=False)
         window.communication = None

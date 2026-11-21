@@ -568,7 +568,7 @@ class MainWindow(QMainWindow):
         # 键盘控制器
         self.controllers['keyboard'] = KeyboardController(
             enable_kappa=self.variant == 'dual',
-            turn_direction=-1 if self.variant == 'dual' else 1)
+            turn_direction=1)
         if self.variant == "dual":
             self.controllers['depth'] = DepthAxisController()
             self.controllers['parallel_depth'] = ParallelDepthController()

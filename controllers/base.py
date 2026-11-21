@@ -63,8 +63,12 @@ class ControllerBase(QObject):
 class KeyboardController(ControllerBase):
     """键盘控制器"""
     
-    def __init__(self, enable_kappa=True):
+    def __init__(self, enable_kappa=True, turn_direction=1):
+        """初始化键盘；turn_direction仅校准手动左右，保留原始参数实验语义。"""
         super().__init__()
+        if turn_direction not in (-1, 1):
+            raise ValueError('turn_direction must be -1 or 1')
+        self._turn_direction = turn_direction
         self._enable_kappa = bool(enable_kappa)
         self._key_states = {}
         self._experiment = None
@@ -223,7 +227,9 @@ class KeyboardController(ControllerBase):
             self._turn_mode_input.setCurrentIndex(
                 self._turn_mode_input.findData(self._keyboard_params["turn_mode"]))
             self._turn_mode_input.setToolTip(
-                "基础偏置始终保留；左转使用设定 κ，右转使用 1−κ。前进为 κ=0.5。")
+                "基础偏置始终保留；" +
+                ("左转使用 1−κ，右转使用设定 κ。" if self._turn_direction < 0
+                 else "左转使用设定 κ，右转使用 1−κ。") + "前进为 κ=0.5。")
             input_layout.addWidget(self._turn_mode_input, 9, 1)
 
         # 胸鳍脉宽直接设定：与 Q/E 增量调节共用同一个状态。
@@ -567,6 +573,8 @@ class KeyboardController(ControllerBase):
         
         # 基于运动状态设置参数
         p = experiment["params"] if experiment is not None else self._keyboard_params
+        # 只校正手动左右；自动实验的正/负偏置和直接κ仍按用户指定的原数值。
+        turn_direction = self._turn_direction if experiment is None else 1
         motion_label_text = "停止"
         self._current_command.tail_phase_diff = p.get("tail_phase_diff", 1.57)
         self._current_command.tail_kappa = 0.5
@@ -584,12 +592,12 @@ class KeyboardController(ControllerBase):
         elif self._motion_state == "slow_left":
             self._current_command.tail_frequency = p["slow_frequency"]
             self._current_command.tail_amplitude = p["slow_amplitude"]
-            self._current_command.tail_offset = p["base_bias"] - p["slow_turn_bias"]
+            self._current_command.tail_offset = p["base_bias"] - turn_direction * p["slow_turn_bias"]
             motion_label_text = "慢速左转"
         elif self._motion_state == "slow_right":
             self._current_command.tail_frequency = p["slow_frequency"]
             self._current_command.tail_amplitude = p["slow_amplitude"]
-            self._current_command.tail_offset = p["base_bias"] + p["slow_turn_bias"]
+            self._current_command.tail_offset = p["base_bias"] + turn_direction * p["slow_turn_bias"]
             motion_label_text = "慢速右转"
         elif self._motion_state == "fast_forward":
             self._current_command.tail_frequency = p["fast_frequency"]
@@ -599,12 +607,12 @@ class KeyboardController(ControllerBase):
         elif self._motion_state == "fast_left":
             self._current_command.tail_frequency = p["fast_frequency"]
             self._current_command.tail_amplitude = p["fast_amplitude"]
-            self._current_command.tail_offset = p["base_bias"] - p["fast_turn_bias"]
+            self._current_command.tail_offset = p["base_bias"] - turn_direction * p["fast_turn_bias"]
             motion_label_text = "快速左转"
         elif self._motion_state == "fast_right":
             self._current_command.tail_frequency = p["fast_frequency"]
             self._current_command.tail_amplitude = p["fast_amplitude"]
-            self._current_command.tail_offset = p["base_bias"] + p["fast_turn_bias"]
+            self._current_command.tail_offset = p["base_bias"] + turn_direction * p["fast_turn_bias"]
             motion_label_text = "快速右转"
         
         # 模式只作用于转弯；基础偏置用于机械校准，前进保持对称波形。
@@ -614,8 +622,10 @@ class KeyboardController(ControllerBase):
             self._current_command.tail_offset = p["base_bias"]
         if turning and mode in ("kappa", "combined"):
             kappa = p["tail_kappa"]
-            self._current_command.tail_kappa = (kappa if self._motion_state.endswith("left")
-                                                else 1.0 - kappa)
+            use_set_kappa = self._motion_state.endswith("left")
+            if turn_direction < 0:
+                use_set_kappa = not use_set_kappa
+            self._current_command.tail_kappa = kappa if use_set_kappa else 1.0 - kappa
 
         if experiment is not None and experiment["stage"] == "turn":
             if experiment["kind"] == "bias":

@@ -16,6 +16,7 @@
 import csv
 import datetime
 import json
+import math
 import os
 import socket
 import threading
@@ -211,6 +212,7 @@ class DepthPanel(QWidget):
         layout.addWidget(conn_group)
 
         value_group = QGroupBox("实时深度")
+        self._value_group = value_group
         value_layout = QGridLayout(value_group)
         self.depth_big_label = QLabel("--.-- m")
         self.depth_big_label.setAlignment(Qt.AlignCenter)
@@ -411,28 +413,63 @@ class DepthPanel(QWidget):
         self._refresh_calib_status()
         self._apply_ui_state()
 
+    @staticmethod
+    def _finite_depth(value):
+        """仅接受有限深度值；缺失、坏类型及NaN/Infinity均保持为None。"""
+        if isinstance(value, bool):
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return number if math.isfinite(number) else None
+
+    @staticmethod
+    def _reading_text(value):
+        """把有效值格式化为cm，缺失值明确显示无数据而不是零。"""
+        return "无数据" if value is None else f"{value:.1f} cm"
+
+    def _channel_text(self, title, field, info, values):
+        """双路消息显示两路状态，旧单路消息保持原有标签格式。"""
+        second = field.replace("_1", "_2")
+        first_text = self._reading_text(values[field])
+        if second not in info:
+            return f"{title}: {first_text}"
+        return (f"{title}: 1路 {first_text}\n"
+                f"2路 {self._reading_text(values[second])}")
+
     def _on_line(self, info):
         """处理一行 JSON（深度/状态），含标定采样与零点扣减显示。"""
+        if not isinstance(info, dict):
+            return
         msg_type = info.get("type")
         if msg_type == "depth":
-            fused = info.get("fused")
+            values = {key: self._finite_depth(info.get(key)) for key in
+                      ("raw_1", "filtered_1", "raw_2", "filtered_2", "fused")}
+            fused = values["fused"]
             if self._calibrating and fused is not None:
-                self._calib_samples.append(float(fused))
+                self._calib_samples.append(fused)
                 self._refresh_calib_status()
             if fused is None:
                 self.depth_big_label.setText("--.-- cm")
             else:
-                depth = float(fused) - self.zero_offset
+                depth = fused - self.zero_offset
                 self.depth_big_label.setText(f"{depth:+.1f} cm")
-            self.raw_label.setText(f"原始: {info.get('raw_1', 0):.1f} cm")
-            self.filtered_label.setText(f"滤波: {info.get('filtered_1', 0):.1f} cm")
-            self.fused_label.setText(f"融合: {info.get('fused', 0):.1f} cm")
+            for label, title, field in ((self.raw_label, "原始", "raw_1"),
+                                        (self.filtered_label, "滤波", "filtered_1")):
+                text = self._channel_text(title, field, info, values)
+                label.setText(text)
+                label.setMinimumHeight(label.fontMetrics().lineSpacing() *
+                                       (text.count("\n") + 1) + 2)
+            self.fused_label.setText(f"融合: {self._reading_text(fused)}")
+            self._value_group.layout().invalidate()
+            self._value_group.setMinimumHeight(self._value_group.minimumSizeHint().height())
             if self.recording:
                 now = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
                 calibrated = (None if fused is None
-                              else float(fused) - self.zero_offset)
-                self.records.append([now, info.get("raw_1"),
-                                     info.get("filtered_1"), info.get("fused"),
+                              else fused - self.zero_offset)
+                self.records.append([now, values["raw_1"],
+                                     values["filtered_1"], fused,
                                      calibrated])
         elif msg_type == "state":
             pass
